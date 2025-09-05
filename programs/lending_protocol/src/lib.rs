@@ -4,7 +4,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("4NZMVT3pMUSDqXwQnXqfKwgY9pRYUgoAoXX8PUY19wHe");
+declare_id!("9yGaDci3e79TskjUZjPBS5HHP9JSetyJbgizgTqWfBRn");
 
 #[cfg(not(feature = "no-entrypoint"))] // Ensure it's not included when compiled as a library
 security_txt! {
