@@ -4,7 +4,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("9yGaDci3e79TskjUZjPBS5HHP9JSetyJbgizgTqWfBRn");
+declare_id!("DPuvjRxmijTWvKSnfrVnSQdZ5sKWLcCvrWuHB2b3TtjB");
 
 #[cfg(not(feature = "no-entrypoint"))] // Ensure it's not included when compiled as a library
 security_txt! {
@@ -131,10 +131,10 @@ pub mod lending_protocol
         sub_market.fee_on_interest_earned_rate = fee_on_interest_earned_rate; //This should fed in as a decimal from 0.0000 to 1.0000
         sub_market.token_mint_address = token_mint_address.key(); //This can't be edited after. Allowing this to be edited would be like allowing some one to say this currency is a different kind of currency later when ever they wanted
         
-        let lending_protocol = &mut ctx.accounts.lending_protocol;
-        lending_protocol.sub_market_count += 1;
+        let sub_market_stats = &mut ctx.accounts.sub_market_stats;
+        sub_market_stats.sub_market_creation_count += 1;
 
-        msg!("Created SubMarket #{}", lending_protocol.sub_market_count);
+        msg!("Created SubMarket #{}", sub_market_stats.sub_market_creation_count);
         msg!("Token Mint Address: {}", token_mint_address.key());
         msg!("SubMarket Index: {}", sub_market_index);
         msg!("Owner: {}", ctx.accounts.signer.key());
@@ -164,6 +164,9 @@ pub mod lending_protocol
         sub_market.fee_collector_address = fee_collector_address.key();
         sub_market.fee_on_interest_earned_rate = fee_on_interest_earned_rate;
 
+        let sub_market_stats = &mut ctx.accounts.sub_market_stats;
+        sub_market_stats.sub_market_edit_count += 1;
+        
         msg!("Edited Submarket");
         msg!("Token Mint Address: {}", sub_market.token_mint_address.key());
         msg!("SubMarket Index: {}", sub_market_index);
@@ -343,6 +346,14 @@ pub struct InitializeLendingProtocol<'info>
         space = size_of::<LendingProtocolCEO>() + 8)]
     pub ceo: Account<'info, LendingProtocolCEO>,
 
+    #[account(
+        init, 
+        payer = signer,
+        seeds = [b"subMarketStats".as_ref()],
+        bump,
+        space = size_of::<SubMarketStats>() + 8)]
+    pub sub_market_stats: Account<'info, SubMarketStats>,
+
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>
@@ -423,9 +434,9 @@ pub struct CreateSubMarket<'info>
 {
     #[account(
         mut,
-        seeds = [b"lendingProtocol".as_ref()],
+        seeds = [b"subMarketStats".as_ref()],
         bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
+    pub sub_market_stats: Account<'info, SubMarketStats>,
 
     #[account(
         init,
@@ -450,6 +461,12 @@ pub struct CreateSubMarket<'info>
 #[instruction(token_mint_address: Pubkey, sub_market_index: u8)]
 pub struct EditSubMarket<'info> 
 {
+    #[account(
+        mut,
+        seeds = [b"subMarketStats".as_ref()],
+        bump)]
+    pub sub_market_stats: Account<'info, SubMarketStats>,
+
     #[account(
         mut,
         seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), signer.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
@@ -620,8 +637,14 @@ pub struct LendingProtocolCEO
 #[account]
 pub struct LendingProtocol
 {
-    pub token_reserve_count: u32,
-    pub sub_market_count: u32 //You can techincally get this number with the .all() function on the front end and just looking at the length of the array, but keeping this number in the logging atleast tells you the chronologically order that account was created in. Although you could also store that on the submarket itself, but it would make all of those accounts bigger, and you'd still need this variable to keep track of the count.
+    pub token_reserve_count: u32
+}
+
+#[account]
+pub struct SubMarketStats //Moved these lending protocol variables here to help stream line the listeners on the front end, so that when ever there is any change what so ever on this account, we can be sure that we need to do a .all() for the SubMarket accounts on the front end without having to fetch some other account to check a different number before hand. Less fetches/alls, the better.
+{
+    pub sub_market_creation_count: u32,
+    pub sub_market_edit_count: u32
 }
 
 #[account]
