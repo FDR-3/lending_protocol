@@ -4,7 +4,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("DPuvjRxmijTWvKSnfrVnSQdZ5sKWLcCvrWuHB2b3TtjB");
+declare_id!("H8ouYcPXMaBttjYsB5BurCdtD4TShxLHxyeAGGYQ6eVy");
 
 #[cfg(not(feature = "no-entrypoint"))] // Ensure it's not included when compiled as a library
 security_txt! {
@@ -114,7 +114,7 @@ pub mod lending_protocol
 
     pub fn create_sub_market(ctx: Context<CreateSubMarket>,
         token_mint_address: Pubkey,
-        sub_market_index: u8,
+        sub_market_index: u16,
         fee_collector_address: Pubkey,
         fee_on_interest_earned_rate: f32
     ) -> Result<()> 
@@ -130,13 +130,14 @@ pub mod lending_protocol
         sub_market.fee_collector_address = fee_collector_address.key();
         sub_market.fee_on_interest_earned_rate = fee_on_interest_earned_rate; //This should fed in as a decimal from 0.0000 to 1.0000
         sub_market.token_mint_address = token_mint_address.key(); //This can't be edited after. Allowing this to be edited would be like allowing some one to say this currency is a different kind of currency later when ever they wanted
+        sub_market.sub_market_index = sub_market_index;
         
         let sub_market_stats = &mut ctx.accounts.sub_market_stats;
         sub_market_stats.sub_market_creation_count += 1;
 
         msg!("Created SubMarket #{}", sub_market_stats.sub_market_creation_count);
         msg!("Token Mint Address: {}", token_mint_address.key());
-        msg!("SubMarket Index: {}", sub_market_index);
+        msg!("SubMarket Index: {}", sub_market.sub_market_index);
         msg!("Owner: {}", ctx.accounts.signer.key());
         msg!("Fee Collector Address: {}", fee_collector_address.key());
         msg!("Fee On Interest Earned Rate: {:.2}%", fee_on_interest_earned_rate*100.0); //convert out of % fixed point notation with 4 decimal places back to decimal for logging
@@ -146,7 +147,7 @@ pub mod lending_protocol
 
     pub fn edit_sub_market(ctx: Context<EditSubMarket>,
         _token_mint_address: Pubkey,
-        sub_market_index: u8,
+        sub_market_index: u16,
         fee_collector_address: Pubkey,
         fee_on_interest_earned_rate: f32
     ) -> Result<()> 
@@ -180,28 +181,28 @@ pub mod lending_protocol
     pub fn deposit_tokens(ctx: Context<DepositTokens>,
         token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
-        sub_market_index: u8,
+        sub_market_index: u16,
         account_index: u8,
         amount: f64
     ) -> Result<()> 
     {
         let token_reserve = &mut ctx.accounts.token_reserve;
-        let user_account = &mut ctx.accounts.user_account;
-        let user_token_obligation_account = &mut ctx.accounts.user_token_obligation_account;
+        let user_lending_account = &mut ctx.accounts.user_lending_account;
+        let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
 
         //Populate obligation account if being newly initliazed. A user can have multiple accounts based on their account index. Every token the sub user enteracts with has its own obligation account tied to the sub user.
-        if user_token_obligation_account.user_obligation_account_added == false
+        if lending_user_obligation_account.user_obligation_account_added == false
         {
-            user_token_obligation_account.owner = ctx.accounts.signer.key();
-            user_token_obligation_account.user_account_index = account_index;
-            user_token_obligation_account.token_mint_address = token_mint_address;
-            user_token_obligation_account.sub_market_owner_address = sub_market_owner_address.key();
-            user_token_obligation_account.sub_market_index = sub_market_index;
-            user_token_obligation_account.user_obligation_account_index = user_account.obligation_account_count;
+            lending_user_obligation_account.owner = ctx.accounts.signer.key();
+            lending_user_obligation_account.user_account_index = account_index;
+            lending_user_obligation_account.token_mint_address = token_mint_address;
+            lending_user_obligation_account.sub_market_owner_address = sub_market_owner_address.key();
+            lending_user_obligation_account.sub_market_index = sub_market_index;
+            lending_user_obligation_account.user_obligation_account_index = user_lending_account.obligation_account_count;
 
-            user_token_obligation_account.user_obligation_account_added = true;
+            lending_user_obligation_account.user_obligation_account_added = true;
 
-            user_account.obligation_account_count += 1;
+            user_lending_account.obligation_account_count += 1;
         }
 
         //Cross Program Invocation for Token Transfer
@@ -221,7 +222,7 @@ pub mod lending_protocol
         //Transfer Tokens Into The Reserve
         token::transfer(cpi_ctx, fixed_pointed_notation_amount)?;
 
-        user_token_obligation_account.deposited_amount += fixed_pointed_notation_amount;
+        lending_user_obligation_account.deposited_amount += fixed_pointed_notation_amount;
         token_reserve.deposited_amount += fixed_pointed_notation_amount;
         
         msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
@@ -238,11 +239,11 @@ pub mod lending_protocol
     ) -> Result<()> 
     {
         let token_reserve = &mut ctx.accounts.token_reserve;
-        let user_account = &mut ctx.accounts.user_account;
-        let user_token_obligation_account = &mut ctx.accounts.user_token_obligation_account;
+        let user_lending_account = &mut ctx.accounts.user_lending_account;
+        let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
 
         //You must provide all of the sub user's obligation accounts in remaining accounts
-        require!(user_account.obligation_account_count as usize == ctx.remaining_accounts.len(), InvalidInputError::IncorrectNumberOfObligationAccounts);
+        require!(user_lending_account.obligation_account_count as usize == ctx.remaining_accounts.len(), InvalidInputError::IncorrectNumberOfObligationAccounts);
 
         let mut user_obligation_index = 0;
 
@@ -252,10 +253,10 @@ pub mod lending_protocol
             let data_ref = remaining_account.data.borrow();
             let mut data_slice: &[u8] = data_ref.deref();
 
-            let obligation_account = UserTokenObligationAccount::try_deserialize(&mut data_slice)?;
+            let obligation_account = LendingUserObligationAccount::try_deserialize(&mut data_slice)?;
 
             let (expected_pda, _bump) = Pubkey::find_program_address(
-                &[b"userTokenObligationAccount",
+                &[b"lendingUserObligationAccount",
                 obligation_account.token_mint_address.key().as_ref(),
                 obligation_account.sub_market_owner_address.key().as_ref(),
                 obligation_account.sub_market_index.to_le_bytes().as_ref(),
@@ -286,12 +287,12 @@ pub mod lending_protocol
         let fixed_pointed_notation_amount = (amount * conversion_number) as u64;
 
         //You can't withdraw more funds than you've deposited or an amount that would expose you to liquidation on purpose
-        require!(user_token_obligation_account.deposited_amount > fixed_pointed_notation_amount, InvalidInputError::InsufficientFunds);
+        require!(lending_user_obligation_account.deposited_amount > fixed_pointed_notation_amount, InvalidInputError::InsufficientFunds);
         
         //Transfer Tokens Into The Reserve
         token::transfer(cpi_ctx, fixed_pointed_notation_amount)?;
 
-        user_token_obligation_account.deposited_amount -= fixed_pointed_notation_amount;
+        lending_user_obligation_account.deposited_amount -= fixed_pointed_notation_amount;
         token_reserve.deposited_amount -= fixed_pointed_notation_amount;
         
         msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
@@ -429,7 +430,7 @@ pub struct RemoveTokenReserve<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_index: u16)]
 pub struct CreateSubMarket<'info> 
 {
     #[account(
@@ -437,6 +438,7 @@ pub struct CreateSubMarket<'info>
         seeds = [b"subMarketStats".as_ref()],
         bump)]
     pub sub_market_stats: Account<'info, SubMarketStats>,
+
 
     #[account(
         init,
@@ -458,7 +460,7 @@ pub struct CreateSubMarket<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_index: u16)]
 pub struct EditSubMarket<'info> 
 {
     #[account(
@@ -479,7 +481,7 @@ pub struct EditSubMarket<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u8, account_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, account_index: u8)]
 pub struct DepositTokens<'info> 
 {
     
@@ -499,21 +501,21 @@ pub struct DepositTokens<'info>
         payer = signer,
         seeds = [b"userAccount".as_ref(), signer.key().as_ref(), account_index.to_le_bytes().as_ref()], 
         bump, 
-        space = size_of::<UserAccount>() + 8)]
-    pub user_account: Account<'info, UserAccount>,
+        space = size_of::<LendingUserAccount>() + 8)]
+    pub user_lending_account: Account<'info, LendingUserAccount>,
 
     #[account(
         init_if_needed,
         payer = signer,
-        seeds = [b"userTokenObligationAccount".as_ref(),
+        seeds = [b"lendingUserObligationAccount".as_ref(),
         token_mint_address.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         account_index.to_le_bytes().as_ref()], 
         bump, 
-        space = size_of::<UserTokenObligationAccount>() + 8)]
-    pub user_token_obligation_account: Account<'info, UserTokenObligationAccount>,
+        space = size_of::<LendingUserObligationAccount>() + 8)]
+    pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
 
     #[account(
         mut,
@@ -537,7 +539,7 @@ pub struct DepositTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u8, account_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, account_index: u8)]
 pub struct WithdrawTokens<'info> 
 {
     
@@ -556,18 +558,18 @@ pub struct WithdrawTokens<'info>
         mut,
         seeds = [b"userAccount".as_ref(), signer.key().as_ref(), account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub user_account: Account<'info, UserAccount>,
+    pub user_lending_account: Account<'info, LendingUserAccount>,
 
     #[account(
         mut,
-        seeds = [b"userTokenObligationAccount".as_ref(),
+        seeds = [b"lendingUserObligationAccount".as_ref(),
         token_mint_address.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub user_token_obligation_account: Account<'info, UserTokenObligationAccount>,
+    pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
 
     #[account(
         mut,
@@ -591,7 +593,7 @@ pub struct WithdrawTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16)]
 pub struct RepayTokens<'info> 
 {
     
@@ -661,12 +663,13 @@ pub struct SubMarket
 {
     pub owner: Pubkey,
     pub token_mint_address: Pubkey,
+    pub sub_market_index: u16,
     pub fee_collector_address: Pubkey,
     pub fee_on_interest_earned_rate: f32
 }
 
 #[account]
-pub struct UserAccount //Giving the user account an index to allow users to have multiple accounts if they so choose
+pub struct LendingUserAccount //Giving the lending account an index to allow users to have multiple lending accounts if they so choose, so they don't have to use multiple wallets
 {
     pub owner: Pubkey,
     pub account_index: u8,
@@ -676,13 +679,13 @@ pub struct UserAccount //Giving the user account an index to allow users to have
 }
 
 #[account]
-pub struct UserTokenObligationAccount
+pub struct LendingUserObligationAccount
 {
     pub owner: Pubkey,
     pub user_account_index: u8,
     pub token_mint_address: Pubkey,
     pub sub_market_owner_address: Pubkey,
-    pub sub_market_index: u8,
+    pub sub_market_index: u16,
     pub user_obligation_account_index: u32,
     pub user_obligation_account_added: bool,
     pub deposited_amount: u64,
