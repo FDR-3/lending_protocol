@@ -10,6 +10,9 @@ name = "lending_protocol"
 
 [features]
 default = []
+custom-heap = []
+anchor-debug = []
+custom-panic = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
