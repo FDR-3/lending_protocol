@@ -6,14 +6,14 @@ use std::ops::Deref;
 
 declare_id!("H8ouYcPXMaBttjYsB5BurCdtD4TShxLHxyeAGGYQ6eVy");
 
-#[cfg(not(feature = "no-entrypoint"))] // Ensure it's not included when compiled as a library
+#[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
 {
     name: "Lending Protocol",
     project_url: "https://m4a.io",
     contacts: "email fdr3@m4a.io",
     preferred_languages: "en",
-    source_code: "https://github.com/FDR-3?tab=repositories",
+    source_code: "https://github.com/FDR-3/lending_protocol",
     policy: "If you find a bug, email me and say something please D:"
 }
 
