@@ -2,7 +2,8 @@ import * as anchor from "@coral-xyz/anchor"
 import { Program } from "@coral-xyz/anchor"
 import { LendingProtocol } from "../target/types/lending_protocol"
 import { assert } from "chai"
-import { PublicKey } from '@solana/web3.js'
+import { PublicKey, LAMPORTS_PER_SOL, Transaction, Keypair } from '@solana/web3.js'
+import { Token, ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token"
 
 describe("lending_protocol", () =>
 {
@@ -11,6 +12,25 @@ describe("lending_protocol", () =>
 
   const program = anchor.workspace.LendingProtocol as Program<LendingProtocol>
   const notCEOErrorMsg = "Only the CEO can call this function"
+  const feeOnInterestEarnedRateTooHighMsg = "The fee on interest earned rate can't be greater than 100%"
+  const feeOnInterestEarnedRateTooLowMsg = "ERR_OUT_OF_RANGE"
+  const expectedThisAccountToExistErrorMsg = "The program expected this account to be already initialized"
+  const insufficientFundsErrorMsg = "You can't withdraw more funds than you've deposited or an amount that would expose you to liquidation on purpose"
+  const incorrentObligationAccountsErrorMsg = "You must provide all of the sub user's obligation accounts"
+  const ataDoesNotExistErrorMsg = "failed to get token account balance: Invalid param: could not find account"
+
+  const SOLTokenMintAddress = new PublicKey("So11111111111111111111111111111111111111112")
+  const SOLTokenDecimalAmount = 9
+  const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
+
+  const feeRateAbove100Percent = 10001
+  const feeRateBelove0Percent = -1
+  const feeRate4Percent = 400
+  const feeRate100Percent = 10000
+
+  const testSubMarketIndex = 4
+  const testUserAccountIndex = 7
+  const bnZero = new anchor.BN(0)
 
   let successorWallet = anchor.web3.Keypair.generate()
 
@@ -62,6 +82,265 @@ describe("lending_protocol", () =>
     assert(errorMessage == notCEOErrorMsg)
   })
 
+  it("Verifies That Only CEO Can Add a Token Reserve", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount).
+      accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == notCEOErrorMsg)
+  })
+
+  it("Adds a Token Reserve", async () => 
+  {
+
+    await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount)
+    .accounts({mint: SOLTokenMintAddress})
+    .rpc()
+    
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(SOLTokenMintAddress))
+    assert(tokenReserve.tokenReserveProtocolIndex == 0)
+    assert(tokenReserve.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(tokenReserve.tokenDecimalAmount == SOLTokenDecimalAmount)
+    assert(tokenReserve.depositedAmount.eq(bnZero))
+  })
+
+  it("Verifies That a SubMarket Can't be Created With a Fee on Interest Rate Higher than 100%", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.createSubMarket(SOLTokenMintAddress, testSubMarketIndex, program.provider.publicKey, feeRateAbove100Percent).rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == feeOnInterestEarnedRateTooHighMsg)
+  })
+
+  it("Verifies That a SubMarket Can't be Created With a Fee on Interest Rate Below 0%", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.createSubMarket(SOLTokenMintAddress, testSubMarketIndex, program.provider.publicKey, feeRateBelove0Percent).rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.code
+    }
+
+    assert(errorMessage == feeOnInterestEarnedRateTooLowMsg)
+  })
+
+  it("Creates a SubMarket", async () => 
+  {
+    await program.methods.createSubMarket(SOLTokenMintAddress, testSubMarketIndex, program.provider.publicKey, feeRate4Percent).rpc()
+
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex))
+    
+    assert(subMarket.owner.toBase58() == program.provider.publicKey.toBase58())
+    assert(subMarket.feeCollectorAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(subMarket.feeOnInterestEarnedRate == feeRate4Percent)
+    assert(subMarket.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(subMarket.subMarketIndex == testSubMarketIndex)
+  })
+
+  it("Edits a SubMarket", async () => 
+  {
+    await program.methods.editSubMarket(SOLTokenMintAddress, testSubMarketIndex, successorWallet.publicKey, feeRate100Percent).rpc()
+
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex))
+    
+    assert(subMarket.owner.toBase58() == program.provider.publicKey.toBase58())
+    assert(subMarket.feeCollectorAddress.toBase58() == successorWallet.publicKey.toBase58())
+    assert(subMarket.feeOnInterestEarnedRate == feeRate100Percent)
+    assert(subMarket.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(subMarket.subMarketIndex == testSubMarketIndex)
+  })
+
+  //Because the SubMarket account is derived from the signer calling the function (and not passed into the function on trust), it's never possible to even try to edit someone else's submarket
+  it("Verifies That a SubMarket Can Only be Edited by the Owner", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.editSubMarket(SOLTokenMintAddress, testSubMarketIndex, successorWallet.publicKey, feeRate100Percent)
+      .accounts({signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == expectedThisAccountToExistErrorMsg)
+  })
+
+  it("Deposits SOL Into the Token Reserve", async () => 
+  {
+    await program.methods.depositTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
+    .accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
+    .signers([successorWallet])
+    .rpc()
+   
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(SOLTokenMintAddress))
+
+    assert(tokenReserve.tokenReserveProtocolIndex == 0)
+    assert(tokenReserve.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(tokenReserve.tokenDecimalAmount == SOLTokenDecimalAmount)
+    assert(tokenReserve.depositedAmount.eq(twoSol))
+
+    const lendingUserObligationAccount = await program.account.lendingUserObligationAccount.fetch(getLendingUserObligationAccountPDA
+    (
+      SOLTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserObligationAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserObligationAccount.userAccountIndex == testUserAccountIndex)
+    assert(lendingUserObligationAccount.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(lendingUserObligationAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(lendingUserObligationAccount.subMarketIndex == testSubMarketIndex)
+    assert(lendingUserObligationAccount.userObligationAccountIndex == 0)
+    assert(lendingUserObligationAccount.userObligationAccountAdded == true)
+    assert(lendingUserObligationAccount.depositedAmount.eq(twoSol))
+
+    const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(SOLTokenMintAddress), SOLTokenMintAddress, true)
+    const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
+    assert(parseInt(tokenReserveATAAccount.value.amount) == twoSol.toNumber())
+  })
+
+  it("Verifies a User Can't Withdraw More Than They Deposited", async () => 
+  {
+    var errorMessage = ""
+    const tooMuchSol = twoSol.add(new anchor.BN(1))
+
+    try
+    {
+      await program.methods.withdrawTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tooMuchSol)
+      .accounts({signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+ 
+    assert(errorMessage == insufficientFundsErrorMsg)
+  })
+
+  it("Verifies a User Can't Withdraw Funds Without Showing All of Their Obligations", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.withdrawTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
+      .accounts({signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == incorrentObligationAccountsErrorMsg)
+  })
+
+  it("Withdraws SOL From the Token Reserve", async () => 
+  {
+    const lendingUserObligationAccountPDA = getLendingUserObligationAccountPDA
+    (
+      SOLTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWallet.publicKey,
+      testUserAccountIndex
+    )
+
+    var lendingUserObligationAccount = await program.account.lendingUserObligationAccount.fetch(lendingUserObligationAccountPDA)
+
+    var lendingUserObligationRemainingAccount = 
+    {
+      pubkey: lendingUserObligationAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
+
+    await program.methods.withdrawTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
+    .accounts({signer: successorWallet.publicKey})
+    .signers([successorWallet])
+    .remainingAccounts([lendingUserObligationRemainingAccount])
+    .rpc()
+
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(SOLTokenMintAddress))
+    assert(tokenReserve.tokenReserveProtocolIndex == 0)
+    assert(tokenReserve.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(tokenReserve.tokenDecimalAmount == SOLTokenDecimalAmount)
+    assert(tokenReserve.depositedAmount.eq(bnZero))
+
+    var lendingUserObligationAccount = await program.account.lendingUserObligationAccount.fetch(getLendingUserObligationAccountPDA
+    (
+      SOLTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+
+    assert(lendingUserObligationAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserObligationAccount.userAccountIndex == testUserAccountIndex)
+    assert(lendingUserObligationAccount.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(lendingUserObligationAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(lendingUserObligationAccount.subMarketIndex == testSubMarketIndex)
+    assert(lendingUserObligationAccount.userObligationAccountIndex == 0)
+    assert(lendingUserObligationAccount.userObligationAccountAdded == true)
+    assert(lendingUserObligationAccount.depositedAmount.eq(bnZero))
+
+    const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(SOLTokenMintAddress), SOLTokenMintAddress, true)
+    const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
+    assert(parseInt(tokenReserveATAAccount.value.amount) == 0)
+
+    var errorMessage = ""
+
+    const userATA = await deriveWalletATA(successorWallet.publicKey, SOLTokenMintAddress, true)
+    try
+    {
+      await program.provider.connection.getTokenAccountBalance(userATA)
+    }
+    catch(error)
+    {
+      errorMessage = error.message
+    }
+
+    //Verify that wrapped SOL ATA for User was closed since it was empty
+    assert(errorMessage == ataDoesNotExistErrorMsg)
+
+    var userBalance = await program.provider.connection.getBalance(successorWallet.publicKey)
+    assert(userBalance >= 99996881920)
+  })
+
   function getLendingProtocolCEOAccountPDA()
   {
     const [lendingProtocolCEOPDA] = anchor.web3.PublicKey.findProgramAddressSync
@@ -74,10 +353,60 @@ describe("lending_protocol", () =>
     return lendingProtocolCEOPDA
   }
 
+  function getTokenReservePDA(tokenMintAddress: PublicKey)
+  {
+    const [tokenReservePDA] = anchor.web3.PublicKey.findProgramAddressSync
+    (
+      [
+        new TextEncoder().encode("tokenReserve"),
+        tokenMintAddress.toBuffer()
+
+      ],
+      program.programId
+    )
+    return tokenReservePDA
+  }
+
+  function getSubMarketPDA(tokenMintAddress: PublicKey, subMarketOwner: PublicKey, subMarketIndex: number)
+  {
+    const [subMarketPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    (
+      [
+        new TextEncoder().encode("subMarket"),
+        tokenMintAddress.toBuffer(),
+        subMarketOwner.toBuffer(),
+        new anchor.BN(subMarketIndex).toBuffer('le', 2)
+      ],
+      program.programId
+    )
+    return subMarketPDA
+  }
+
+  function getLendingUserObligationAccountPDA(tokenMintAddress: PublicKey,
+    subMarketOwner: PublicKey,
+    subMarketIndex: number,
+    lendingUserAddress: PublicKey,
+    lendingUserAccountIndex: number)
+  {
+    const [lendingUserObligationAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    (
+      [
+        new TextEncoder().encode("lendingUserObligationAccount"),
+        tokenMintAddress.toBuffer(),
+        subMarketOwner.toBuffer(),
+        new anchor.BN(subMarketIndex).toBuffer('le', 2),
+        lendingUserAddress.toBuffer(),
+        new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
+      ],
+      program.programId
+    )
+    return lendingUserObligationAccountPDA
+  }
+
   async function airDropSol(walletPublicKey: PublicKey)
   {
     let token_airdrop = await program.provider.connection.requestAirdrop(walletPublicKey, 
-    100 * 1000000000) //1 billion lamports equals 1 SOL
+    100 * LAMPORTS_PER_SOL) //1 billion lamports equals 1 SOL
 
     const latestBlockHash = await program.provider.connection.getLatestBlockhash()
     await program.provider.connection.confirmTransaction
@@ -86,5 +415,49 @@ describe("lending_protocol", () =>
       lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
       signature: token_airdrop
     })
+  }
+
+  async function deriveWalletATA(walletPublicKey: PublicKey, tokenMintAddress: PublicKey, pdaAccount: boolean = false)
+  {
+    return await Token.getAssociatedTokenAddress
+    (
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      tokenMintAddress,
+      walletPublicKey,
+      pdaAccount
+    )
+  }
+
+  async function createATAForWallet(walletKeyPair: Keypair, tokenMintAddress: PublicKey, walletATA: PublicKey)
+  {
+    //1. Add createATA instruction to transaction
+    const transaction = new Transaction().add
+    (
+      Token.createAssociatedTokenAccountInstruction
+      (
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        tokenMintAddress,
+        walletATA,
+        walletKeyPair.publicKey,
+        walletKeyPair.publicKey
+      )
+    )
+
+    //2. Fetch the latest blockhash and set it on the transaction.
+    const latestBlockhash = await program.provider.connection.getLatestBlockhash()
+    transaction.recentBlockhash = latestBlockhash.blockhash
+    transaction.feePayer = walletKeyPair.publicKey
+
+    //3. Sign the transaction
+    transaction.sign(walletKeyPair);
+    //const signedTransaction = await program.provider.wallet.signTransaction(transaction)
+
+    //4. Send the signed transaction to the network.
+    //We get the signature back, which can be used to track the transaction.
+    const tx = await program.provider.connection.sendRawTransaction(transaction.serialize())
+
+    await program.provider.connection.confirmTransaction(tx, 'processed')
   }
 })
