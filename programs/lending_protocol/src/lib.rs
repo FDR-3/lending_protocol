@@ -207,8 +207,8 @@ pub mod lending_protocol
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
             token::sync_native(cpi_ctx)?;
 
-            lending_user_obligation_account.deposited_amount += amount as u128;
             token_reserve.deposited_amount += amount as u128;
+            lending_user_obligation_account.deposited_amount += amount as u128;
 
             msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
             
@@ -230,8 +230,8 @@ pub mod lending_protocol
             //Transfer Tokens Into The Reserve
             token::transfer(cpi_ctx, amount)?;
 
-            lending_user_obligation_account.deposited_amount += amount as u128;
             token_reserve.deposited_amount += amount as u128;
+            lending_user_obligation_account.deposited_amount += amount as u128;
             
             msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
 
@@ -282,33 +282,33 @@ pub mod lending_protocol
             user_obligation_index += 1;
         }
 
-        //Handle native SOL transactions
+        //Transfer Tokens Back To User ATA
+        let token_mint_key = token_mint_address.key();
+        let (_expected_pda, bump) = Pubkey::find_program_address
+        (
+            &[b"tokenReserve",
+            token_mint_address.key().as_ref()],
+            &ctx.program_id,
+        );
+
+        let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_accounts = Transfer
+        {
+            from: ctx.accounts.token_reserve_ata.to_account_info(),
+            to: ctx.accounts.user_ata.to_account_info(),
+            authority: ctx.accounts.token_reserve.to_account_info()
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+
+        //Transfer Tokens Back to the User
+        token::transfer(cpi_ctx, amount)?;
+
+        //Handle wSOL Token unwrap
         if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
         {
-            let token_mint_key = token_mint_address.key();
-            let (_expected_pda, bump) = Pubkey::find_program_address
-            (
-                &[b"tokenReserve",
-                token_mint_address.key().as_ref()],
-                &ctx.program_id,
-            );
-
-            let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
-            let signer_seeds = &[&seeds[..]];
-
-            //Cross Program Invocation for Token Transfer
-            let cpi_accounts = Transfer
-            {
-                from: ctx.accounts.token_reserve_ata.to_account_info(),
-                to: ctx.accounts.user_ata.to_account_info(),
-                authority: ctx.accounts.token_reserve.to_account_info()
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
-
-            //Transfer SOL Tokens Back to the User
-            token::transfer(cpi_ctx, amount)?;
-
             let user_balance_after_transfer = ctx.accounts.user_ata.amount;
 
             if user_balance_after_transfer > amount
@@ -322,15 +322,6 @@ pub mod lending_protocol
                 let cpi_program = ctx.accounts.system_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
                 system_program::transfer(cpi_ctx, amount)?;
-
-                lending_user_obligation_account.deposited_amount -= amount as u128;
-
-                let token_reserve = &mut ctx.accounts.token_reserve;
-                token_reserve.deposited_amount -= amount as u128;
-
-                msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
-
-                Ok(())
             }
             else
             {
@@ -343,42 +334,17 @@ pub mod lending_protocol
                 };
                 let cpi_program = ctx.accounts.token_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token::close_account(cpi_ctx)?;
-
-                lending_user_obligation_account.deposited_amount -= amount as u128;
-
-                let token_reserve = &mut ctx.accounts.token_reserve;
-                token_reserve.deposited_amount -= amount as u128;
-                
-                msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
-
-                Ok(())
+                token::close_account(cpi_ctx)?; 
             }
         }
-        else
-        {
-            //Cross Program Invocation for Token Transfer
-            let cpi_accounts = Transfer
-            {
-                from: ctx.accounts.token_reserve_ata.to_account_info(),
-                to: ctx.accounts.user_ata.to_account_info(),
-                authority: ctx.accounts.token_reserve_ata.to_account_info()
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            
-            //Transfer Tokens Back to the User
-            token::transfer(cpi_ctx, amount)?;
+        
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        token_reserve.deposited_amount -= amount as u128;
+        lending_user_obligation_account.deposited_amount -= amount as u128;
+        
+        msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
 
-            lending_user_obligation_account.deposited_amount -= amount as u128;
-
-            let token_reserve = &mut ctx.accounts.token_reserve;
-            token_reserve.deposited_amount -= amount as u128;
-            
-            msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
-
-            Ok(())
-        }
+        Ok(())
     }
 
     pub fn repay_tokens(ctx: Context<RepayTokens>, _token_mint_address: Pubkey, _sub_market_owner_address: Pubkey, _sub_market_index: u8, amount: u64) -> Result<()> 
