@@ -6,7 +6,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("H8ouYcPXMaBttjYsB5BurCdtD4TShxLHxyeAGGYQ6eVy");
+declare_id!("DzagHWB4qB7gEqsmXm57CZsrSGgzzUAsBNYt6YBWFYYx");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -19,8 +19,8 @@ security_txt!
     policy: "If you find a bug, email me and say something please D:"
 }
 
-//const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
-const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
+//const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -120,8 +120,9 @@ pub mod lending_protocol
         
         let sub_market_stats = &mut ctx.accounts.sub_market_stats;
         sub_market_stats.sub_market_creation_count += 1;
+        sub_market.id = sub_market_stats.sub_market_creation_count;
 
-        msg!("Created SubMarket #{}", sub_market_stats.sub_market_creation_count);
+        msg!("Created SubMarket #{}", sub_market.id);
         msg!("Token Mint Address: {}", token_mint_address.key());
         msg!("SubMarket Index: {}", sub_market.sub_market_index);
         msg!("Owner: {}", ctx.accounts.signer.key());
@@ -691,6 +692,7 @@ pub struct TokenReserve
 #[account]
 pub struct SubMarket
 {
+    pub id: u32,
     pub owner: Pubkey,
     pub token_mint_address: Pubkey,
     pub sub_market_index: u16,
