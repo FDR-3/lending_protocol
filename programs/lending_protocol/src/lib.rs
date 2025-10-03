@@ -6,7 +6,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("DzagHWB4qB7gEqsmXm57CZsrSGgzzUAsBNYt6YBWFYYx");
+declare_id!("8HjrjBymLxDBUnQhwgkE3XvW6u3W2dbfLVdvsWzpLgSt");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -168,9 +168,10 @@ pub mod lending_protocol
     ) -> Result<()> 
     {
         let token_reserve = &mut ctx.accounts.token_reserve;
+        let lending_user_stats = &mut ctx.accounts.lending_user_stats;
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
-
+        
         //Populate obligation account if being newly initliazed. A user can have multiple accounts based on their account index. Every token the sub user enteracts with has its own obligation account tied to the sub user.
         if lending_user_obligation_account.user_obligation_account_added == false
         {
@@ -209,9 +210,13 @@ pub mod lending_protocol
             token::sync_native(cpi_ctx)?;
 
             token_reserve.deposited_amount += amount as u128;
+            lending_user_stats.deposits += 1;
             lending_user_obligation_account.deposited_amount += amount as u128;
 
-            msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+            let base_int :u64 = 10;
+            let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
+
+            msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
             
             Ok(())
         }
@@ -232,9 +237,13 @@ pub mod lending_protocol
             token::transfer(cpi_ctx, amount)?;
 
             token_reserve.deposited_amount += amount as u128;
+            lending_user_stats.deposits += 1;
             lending_user_obligation_account.deposited_amount += amount as u128;
+
+            let base_int :u64 = 10;
+            let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
             
-            msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+            msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
 
             Ok(())
         }
@@ -256,6 +265,7 @@ pub mod lending_protocol
         //You must provide all of the sub user's obligation accounts in remaining accounts
         require!(user_lending_account.obligation_account_count as usize == ctx.remaining_accounts.len(), InvalidInputError::IncorrectNumberOfObligationAccounts);
 
+        let lending_user_stats = &mut ctx.accounts.lending_user_stats;
         let mut user_obligation_index = 0;
 
         //Validate Passed In User Obligation Accounts
@@ -341,9 +351,13 @@ pub mod lending_protocol
         
         let token_reserve = &mut ctx.accounts.token_reserve;
         token_reserve.deposited_amount -= amount as u128;
+        lending_user_stats.withdrawals += 1;
         lending_user_obligation_account.deposited_amount -= amount as u128;
+
+        let base_int :u64 = 10;
+        let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
         
-        msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+        msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
 
         Ok(())
     }
@@ -364,8 +378,11 @@ pub mod lending_protocol
 
         //Transfer Tokens Into The Reserve
         token::transfer(cpi_ctx, amount)?;
+
+        let base_int :u64 = 10;
+        let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
         
-        msg!("Successfully repayed ${:.token_decimal_amount$} tokens for mint address: {}", amount/token_reserve.token_decimal_amount as u64, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+        msg!("Successfully repayed ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
 
         Ok(())
     }
@@ -398,6 +415,14 @@ pub struct InitializeLendingProtocol<'info>
         bump,
         space = size_of::<SubMarketStats>() + 8)]
     pub sub_market_stats: Account<'info, SubMarketStats>,
+
+    #[account(
+        init, 
+        payer = signer,
+        seeds = [b"lendingUserStats".as_ref()],
+        bump,
+        space = size_of::<LendingUserStats>() + 8)]
+    pub lending_user_stats: Account<'info, LendingUserStats>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -519,6 +544,12 @@ pub struct DepositTokens<'info>
     pub token_reserve: Account<'info, TokenReserve>,
 
     #[account(
+        mut, 
+        seeds = [b"lendingUserStats".as_ref()],
+        bump)]
+    pub lending_user_stats: Account<'info, LendingUserStats>,
+
+    #[account(
         mut,
         seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
@@ -578,6 +609,12 @@ pub struct WithdrawTokens<'info>
         seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
         bump)]
     pub token_reserve: Account<'info, TokenReserve>,
+
+    #[account(
+        mut, 
+        seeds = [b"lendingUserStats".as_ref()],
+        bump)]
+    pub lending_user_stats: Account<'info, LendingUserStats>,
 
     #[account(
         mut,
@@ -678,6 +715,16 @@ pub struct SubMarketStats //Moved these lending protocol variables here to help 
 {
     pub sub_market_creation_count: u32,
     pub sub_market_edit_count: u32
+}
+
+#[account]
+pub struct LendingUserStats
+{
+    pub deposits: u128,
+    pub withdrawals: u128,
+    pub repayments: u128,
+    pub liquidations: u128,
+    pub swaps: u128
 }
 
 #[account]
