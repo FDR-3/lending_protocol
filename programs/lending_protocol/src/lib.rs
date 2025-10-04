@@ -6,7 +6,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("8HjrjBymLxDBUnQhwgkE3XvW6u3W2dbfLVdvsWzpLgSt");
+declare_id!("7xp8Dt4DJ8PWC2FSX14APWeaMrxeARsNyD9BZecwmp4g");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -168,6 +168,7 @@ pub mod lending_protocol
     ) -> Result<()> 
     {
         let token_reserve = &mut ctx.accounts.token_reserve;
+        let sub_market = &mut ctx.accounts.sub_market;
         let lending_user_stats = &mut ctx.accounts.lending_user_stats;
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
@@ -209,14 +210,12 @@ pub mod lending_protocol
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
             token::sync_native(cpi_ctx)?;
 
-            token_reserve.deposited_amount += amount as u128;
             lending_user_stats.deposits += 1;
+            sub_market.deposited_amount += amount as u128;
+            token_reserve.deposited_amount += amount as u128;
             lending_user_obligation_account.deposited_amount += amount as u128;
 
-            let base_int :u64 = 10;
-            let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
-
-            msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+            msg!("{} deposited for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
             
             Ok(())
         }
@@ -236,14 +235,12 @@ pub mod lending_protocol
             //Transfer Tokens Into The Reserve
             token::transfer(cpi_ctx, amount)?;
 
-            token_reserve.deposited_amount += amount as u128;
             lending_user_stats.deposits += 1;
+            sub_market.deposited_amount += amount as u128;
+            token_reserve.deposited_amount += amount as u128;
             lending_user_obligation_account.deposited_amount += amount as u128;
-
-            let base_int :u64 = 10;
-            let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
             
-            msg!("Successfully deposited ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+            msg!("{} deposited for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
 
             Ok(())
         }
@@ -265,6 +262,7 @@ pub mod lending_protocol
         //You must provide all of the sub user's obligation accounts in remaining accounts
         require!(user_lending_account.obligation_account_count as usize == ctx.remaining_accounts.len(), InvalidInputError::IncorrectNumberOfObligationAccounts);
 
+        let sub_market = &mut ctx.accounts.sub_market;
         let lending_user_stats = &mut ctx.accounts.lending_user_stats;
         let mut user_obligation_index = 0;
 
@@ -350,14 +348,13 @@ pub mod lending_protocol
         }
         
         let token_reserve = &mut ctx.accounts.token_reserve;
-        token_reserve.deposited_amount -= amount as u128;
-        lending_user_stats.withdrawals += 1;
-        lending_user_obligation_account.deposited_amount -= amount as u128;
 
-        let base_int :u64 = 10;
-        let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
+        lending_user_stats.withdrawals += 1;
+        sub_market.deposited_amount -= amount as u128;
+        token_reserve.deposited_amount -= amount as u128;
+        lending_user_obligation_account.deposited_amount -= amount as u128;
         
-        msg!("Successfully withdrew ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+        msg!("{} withdrew for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
 
         Ok(())
     }
@@ -378,11 +375,8 @@ pub mod lending_protocol
 
         //Transfer Tokens Into The Reserve
         token::transfer(cpi_ctx, amount)?;
-
-        let base_int :u64 = 10;
-        let conversion_number = base_int.pow(token_reserve.token_decimal_amount as u32);
-        
-        msg!("Successfully repayed ${:.token_decimal_amount$} tokens for mint address: {}", amount/conversion_number, token_reserve.token_mint_address, token_decimal_amount = token_reserve.token_decimal_amount as usize);
+  
+        msg!("{} repaied for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
 
         Ok(())
     }
@@ -744,7 +738,8 @@ pub struct SubMarket
     pub token_mint_address: Pubkey,
     pub sub_market_index: u16,
     pub fee_collector_address: Pubkey,
-    pub fee_on_interest_earned_rate: u16
+    pub fee_on_interest_earned_rate: u16,
+    pub deposited_amount: u128
 }
 
 #[account]
