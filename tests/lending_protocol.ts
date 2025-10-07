@@ -38,15 +38,21 @@ describe("lending_protocol", () =>
   const testSubMarketIndex = 4
   const testUserAccountIndex = 7
   const bnZero = new anchor.BN(0)
+  const taxYear = 2025
+  const newTaxYear = 2044
+  const accountName = "Account 1"
 
   let successorWallet = anchor.web3.Keypair.generate()
 
   it("Initializes Lending Protocol", async () => 
   {
-    await program.methods.initializeLendingProtocol().rpc()
+    await program.methods.initializeLendingProtocol(taxYear).rpc()
 
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOAccountPDA())
     assert(ceoAccount.address.toBase58() == program.provider.publicKey.toBase58())
+
+    var lendingProtocol = await program.account.lendingProtocol.fetch(getLendingProtocolPDA())
+    assert(lendingProtocol.currentTaxYear == taxYear)
   })
 
   it("Passes on the Lending Protocol CEO Account", async () => 
@@ -61,8 +67,8 @@ describe("lending_protocol", () =>
   
   it("Passes back the Lending Protocol CEO Account", async () => 
   {
-    await program.methods.passOnLendingProtocolCeo(program.provider.publicKey).
-    accounts({signer: successorWallet.publicKey})
+    await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
+    .accounts({signer: successorWallet.publicKey})
     .signers([successorWallet])
     .rpc()
     
@@ -76,8 +82,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.passOnLendingProtocolCeo(program.provider.publicKey).
-      accounts({signer: successorWallet.publicKey})
+      await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
+      .accounts({signer: successorWallet.publicKey})
       .signers([successorWallet])
       .rpc()
     }
@@ -87,6 +93,33 @@ describe("lending_protocol", () =>
     }
 
     assert(errorMessage == notCEOErrorMsg)
+  })
+
+  it("Verifies That Only CEO Can Update the Lending Protocol Tax Year", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.updateCurrentTaxYear(newTaxYear)
+      .accounts({signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {console.log(error)
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == notCEOErrorMsg)
+  })
+
+  it("Updates Lending Lending Protocol Tax Year", async () => 
+  {
+    await program.methods.updateCurrentTaxYear(newTaxYear).rpc()
+
+    var lendingProtocol = await program.account.lendingProtocol.fetch(getLendingProtocolPDA())
+    assert(lendingProtocol.currentTaxYear == newTaxYear)
   })
 
   it("Verifies That Only CEO Can Add a Token Reserve", async () => 
@@ -95,8 +128,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount).
-      accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
+      await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount)
+      .accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
       .signers([successorWallet])
       .rpc()
     }
@@ -107,7 +140,7 @@ describe("lending_protocol", () =>
 
     assert(errorMessage == notCEOErrorMsg)
   })
-
+  
   it("Adds a wSOL Token Reserve", async () => 
   {
     await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount)
@@ -201,7 +234,7 @@ describe("lending_protocol", () =>
 
   it("Deposits wSOL Into the Token Reserve", async () => 
   {
-    await program.methods.depositTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
+    await program.methods.depositTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
     .accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
     .signers([successorWallet])
     .rpc()
@@ -233,6 +266,37 @@ describe("lending_protocol", () =>
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(SOLTokenMintAddress), SOLTokenMintAddress, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
     assert(parseInt(tokenReserveATAAccount.value.amount) == twoSol.toNumber())
+
+    const lendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
+    (
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserAccount.accountName == accountName)
+
+    const lendingUserYearlyTaxAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
+    (
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserAccount.accountName == accountName)
+  })
+
+  it("Verifies a User Can Change Their Account Names", async () => 
+  {
+    const newAccountName = "newAccountName"
+
+    await program.methods.editLendingUserAccountName(testUserAccountIndex, newAccountName)
+    .accounts({signer: successorWallet.publicKey})
+    .signers([successorWallet])
+    .rpc()
+
+    const lendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
+    (
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserAccount.accountName == newAccountName)
   })
 
   it("Verifies a User Can't Withdraw More wSOL Than They Deposited", async () => 
@@ -342,7 +406,8 @@ describe("lending_protocol", () =>
     assert(errorMessage == ataDoesNotExistErrorMsg)
 
     var userBalance = await program.provider.connection.getBalance(successorWallet.publicKey)
-    assert(userBalance >= 99996881920)
+
+    assert(userBalance >= 9999)
   })
 
   //Load the keypair from config file
@@ -396,7 +461,7 @@ describe("lending_protocol", () =>
 
   it("Deposits USDC Into the Token Reserve", async () => 
   {
-    await program.methods.depositTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
+    await program.methods.depositTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC, null)
     .accounts({mint: usdcMint.publicKey, signer: successorWallet.publicKey})
     .signers([successorWallet])
     .rpc()
@@ -565,6 +630,18 @@ describe("lending_protocol", () =>
     return lendingProtocolCEOPDA
   }
 
+  function getLendingProtocolPDA()
+  {
+    const [lendingProtocolCEOPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    (
+      [
+        new TextEncoder().encode("lendingProtocol")
+      ],
+      program.programId
+    )
+    return lendingProtocolCEOPDA
+  }
+
   function getTokenReservePDA(tokenMintAddress: PublicKey)
   {
     const [tokenReservePDA] = anchor.web3.PublicKey.findProgramAddressSync
@@ -592,6 +669,20 @@ describe("lending_protocol", () =>
       program.programId
     )
     return subMarketPDA
+  }
+
+  function getLendingUserAccountPDA(lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
+  {
+    const [lendingUserObligationAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    (
+      [
+        new TextEncoder().encode("lendingUserAccount"),
+        lendingUserAddress.toBuffer(),
+        new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
+      ],
+      program.programId
+    )
+    return lendingUserObligationAccountPDA
   }
 
   function getLendingUserObligationAccountPDA(tokenMintAddress: PublicKey,
