@@ -20,6 +20,7 @@ describe("lending_protocol", () =>
   const incorrentObligationAccountsErrorMsg = "You must provide all of the sub user's obligation accounts"
   const ataDoesNotExistErrorMsg = "failed to get token account balance: Invalid param: could not find account"
   const incorrectOrderOfObligationAccountsErrorMsg = "You must provide the sub user's obligation accounts ordered by user_obligation_account_index"
+  const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
 
   const SOLTokenMintAddress = new PublicKey("So11111111111111111111111111111111111111112")
   const SOLTokenDecimalAmount = 9
@@ -41,6 +42,8 @@ describe("lending_protocol", () =>
   const taxYear = 2025
   const newTaxYear = 2044
   const accountName = "Account 1"
+  const accountName25Characters = "Lorem ipsum dolor sit ame"
+  const accountName26Characters = "Lorem ipsum dolor sit amet"
 
   let successorWallet = anchor.web3.Keypair.generate()
 
@@ -53,6 +56,25 @@ describe("lending_protocol", () =>
 
     var lendingProtocol = await program.account.lendingProtocol.fetch(getLendingProtocolPDA())
     assert(lendingProtocol.currentTaxYear == taxYear)
+  })
+
+  it("Verifies That Only CEO Can Pass On Account", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
+      .accounts({signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == notCEOErrorMsg)
   })
 
   it("Passes on the Lending Protocol CEO Account", async () => 
@@ -76,25 +98,6 @@ describe("lending_protocol", () =>
     assert(ceoAccount.address.toBase58() == program.provider.publicKey.toBase58())
   })
 
-  it("Verifies That Only CEO Can Pass On Account", async () => 
-  {
-    var errorMessage = ""
-
-    try
-    {
-      await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
-      .accounts({signer: successorWallet.publicKey})
-      .signers([successorWallet])
-      .rpc()
-    }
-    catch(error)
-    {
-      errorMessage = error.error.errorMessage
-    }
-
-    assert(errorMessage == notCEOErrorMsg)
-  })
-
   it("Verifies That Only CEO Can Update the Lending Protocol Tax Year", async () => 
   {
     var errorMessage = ""
@@ -107,7 +110,7 @@ describe("lending_protocol", () =>
       .rpc()
     }
     catch(error)
-    {console.log(error)
+    {
       errorMessage = error.error.errorMessage
     }
 
@@ -274,19 +277,38 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserAccount.accountName == accountName)
 
-    const lendingUserYearlyTaxAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
+    const lendingUserYearlyTaxAccount = await program.account.lendingUserYearlyTaxAccount.fetch(getLendingUserYearlyTaxAccountPDA
     (
+      newTaxYear,
+      SOLTokenMintAddress,
       successorWallet.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserAccount.accountName == accountName)
+    assert(lendingUserYearlyTaxAccount.taxYear == newTaxYear)
+  })
+
+  it("Verifies a User Can't Have an Account Name Longer Than 25 Characters", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.editLendingUserAccountName(testUserAccountIndex, accountName26Characters)
+      .accounts({signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == accountNameTooLongErrorMsg)
   })
 
   it("Verifies a User Can Change Their Account Names", async () => 
   {
-    const newAccountName = "newAccountName"
-
-    await program.methods.editLendingUserAccountName(testUserAccountIndex, newAccountName)
+    await program.methods.editLendingUserAccountName(testUserAccountIndex, accountName25Characters)
     .accounts({signer: successorWallet.publicKey})
     .signers([successorWallet])
     .rpc()
@@ -296,7 +318,7 @@ describe("lending_protocol", () =>
       successorWallet.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserAccount.accountName == newAccountName)
+    assert(lendingUserAccount.accountName == accountName25Characters)
   })
 
   it("Verifies a User Can't Withdraw More wSOL Than They Deposited", async () => 
@@ -683,6 +705,22 @@ describe("lending_protocol", () =>
       program.programId
     )
     return lendingUserObligationAccountPDA
+  }
+
+  function getLendingUserYearlyTaxAccountPDA(taxYear: number, tokenMintAddress: PublicKey, lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
+  {
+    const [lendingUserYearlyTaxAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    (
+      [
+        new TextEncoder().encode("lendingUserYearlyTaxAccount"),
+        new anchor.BN(taxYear).toBuffer('le', 4),
+        tokenMintAddress.toBuffer(),
+        lendingUserAddress.toBuffer(),
+        new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
+      ],
+      program.programId
+    )
+    return lendingUserYearlyTaxAccountPDA
   }
 
   function getLendingUserObligationAccountPDA(tokenMintAddress: PublicKey,

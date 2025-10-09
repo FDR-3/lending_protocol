@@ -6,7 +6,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("GhUmCvcK5dp4eRHi41JXywuahj25MXiSsELDgquKTzUx");
+declare_id!("7Jh9CEcMpaNsazT3DgvTmhp9MCnryVdFA2DQ6RRbW7hD");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -19,15 +19,15 @@ security_txt!
     policy: "If you find a bug, email me and say something please D:"
 }
 
-const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
-//const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+//const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
+const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
-//Processed claims need atleast 284 extra bytes of space to pass with full load
-const LENDING_USER_ACCOUNT_EXTRA_SIZE: usize = 15;
+//Processed claims need atleast 3 extra bytes of space to pass with full load
+const LENDING_USER_ACCOUNT_EXTRA_SIZE: usize = 4;
 
-const MAX_ACCOUNT_NAME_LENGTH: usize = 20;
+const MAX_ACCOUNT_NAME_LENGTH: usize = 25;
 
 enum Activity
 {
@@ -59,7 +59,7 @@ pub enum InvalidInputError
     IncorrectOrderOfObligationAccounts,
     #[msg("Unexpected Obligation Account PDA detected. Feed in only legitimate PDA's ordered by user_obligation_account_index")]
     UnexpectedObligationAccount,
-    #[msg("Lending User Account name can't be longer than 20 characters")]
+    #[msg("Lending User Account name can't be longer than 25 characters")]
     LendingUserAccountNameTooLong,
 }
 
@@ -197,7 +197,7 @@ pub mod lending_protocol
         token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
-        account_index: u8,
+        user_account_index: u8,
         amount: u64,
         account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
     ) -> Result<()> 
@@ -208,12 +208,31 @@ pub mod lending_protocol
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
         let lending_user_yearly_tax_account = &mut ctx.accounts.lending_user_yearly_tax_account;
+
+        //Populate lending user account if being newly initliazed. A user can have multiple accounts based on their account index. 
+        if user_lending_account.lending_user_account_added == false
+        {
+            user_lending_account.owner = ctx.accounts.signer.key();
+            user_lending_account.user_account_index = user_account_index;
+
+            if let Some(new_account_name) = account_name
+            {
+                //Account Name string must not be longer than 25 characters
+                require!(new_account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
+
+                user_lending_account.account_name = new_account_name.clone();
+
+                msg!("Created Lending User Account Named: {}", new_account_name);
+            }
+
+            user_lending_account.lending_user_account_added = true;
+        }
         
-        //Populate obligation account if being newly initliazed and set lending account user name. A user can have multiple accounts based on their account index. Every token the sub user enteracts with has its own obligation account tied to the sub user.
+        //Populate obligation account if being newly initliazed. Every token the lending user enteracts with has its own obligation account tied to that sub user based on account index.
         if lending_user_obligation_account.user_obligation_account_added == false
         {
             lending_user_obligation_account.owner = ctx.accounts.signer.key();
-            lending_user_obligation_account.user_account_index = account_index;
+            lending_user_obligation_account.user_account_index = user_account_index;
             lending_user_obligation_account.token_mint_address = token_mint_address;
             lending_user_obligation_account.sub_market_owner_address = sub_market_owner_address.key();
             lending_user_obligation_account.sub_market_index = sub_market_index;
@@ -222,15 +241,7 @@ pub mod lending_protocol
 
             user_lending_account.obligation_account_count += 1;
 
-            if let Some(new_account_name) = account_name
-            {
-                //Account Name string must not be longer than 20 characters
-                require!(new_account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
-
-                user_lending_account.account_name = new_account_name.clone();
-
-                msg!("Created Lending User Account Named: {}", new_account_name);
-            }  
+            msg!("Created Lending User Obligation Account Indexed At: {}", lending_user_obligation_account.user_obligation_account_index);
         }
 
         //Initialize yearly tax account if first time deposit or the tax year has changed.
@@ -239,7 +250,7 @@ pub mod lending_protocol
             let lending_protocol = & ctx.accounts.lending_protocol;
 
             lending_user_yearly_tax_account.owner = ctx.accounts.signer.key();
-            lending_user_yearly_tax_account.user_account_index = account_index;
+            lending_user_yearly_tax_account.user_account_index = user_account_index;
             lending_user_yearly_tax_account.token_mint_address = token_mint_address;
             lending_user_yearly_tax_account.tax_year = lending_protocol.current_tax_year;
             lending_user_yearly_tax_account.yearly_tax_account_added = true;
@@ -307,10 +318,13 @@ pub mod lending_protocol
     }
 
     pub fn edit_lending_user_account_name(ctx: Context<EditLendingUserAccountName>,
-        _account_index: u8,
+        _user_account_index: u8,
         account_name: String
     ) -> Result<()> 
     {
+        //Account Name string must not be longer than 25 characters
+        require!(account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
+
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         user_lending_account.account_name = account_name.clone();
 
@@ -323,7 +337,7 @@ pub mod lending_protocol
         token_mint_address: Pubkey,
         _sub_market_owner_address: Pubkey,
         _sub_market_index: u16,
-        account_index: u8,
+        user_account_index: u8,
         amount: u64
     ) -> Result<()> 
     {
@@ -355,7 +369,7 @@ pub mod lending_protocol
                 obligation_account.sub_market_owner_address.key().as_ref(),
                 obligation_account.sub_market_index.to_le_bytes().as_ref(),
                 ctx.accounts.signer.key().as_ref(),
-                account_index.to_le_bytes().as_ref()],
+                user_account_index.to_le_bytes().as_ref()],
                 &ctx.program_id,
             );
 
@@ -372,7 +386,7 @@ pub mod lending_protocol
             let lending_protocol = & ctx.accounts.lending_protocol;
 
             lending_user_yearly_tax_account.owner = ctx.accounts.signer.key();
-            lending_user_yearly_tax_account.user_account_index = account_index;
+            lending_user_yearly_tax_account.user_account_index = user_account_index;
             lending_user_yearly_tax_account.token_mint_address = token_mint_address;
             lending_user_yearly_tax_account.tax_year = lending_protocol.current_tax_year;
             lending_user_yearly_tax_account.yearly_tax_account_added = true;
@@ -455,7 +469,7 @@ pub mod lending_protocol
         token_mint_address: Pubkey,
         _sub_market_owner_address: Pubkey,
         _sub_market_index: u16,
-        account_index: u8,
+        user_account_index: u8,
         amount: u64
     ) -> Result<()> 
     {
@@ -468,7 +482,7 @@ pub mod lending_protocol
             let lending_protocol = & ctx.accounts.lending_protocol;
 
             lending_user_yearly_tax_account.owner = ctx.accounts.signer.key();
-            lending_user_yearly_tax_account.user_account_index = account_index;
+            lending_user_yearly_tax_account.user_account_index = user_account_index;
             lending_user_yearly_tax_account.token_mint_address = token_mint_address;
             lending_user_yearly_tax_account.tax_year = lending_protocol.current_tax_year;
             lending_user_yearly_tax_account.yearly_tax_account_added = true;
@@ -671,7 +685,7 @@ pub struct EditSubMarket<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, account_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct DepositTokens<'info> 
 {
     #[account(
@@ -700,9 +714,9 @@ pub struct DepositTokens<'info>
     #[account(
         init_if_needed,
         payer = signer,
-        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), account_index.to_le_bytes().as_ref()], 
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
         bump, 
-        space = size_of::<LendingUserAccount>() + 8)]
+        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
     pub user_lending_account: Account<'info, LendingUserAccount>,
 
     #[account(
@@ -713,7 +727,7 @@ pub struct DepositTokens<'info>
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
-        account_index.to_le_bytes().as_ref()], 
+        user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserObligationAccount>() + 8)]
     pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
@@ -725,7 +739,7 @@ pub struct DepositTokens<'info>
         lending_protocol.current_tax_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
         signer.key().as_ref(),
-        account_index.to_le_bytes().as_ref()], 
+        user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserYearlyTaxAccount>() + 8)]
     pub lending_user_yearly_tax_account: Account<'info, LendingUserYearlyTaxAccount>,
@@ -756,12 +770,12 @@ pub struct DepositTokens<'info>
 
 //The Lending User Account gets created with a deposit and you can edit the account name on it afterwards
 #[derive(Accounts)]
-#[instruction(account_index: u8)]
+#[instruction(user_account_index: u8)]
 pub struct EditLendingUserAccountName<'info> 
 {
     #[account(
         mut,
-        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), account_index.to_le_bytes().as_ref()], 
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub user_lending_account: Account<'info, LendingUserAccount>,
 
@@ -771,7 +785,7 @@ pub struct EditLendingUserAccountName<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, account_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct WithdrawTokens<'info> 
 {
     #[account(
@@ -799,7 +813,7 @@ pub struct WithdrawTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), account_index.to_le_bytes().as_ref()], 
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub user_lending_account: Account<'info, LendingUserAccount>,
 
@@ -810,7 +824,7 @@ pub struct WithdrawTokens<'info>
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
-        account_index.to_le_bytes().as_ref()], 
+        user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
 
@@ -821,7 +835,7 @@ pub struct WithdrawTokens<'info>
         lending_protocol.current_tax_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
         signer.key().as_ref(),
-        account_index.to_le_bytes().as_ref()], 
+        user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserYearlyTaxAccount>() + 8)]
     pub lending_user_yearly_tax_account: Account<'info, LendingUserYearlyTaxAccount>,
@@ -848,7 +862,7 @@ pub struct WithdrawTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, account_index: u8)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct RepayTokens<'info> 
 {
      #[account(
@@ -876,7 +890,7 @@ pub struct RepayTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), account_index.to_le_bytes().as_ref()], 
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub user_lending_account: Account<'info, LendingUserAccount>,
 
@@ -887,7 +901,7 @@ pub struct RepayTokens<'info>
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
-        account_index.to_le_bytes().as_ref()], 
+        user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
 
@@ -898,7 +912,7 @@ pub struct RepayTokens<'info>
         lending_protocol.current_tax_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
         signer.key().as_ref(),
-        account_index.to_le_bytes().as_ref()], 
+        user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserYearlyTaxAccount>() + 8)]
     pub lending_user_yearly_tax_account: Account<'info, LendingUserYearlyTaxAccount>,
@@ -985,8 +999,9 @@ pub struct SubMarket
 pub struct LendingUserAccount //Giving the lending account an index to allow users to have multiple lending accounts if they so choose, so they don't have to use multiple wallets
 {
     pub owner: Pubkey,
-    pub account_index: u8,
+    pub user_account_index: u8,
     pub account_name: String,
+    pub lending_user_account_added: bool,
     pub obligation_account_count: u32,
     pub interest_accrued: u128,
     pub debt_repaid: u128,
