@@ -6,7 +6,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("7Jh9CEcMpaNsazT3DgvTmhp9MCnryVdFA2DQ6RRbW7hD");
+declare_id!("HKaSjxcm2sdpmvrJeRsEDDZB93wDRdHcmFUS3hXxknV9");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -19,8 +19,8 @@ security_txt!
     policy: "If you find a bug, email me and say something please D:"
 }
 
-//const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
-const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
+//const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -204,7 +204,7 @@ pub mod lending_protocol
     {
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
-        let lending_user_stats = &mut ctx.accounts.lending_user_stats;
+        let lending_stats = &mut ctx.accounts.lending_stats;
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
         let lending_user_yearly_tax_account = &mut ctx.accounts.lending_user_yearly_tax_account;
@@ -280,7 +280,7 @@ pub mod lending_protocol
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
             token::sync_native(cpi_ctx)?;
 
-            lending_user_stats.deposits += 1;
+            lending_stats.deposits += 1;
             sub_market.deposited_amount += amount as u128;
             token_reserve.deposited_amount += amount as u128;
             lending_user_obligation_account.deposited_amount += amount as u128;
@@ -303,7 +303,7 @@ pub mod lending_protocol
             //Transfer Tokens Into The Reserve
             token::transfer(cpi_ctx, amount)?;
 
-            lending_user_stats.deposits += 1;
+            lending_stats.deposits += 1;
             sub_market.deposited_amount += amount as u128;
             token_reserve.deposited_amount += amount as u128;
             lending_user_obligation_account.deposited_amount += amount as u128;
@@ -328,6 +328,9 @@ pub mod lending_protocol
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         user_lending_account.account_name = account_name.clone();
 
+        let lending_user_stats = &mut ctx.accounts.lending_user_stats;
+        lending_user_stats.name_change_count += 1;
+
         msg!("Lending User Account name updated to: {}", account_name);
 
         Ok(()) 
@@ -350,7 +353,7 @@ pub mod lending_protocol
         require!(user_lending_account.obligation_account_count as usize == ctx.remaining_accounts.len(), InvalidInputError::IncorrectNumberOfObligationAccounts);
 
         let sub_market = &mut ctx.accounts.sub_market;
-        let lending_user_stats = &mut ctx.accounts.lending_user_stats;
+        let lending_stats = &mut ctx.accounts.lending_stats;
         let lending_user_yearly_tax_account = &mut ctx.accounts.lending_user_yearly_tax_account;
 
         let mut user_obligation_index = 0;
@@ -452,7 +455,7 @@ pub mod lending_protocol
         
         let token_reserve = &mut ctx.accounts.token_reserve;
 
-        lending_user_stats.withdrawals += 1;
+        lending_stats.withdrawals += 1;
         sub_market.deposited_amount -= amount as u128;
         token_reserve.deposited_amount -= amount as u128;
         lending_user_obligation_account.deposited_amount -= amount as u128;
@@ -547,6 +550,14 @@ pub struct InitializeLendingProtocol<'info>
         bump,
         space = size_of::<SubMarketStats>() + 8)]
     pub sub_market_stats: Account<'info, SubMarketStats>,
+
+    #[account(
+        init, 
+        payer = signer,
+        seeds = [b"lendingStats".as_ref()],
+        bump,
+        space = size_of::<LendingStats>() + 8)]
+    pub lending_stats: Account<'info, LendingStats>,
 
     #[account(
         init, 
@@ -701,9 +712,9 @@ pub struct DepositTokens<'info>
 
     #[account(
         mut, 
-        seeds = [b"lendingUserStats".as_ref()],
+        seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_user_stats: Account<'info, LendingUserStats>,
+    pub lending_stats: Account<'info, LendingStats>,
 
     #[account(
         mut,
@@ -775,6 +786,12 @@ pub struct EditLendingUserAccountName<'info>
 {
     #[account(
         mut,
+        seeds = [b"lendingUserStats".as_ref()],
+        bump)]
+    pub lending_user_stats: Account<'info, LendingUserStats>,
+
+    #[account(
+        mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub user_lending_account: Account<'info, LendingUserAccount>,
@@ -801,9 +818,9 @@ pub struct WithdrawTokens<'info>
 
     #[account(
         mut, 
-        seeds = [b"lendingUserStats".as_ref()],
+        seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_user_stats: Account<'info, LendingUserStats>,
+    pub lending_stats: Account<'info, LendingStats>,
 
     #[account(
         mut,
@@ -878,9 +895,9 @@ pub struct RepayTokens<'info>
 
     #[account(
         mut, 
-        seeds = [b"lendingUserStats".as_ref()],
+        seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_user_stats: Account<'info, LendingUserStats>,
+    pub lending_stats: Account<'info, LendingStats>,
 
     #[account(
         mut,
@@ -965,13 +982,19 @@ pub struct SubMarketStats //Moved these lending protocol variables here to help 
 }
 
 #[account]
-pub struct LendingUserStats
+pub struct LendingStats
 {
     pub deposits: u128,
     pub withdrawals: u128,
     pub repayments: u128,
     pub liquidations: u128,
     pub swaps: u128
+}
+
+#[account]
+pub struct LendingUserStats
+{
+    pub name_change_count: u128
 }
 
 #[account]
