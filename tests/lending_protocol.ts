@@ -17,9 +17,9 @@ describe("lending_protocol", () =>
   const feeOnInterestEarnedRateTooLowMsg = "ERR_OUT_OF_RANGE"
   const expectedThisAccountToExistErrorMsg = "The program expected this account to be already initialized"
   const insufficientFundsErrorMsg = "You can't withdraw more funds than you've deposited or an amount that would expose you to liquidation on purpose"
-  const incorrentObligationAccountsErrorMsg = "You must provide all of the sub user's obligation accounts"
+  const incorrentTabAccountsErrorMsg = "You must provide all of the sub user's tab accounts"
   const ataDoesNotExistErrorMsg = "failed to get token account balance: Invalid param: could not find account"
-  const incorrectOrderOfObligationAccountsErrorMsg = "You must provide the sub user's obligation accounts ordered by user_obligation_account_index"
+  const incorrectOrderOfTabAccountsErrorMsg = "You must provide the sub user's tab accounts ordered by user_tab_account_index"
   const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
 
   const SOLTokenMintAddress = new PublicKey("So11111111111111111111111111111111111111112")
@@ -249,7 +249,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenDecimalAmount == SOLTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(twoSol))
 
-    const lendingUserObligationAccount = await program.account.lendingUserObligationAccount.fetch(getLendingUserObligationAccountPDA
+    const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
       SOLTokenMintAddress,
       program.provider.publicKey,
@@ -257,14 +257,14 @@ describe("lending_protocol", () =>
       successorWallet.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserObligationAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
-    assert(lendingUserObligationAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserObligationAccount.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
-    assert(lendingUserObligationAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
-    assert(lendingUserObligationAccount.subMarketIndex == testSubMarketIndex)
-    assert(lendingUserObligationAccount.userObligationAccountIndex == 0)
-    assert(lendingUserObligationAccount.userObligationAccountAdded == true)
-    assert(lendingUserObligationAccount.depositedAmount.eq(twoSol))
+    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
+    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
+    assert(lendingUserTabAccount.userTabAccountIndex == 0)
+    assert(lendingUserTabAccount.userTabAccountAdded == true)
+    assert(lendingUserTabAccount.depositedAmount.eq(twoSol))
 
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(SOLTokenMintAddress), SOLTokenMintAddress, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
@@ -341,7 +341,7 @@ describe("lending_protocol", () =>
     assert(errorMessage == insufficientFundsErrorMsg)
   })
 
-  it("Verifies a User Can't Withdraw wSOL Funds Without Showing All of Their Obligations", async () => 
+  it("Verifies a User Can't Withdraw wSOL Funds Without Showing All of Their Tabs", async () => 
   {
     var errorMessage = ""
 
@@ -357,12 +357,12 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == incorrentObligationAccountsErrorMsg)
+    assert(errorMessage == incorrentTabAccountsErrorMsg)
   })
 
   it("Withdraws wSOL From the Token Reserve", async () => 
   {
-    const wSOLLendingUserObligationAccountPDA = getLendingUserObligationAccountPDA
+    const wSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
       SOLTokenMintAddress,
       program.provider.publicKey,
@@ -371,9 +371,9 @@ describe("lending_protocol", () =>
       testUserAccountIndex
     )
 
-    var wSOLLendingUserObligationRemainingAccount = 
+    var wSOLLendingUserTabRemainingAccount = 
     {
-      pubkey: wSOLLendingUserObligationAccountPDA,
+      pubkey: wSOLLendingUserTabAccountPDA,
       isSigner: false,
       isWritable: true
     }
@@ -381,7 +381,7 @@ describe("lending_protocol", () =>
     await program.methods.withdrawTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
     .accounts({signer: successorWallet.publicKey})
     .signers([successorWallet])
-    .remainingAccounts([wSOLLendingUserObligationRemainingAccount])
+    .remainingAccounts([wSOLLendingUserTabRemainingAccount])
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(SOLTokenMintAddress))
@@ -390,7 +390,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenDecimalAmount == SOLTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
 
-    var lendingUserObligationAccount = await program.account.lendingUserObligationAccount.fetch(getLendingUserObligationAccountPDA
+    var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
       SOLTokenMintAddress,
       program.provider.publicKey,
@@ -399,14 +399,14 @@ describe("lending_protocol", () =>
       testUserAccountIndex
     ))
 
-    assert(lendingUserObligationAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
-    assert(lendingUserObligationAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserObligationAccount.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
-    assert(lendingUserObligationAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
-    assert(lendingUserObligationAccount.subMarketIndex == testSubMarketIndex)
-    assert(lendingUserObligationAccount.userObligationAccountIndex == 0)
-    assert(lendingUserObligationAccount.userObligationAccountAdded == true)
-    assert(lendingUserObligationAccount.depositedAmount.eq(bnZero))
+    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
+    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
+    assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
+    assert(lendingUserTabAccount.userTabAccountIndex == 0)
+    assert(lendingUserTabAccount.userTabAccountAdded == true)
+    assert(lendingUserTabAccount.depositedAmount.eq(bnZero))
 
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(SOLTokenMintAddress), SOLTokenMintAddress, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
@@ -495,7 +495,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenDecimalAmount == usdcDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(tenUSDC))
 
-    const lendingUserObligationAccount = await program.account.lendingUserObligationAccount.fetch(getLendingUserObligationAccountPDA
+    const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
       usdcMint.publicKey,
       program.provider.publicKey,
@@ -504,27 +504,27 @@ describe("lending_protocol", () =>
       testUserAccountIndex
     ))
 
-    assert(lendingUserObligationAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
-    assert(lendingUserObligationAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserObligationAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
-    assert(lendingUserObligationAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
-    assert(lendingUserObligationAccount.subMarketIndex == testSubMarketIndex)
-    assert(lendingUserObligationAccount.userObligationAccountIndex == 1)
-    assert(lendingUserObligationAccount.userObligationAccountAdded == true)
-    assert(lendingUserObligationAccount.depositedAmount.eq(tenUSDC))
+    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
+    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
+    assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
+    assert(lendingUserTabAccount.userTabAccountIndex == 1)
+    assert(lendingUserTabAccount.userTabAccountAdded == true)
+    assert(lendingUserTabAccount.depositedAmount.eq(tenUSDC))
 
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
     assert(parseInt(tokenReserveATAAccount.value.amount) == tenUSDC.toNumber())
   })
 
-  it("Verifies you Must Pass in the User Obligation Accounts in the Order They Were Created", async () => 
+  it("Verifies you Must Pass in the User Tab Accounts in the Order They Were Created", async () => 
   {
     var errorMessage = ""
 
     try
     {
-      const wSOLLendingUserObligationAccountPDA = getLendingUserObligationAccountPDA
+      const wSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
       (
         SOLTokenMintAddress,
         program.provider.publicKey,
@@ -532,7 +532,7 @@ describe("lending_protocol", () =>
         successorWallet.publicKey,
         testUserAccountIndex
       )
-      const usdcLendingUserObligationAccountPDA = getLendingUserObligationAccountPDA
+      const usdcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
       (
         usdcMint.publicKey,
         program.provider.publicKey,
@@ -541,15 +541,15 @@ describe("lending_protocol", () =>
         testUserAccountIndex
       )
 
-      var wSOLLendingUserObligationRemainingAccount = 
+      var wSOLLendingUserTabRemainingAccount = 
       {
-        pubkey: wSOLLendingUserObligationAccountPDA,
+        pubkey: wSOLLendingUserTabAccountPDA,
         isSigner: false,
         isWritable: true
       }
-      var usdcLendingUserObligationRemainingAccount = 
+      var usdcLendingUserTabRemainingAccount = 
       {
-        pubkey: usdcLendingUserObligationAccountPDA,
+        pubkey: usdcLendingUserTabAccountPDA,
         isSigner: false,
         isWritable: true
       }
@@ -557,7 +557,7 @@ describe("lending_protocol", () =>
       await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
       .accounts({signer: successorWallet.publicKey})
       .signers([successorWallet])
-      .remainingAccounts([usdcLendingUserObligationRemainingAccount, wSOLLendingUserObligationRemainingAccount])
+      .remainingAccounts([usdcLendingUserTabRemainingAccount, wSOLLendingUserTabRemainingAccount])
       .rpc()
     }
     catch(error)
@@ -565,12 +565,12 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == incorrectOrderOfObligationAccountsErrorMsg)
+    assert(errorMessage == incorrectOrderOfTabAccountsErrorMsg)
   })
 
   it("Withdraws USDC From the Token Reserve", async () => 
   {
-    const wSOLLendingUserObligationAccountPDA = getLendingUserObligationAccountPDA
+    const wSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
       SOLTokenMintAddress,
       program.provider.publicKey,
@@ -578,7 +578,7 @@ describe("lending_protocol", () =>
       successorWallet.publicKey,
       testUserAccountIndex
     )
-    const usdcLendingUserObligationAccountPDA = getLendingUserObligationAccountPDA
+    const usdcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
       usdcMint.publicKey,
       program.provider.publicKey,
@@ -587,15 +587,15 @@ describe("lending_protocol", () =>
       testUserAccountIndex
     )
 
-    var wSOLLendingUserObligationRemainingAccount = 
+    var wSOLLendingUserTabRemainingAccount = 
     {
-      pubkey: wSOLLendingUserObligationAccountPDA,
+      pubkey: wSOLLendingUserTabAccountPDA,
       isSigner: false,
       isWritable: true
     }
-    var usdcLendingUserObligationRemainingAccount = 
+    var usdcLendingUserTabRemainingAccount = 
     {
-      pubkey: usdcLendingUserObligationAccountPDA,
+      pubkey: usdcLendingUserTabAccountPDA,
       isSigner: false,
       isWritable: true
     }
@@ -603,7 +603,7 @@ describe("lending_protocol", () =>
     await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
     .accounts({signer: successorWallet.publicKey})
     .signers([successorWallet])
-    .remainingAccounts([wSOLLendingUserObligationRemainingAccount, usdcLendingUserObligationRemainingAccount])
+    .remainingAccounts([wSOLLendingUserTabRemainingAccount, usdcLendingUserTabRemainingAccount])
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
@@ -612,7 +612,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenDecimalAmount == usdcDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
 
-    var lendingUserObligationAccount = await program.account.lendingUserObligationAccount.fetch(getLendingUserObligationAccountPDA
+    var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
       usdcMint.publicKey,
       program.provider.publicKey,
@@ -621,14 +621,14 @@ describe("lending_protocol", () =>
       testUserAccountIndex
     ))
 
-    assert(lendingUserObligationAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
-    assert(lendingUserObligationAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserObligationAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
-    assert(lendingUserObligationAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
-    assert(lendingUserObligationAccount.subMarketIndex == testSubMarketIndex)
-    assert(lendingUserObligationAccount.userObligationAccountIndex == 1)
-    assert(lendingUserObligationAccount.userObligationAccountAdded == true)
-    assert(lendingUserObligationAccount.depositedAmount.eq(bnZero))
+    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
+    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
+    assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
+    assert(lendingUserTabAccount.userTabAccountIndex == 1)
+    assert(lendingUserTabAccount.userTabAccountAdded == true)
+    assert(lendingUserTabAccount.depositedAmount.eq(bnZero))
 
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
@@ -695,7 +695,7 @@ describe("lending_protocol", () =>
 
   function getLendingUserAccountPDA(lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
   {
-    const [lendingUserObligationAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    const [lendingUserTabAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
     (
       [
         new TextEncoder().encode("lendingUserAccount"),
@@ -704,7 +704,7 @@ describe("lending_protocol", () =>
       ],
       program.programId
     )
-    return lendingUserObligationAccountPDA
+    return lendingUserTabAccountPDA
   }
 
   function getLendingUserYearlyTaxAccountPDA(taxYear: number, tokenMintAddress: PublicKey, lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
@@ -723,16 +723,16 @@ describe("lending_protocol", () =>
     return lendingUserYearlyTaxAccountPDA
   }
 
-  function getLendingUserObligationAccountPDA(tokenMintAddress: PublicKey,
+  function getLendingUserTabAccountPDA(tokenMintAddress: PublicKey,
     subMarketOwner: PublicKey,
     subMarketIndex: number,
     lendingUserAddress: PublicKey,
     lendingUserAccountIndex: number)
   {
-    const [lendingUserObligationAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    const [lendingUserTabAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
     (
       [
-        new TextEncoder().encode("lendingUserObligationAccount"),
+        new TextEncoder().encode("lendingUserTabAccount"),
         tokenMintAddress.toBuffer(),
         subMarketOwner.toBuffer(),
         new anchor.BN(subMarketIndex).toBuffer('le', 2),
@@ -741,7 +741,7 @@ describe("lending_protocol", () =>
       ],
       program.programId
     )
-    return lendingUserObligationAccountPDA
+    return lendingUserTabAccountPDA
   }
 
   async function airDropSol(walletPublicKey: PublicKey)

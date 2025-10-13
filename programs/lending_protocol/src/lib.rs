@@ -6,7 +6,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 
-declare_id!("HKaSjxcm2sdpmvrJeRsEDDZB93wDRdHcmFUS3hXxknV9");
+declare_id!("FvBCiiFp3AU16oBP1hE3ZQkDVoyXVMM6sxjvhxhShdJe");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -53,12 +53,12 @@ pub enum InvalidInputError
     InvalidFeeRate,
     #[msg("You can't withdraw more funds than you've deposited or an amount that would expose you to liquidation on purpose")]
     InsufficientFunds,
-    #[msg("You must provide all of the sub user's obligation accounts")]
-    IncorrectNumberOfObligationAccounts,
-    #[msg("You must provide the sub user's obligation accounts ordered by user_obligation_account_index")]
-    IncorrectOrderOfObligationAccounts,
-    #[msg("Unexpected Obligation Account PDA detected. Feed in only legitimate PDA's ordered by user_obligation_account_index")]
-    UnexpectedObligationAccount,
+    #[msg("You must provide all of the sub user's tab accounts")]
+    IncorrectNumberOfTabAccounts,
+    #[msg("You must provide the sub user's tab accounts ordered by user_tab_account_index")]
+    IncorrectOrderOfTabAccounts,
+    #[msg("Unexpected Tab Account PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]
+    UnexpectedTabAccount,
     #[msg("Lending User Account name can't be longer than 25 characters")]
     LendingUserAccountNameTooLong,
 }
@@ -206,7 +206,7 @@ pub mod lending_protocol
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;
         let user_lending_account = &mut ctx.accounts.user_lending_account;
-        let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
+        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_yearly_tax_account = &mut ctx.accounts.lending_user_yearly_tax_account;
 
         //Populate lending user account if being newly initliazed. A user can have multiple accounts based on their account index. 
@@ -228,20 +228,20 @@ pub mod lending_protocol
             user_lending_account.lending_user_account_added = true;
         }
         
-        //Populate obligation account if being newly initliazed. Every token the lending user enteracts with has its own obligation account tied to that sub user based on account index.
-        if lending_user_obligation_account.user_obligation_account_added == false
+        //Populate tab account if being newly initliazed. Every token the lending user enteracts with has its own tab account tied to that sub user based on account index.
+        if lending_user_tab_account.user_tab_account_added == false
         {
-            lending_user_obligation_account.owner = ctx.accounts.signer.key();
-            lending_user_obligation_account.user_account_index = user_account_index;
-            lending_user_obligation_account.token_mint_address = token_mint_address;
-            lending_user_obligation_account.sub_market_owner_address = sub_market_owner_address.key();
-            lending_user_obligation_account.sub_market_index = sub_market_index;
-            lending_user_obligation_account.user_obligation_account_index = user_lending_account.obligation_account_count;
-            lending_user_obligation_account.user_obligation_account_added = true;
+            lending_user_tab_account.owner = ctx.accounts.signer.key();
+            lending_user_tab_account.user_account_index = user_account_index;
+            lending_user_tab_account.token_mint_address = token_mint_address;
+            lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
+            lending_user_tab_account.sub_market_index = sub_market_index;
+            lending_user_tab_account.user_tab_account_index = user_lending_account.tab_account_count;
+            lending_user_tab_account.user_tab_account_added = true;
 
-            user_lending_account.obligation_account_count += 1;
+            user_lending_account.tab_account_count += 1;
 
-            msg!("Created Lending User Obligation Account Indexed At: {}", lending_user_obligation_account.user_obligation_account_index);
+            msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
         }
 
         //Initialize yearly tax account if first time deposit or the tax year has changed.
@@ -283,7 +283,7 @@ pub mod lending_protocol
             lending_stats.deposits += 1;
             sub_market.deposited_amount += amount as u128;
             token_reserve.deposited_amount += amount as u128;
-            lending_user_obligation_account.deposited_amount += amount as u128;
+            lending_user_tab_account.deposited_amount += amount as u128;
 
             msg!("{} deposited for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
         }
@@ -306,7 +306,7 @@ pub mod lending_protocol
             lending_stats.deposits += 1;
             sub_market.deposited_amount += amount as u128;
             token_reserve.deposited_amount += amount as u128;
-            lending_user_obligation_account.deposited_amount += amount as u128;
+            lending_user_tab_account.deposited_amount += amount as u128;
             
             msg!("{} deposited for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);   
         }
@@ -344,43 +344,43 @@ pub mod lending_protocol
         amount: u64
     ) -> Result<()> 
     {
-        let lending_user_obligation_account = &mut ctx.accounts.lending_user_obligation_account;
+        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         //You can't withdraw more funds than you've deposited or an amount that would expose you to liquidation on purpose
-        require!(lending_user_obligation_account.deposited_amount >= amount as u128, InvalidInputError::InsufficientFunds);
+        require!(lending_user_tab_account.deposited_amount >= amount as u128, InvalidInputError::InsufficientFunds);
 
          let user_lending_account = &mut ctx.accounts.user_lending_account;
-        //You must provide all of the sub user's obligation accounts in remaining accounts
-        require!(user_lending_account.obligation_account_count as usize == ctx.remaining_accounts.len(), InvalidInputError::IncorrectNumberOfObligationAccounts);
+        //You must provide all of the sub user's tab accounts in remaining accounts
+        require!(user_lending_account.tab_account_count as usize == ctx.remaining_accounts.len(), InvalidInputError::IncorrectNumberOfTabAccounts);
 
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;
         let lending_user_yearly_tax_account = &mut ctx.accounts.lending_user_yearly_tax_account;
 
-        let mut user_obligation_index = 0;
+        let mut user_tab_index = 0;
 
-        //Validate Passed In User Obligation Accounts
+        //Validate Passed In User Tab Accounts
         for remaining_account in ctx.remaining_accounts.iter()
         {
             let data_ref = remaining_account.data.borrow();
             let mut data_slice: &[u8] = data_ref.deref();
 
-            let obligation_account = LendingUserObligationAccount::try_deserialize(&mut data_slice)?;
+            let tab_account = LendingUserTabAccount::try_deserialize(&mut data_slice)?;
 
             let (expected_pda, _bump) = Pubkey::find_program_address(
-                &[b"lendingUserObligationAccount",
-                obligation_account.token_mint_address.key().as_ref(),
-                obligation_account.sub_market_owner_address.key().as_ref(),
-                obligation_account.sub_market_index.to_le_bytes().as_ref(),
+                &[b"lendingUserTabAccount",
+                tab_account.token_mint_address.key().as_ref(),
+                tab_account.sub_market_owner_address.key().as_ref(),
+                tab_account.sub_market_index.to_le_bytes().as_ref(),
                 ctx.accounts.signer.key().as_ref(),
                 user_account_index.to_le_bytes().as_ref()],
                 &ctx.program_id,
             );
 
-            //You must provide all of the sub user's obligation accounts ordered by user_obligation_account_index
-            require!(user_obligation_index == obligation_account.user_obligation_account_index, InvalidInputError::IncorrectOrderOfObligationAccounts);
-            require_keys_eq!(expected_pda.key(), remaining_account.key(), InvalidInputError::UnexpectedObligationAccount);
+            //You must provide all of the sub user's tab accounts ordered by user_tab_account_index
+            require!(user_tab_index == tab_account.user_tab_account_index, InvalidInputError::IncorrectOrderOfTabAccounts);
+            require_keys_eq!(expected_pda.key(), remaining_account.key(), InvalidInputError::UnexpectedTabAccount);
 
-            user_obligation_index += 1;
+            user_tab_index += 1;
         }
 
         //Initialize yearly tax account if the tax year has changed.
@@ -458,7 +458,7 @@ pub mod lending_protocol
         lending_stats.withdrawals += 1;
         sub_market.deposited_amount -= amount as u128;
         token_reserve.deposited_amount -= amount as u128;
-        lending_user_obligation_account.deposited_amount -= amount as u128;
+        lending_user_tab_account.deposited_amount -= amount as u128;
 
         lending_user_yearly_tax_account.last_activity_type = Activity::Withdraw as u8;
         lending_user_yearly_tax_account.last_lending_activity_time_stamp = Clock::get()?.unix_timestamp as u64;
@@ -733,15 +733,15 @@ pub struct DepositTokens<'info>
     #[account(
         init_if_needed,
         payer = signer,
-        seeds = [b"lendingUserObligationAccount".as_ref(),
+        seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
-        space = size_of::<LendingUserObligationAccount>() + 8)]
-    pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
 
     #[account(
         init_if_needed,
@@ -836,14 +836,14 @@ pub struct WithdrawTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"lendingUserObligationAccount".as_ref(),
+        seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
 
     #[account(
         init_if_needed,
@@ -913,14 +913,14 @@ pub struct RepayTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"lendingUserObligationAccount".as_ref(),
+        seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_obligation_account: Account<'info, LendingUserObligationAccount>,
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
 
     #[account(
         init_if_needed,
@@ -1025,22 +1025,22 @@ pub struct LendingUserAccount //Giving the lending account an index to allow use
     pub user_account_index: u8,
     pub account_name: String,
     pub lending_user_account_added: bool,
-    pub obligation_account_count: u32,
+    pub tab_account_count: u32,
     pub interest_accrued: u128,
     pub debt_repaid: u128,
     pub amount_liquidated: u128
 }
 
 #[account]
-pub struct LendingUserObligationAccount
+pub struct LendingUserTabAccount
 {
     pub owner: Pubkey,
     pub user_account_index: u8,
     pub token_mint_address: Pubkey,
     pub sub_market_owner_address: Pubkey,
     pub sub_market_index: u16,
-    pub user_obligation_account_index: u32,
-    pub user_obligation_account_added: bool,
+    pub user_tab_account_index: u32,
+    pub user_tab_account_added: bool,
     pub deposited_amount: u128,
     pub borrowed_amount: u128
 }
