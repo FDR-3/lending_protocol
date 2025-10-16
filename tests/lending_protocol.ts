@@ -31,6 +31,11 @@ describe("lending_protocol", () =>
   const tenUSDC = new anchor.BN(10_000_000)
   const tenKUSDC = 10_000_000_000
 
+  const borrowAPY5Percent = 500
+  const borrowAPY7Percent = 700
+  const globalLimit1 = new anchor.BN(10_000_000_000)
+  const globalLimit2 = new anchor.BN(20_000_000_000)
+
   const feeRateAbove100Percent = 10001
   const feeRateBelove0Percent = -1
   const feeRate4Percent = 400
@@ -39,8 +44,10 @@ describe("lending_protocol", () =>
   const testSubMarketIndex = 4
   const testUserAccountIndex = 7
   const bnZero = new anchor.BN(0)
-  const taxYear = 2025
-  const newTaxYear = 2044
+  const statementMonth = 1
+  const statementYear = 2025
+  const newStatementMonth = 2
+  const newStatementYear = 2044
   const accountName = "Account 1"
   const accountName25Characters = "Lorem ipsum dolor sit ame"
   const accountName26Characters = "Lorem ipsum dolor sit amet"
@@ -49,16 +56,17 @@ describe("lending_protocol", () =>
 
   it("Initializes Lending Protocol", async () => 
   {
-    await program.methods.initializeLendingProtocol(taxYear).rpc()
+    await program.methods.initializeLendingProtocol(statementMonth, statementYear).rpc()
 
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOAccountPDA())
     assert(ceoAccount.address.toBase58() == program.provider.publicKey.toBase58())
 
     var lendingProtocol = await program.account.lendingProtocol.fetch(getLendingProtocolPDA())
-    assert(lendingProtocol.currentTaxYear == taxYear)
+    assert(lendingProtocol.currentStatementMonth == statementMonth)
+    assert(lendingProtocol.currentStatementYear == statementYear)
   })
 
-  it("Verifies That Only CEO Can Pass On Account", async () => 
+  it("Verifies That Only the CEO Can Pass On Account", async () => 
   {
     var errorMessage = ""
 
@@ -98,13 +106,13 @@ describe("lending_protocol", () =>
     assert(ceoAccount.address.toBase58() == program.provider.publicKey.toBase58())
   })
 
-  it("Verifies That Only CEO Can Update the Lending Protocol Tax Year", async () => 
+  it("Verifies That Only the CEO Can Update the Lending Protocol Statement Year", async () => 
   {
     var errorMessage = ""
 
     try
     {
-      await program.methods.updateCurrentTaxYear(newTaxYear)
+      await program.methods.updateCurrentStatementMonthAndYear(newStatementMonth, newStatementYear)
       .accounts({signer: successorWallet.publicKey})
       .signers([successorWallet])
       .rpc()
@@ -117,21 +125,23 @@ describe("lending_protocol", () =>
     assert(errorMessage == notCEOErrorMsg)
   })
 
-  it("Updates Lending Lending Protocol Tax Year", async () => 
+  it("Updates Lending Lending Protocol Statement Year", async () => 
   {
-    await program.methods.updateCurrentTaxYear(newTaxYear).rpc()
+    await program.methods.updateCurrentStatementMonthAndYear(newStatementMonth, newStatementYear).rpc()
 
     var lendingProtocol = await program.account.lendingProtocol.fetch(getLendingProtocolPDA())
-    assert(lendingProtocol.currentTaxYear == newTaxYear)
+
+    assert(lendingProtocol.currentStatementMonth == newStatementMonth)
+    assert(lendingProtocol.currentStatementYear == newStatementYear)
   })
 
-  it("Verifies That Only CEO Can Add a Token Reserve", async () => 
+  it("Verifies That Only the CEO Can Add a Token Reserve", async () => 
   {
     var errorMessage = ""
 
     try
     {
-      await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount)
+      await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount, borrowAPY5Percent, globalLimit1)
       .accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
       .signers([successorWallet])
       .rpc()
@@ -146,7 +156,7 @@ describe("lending_protocol", () =>
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount)
+    await program.methods.addTokenReserve(SOLTokenMintAddress, SOLTokenDecimalAmount, borrowAPY5Percent, globalLimit1)
     .accounts({mint: SOLTokenMintAddress})
     .rpc()
     
@@ -155,6 +165,36 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == SOLTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
+    assert(tokenReserve.borrowApy == borrowAPY5Percent)
+    assert(tokenReserve.globalLimit.eq(globalLimit1))
+  })
+
+  it("Verifies That Only the CEO Can Update the Token Reserve", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.updateTokenReserve(SOLTokenMintAddress, borrowAPY7Percent, globalLimit1)
+      .accounts({signer: successorWallet.publicKey})
+      .signers([successorWallet])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == notCEOErrorMsg)
+  })
+
+  it("Updates Token Reserve Borrow APY and Global Limit", async () => 
+  {
+    await program.methods.updateTokenReserve(SOLTokenMintAddress, borrowAPY7Percent, globalLimit2).rpc()
+
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(SOLTokenMintAddress))
+    assert(tokenReserve.borrowApy == borrowAPY7Percent)
+    assert(tokenReserve.globalLimit.eq(globalLimit2))
   })
 
   it("Verifies That a SubMarket Can't be Created With a Fee on Interest Rate Higher than 100%", async () => 
@@ -277,14 +317,18 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserAccount.accountName == accountName)
 
-    const lendingUserYearlyTaxAccount = await program.account.lendingUserYearlyTaxAccount.fetch(getLendingUserYearlyTaxAccountPDA
+    const lendingUserMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
     (
-      newTaxYear,
+      newStatementMonth,
+      newStatementYear,
       SOLTokenMintAddress,
       successorWallet.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserYearlyTaxAccount.taxYear == newTaxYear)
+    assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
+    assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
+    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(twoSol))
+    assert(lendingUserMonthlyStatementAccount.monthlyDepositedAmount.eq(twoSol))
   })
 
   it("Verifies a User Can't Have an Account Name Longer Than 25 Characters", async () => 
@@ -398,7 +442,6 @@ describe("lending_protocol", () =>
       successorWallet.publicKey,
       testUserAccountIndex
     ))
-
     assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
     assert(lendingUserTabAccount.tokenMintAddress.toBase58() == SOLTokenMintAddress.toBase58())
@@ -423,6 +466,19 @@ describe("lending_protocol", () =>
     {
       errorMessage = error.message
     }
+
+    const lendingUserMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
+    (
+      newStatementMonth,
+      newStatementYear,
+      SOLTokenMintAddress,
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
+    assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
+    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(bnZero))
+    assert(lendingUserMonthlyStatementAccount.monthlyWithdrawalAmount.eq(twoSol))
 
     //Verify that wrapped SOL ATA for User was closed since it was empty
     assert(errorMessage == ataDoesNotExistErrorMsg)
@@ -457,7 +513,7 @@ describe("lending_protocol", () =>
 
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcMint.publicKey, usdcDecimalAmount)
+    await program.methods.addTokenReserve(usdcMint.publicKey, usdcDecimalAmount, borrowAPY5Percent, globalLimit1)
     .accounts({mint: usdcMint.publicKey})
     .rpc()
     
@@ -466,6 +522,8 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
+    assert(tokenReserve.borrowApy == borrowAPY5Percent)
+    assert(tokenReserve.globalLimit.eq(globalLimit1))
   })
 
   it("Creates a USDC SubMarket", async () => 
@@ -473,7 +531,6 @@ describe("lending_protocol", () =>
     await program.methods.createSubMarket(usdcMint.publicKey, testSubMarketIndex, program.provider.publicKey, feeRate4Percent).rpc()
 
     const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex))
-    
     assert(subMarket.owner.toBase58() == program.provider.publicKey.toBase58())
     assert(subMarket.feeCollectorAddress.toBase58() == program.provider.publicKey.toBase58())
     assert(subMarket.feeOnInterestEarnedRate == feeRate4Percent)
@@ -489,7 +546,6 @@ describe("lending_protocol", () =>
     .rpc()
    
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-
     assert(tokenReserve.tokenReserveProtocolIndex == 1)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcDecimalAmount)
@@ -503,7 +559,6 @@ describe("lending_protocol", () =>
       successorWallet.publicKey,
       testUserAccountIndex
     ))
-
     assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
     assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
@@ -512,6 +567,19 @@ describe("lending_protocol", () =>
     assert(lendingUserTabAccount.userTabAccountIndex == 1)
     assert(lendingUserTabAccount.userTabAccountAdded == true)
     assert(lendingUserTabAccount.depositedAmount.eq(tenUSDC))
+
+    const lendingUserMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
+    (
+      newStatementMonth,
+      newStatementYear,
+      usdcMint.publicKey,
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
+    assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
+    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(tenUSDC))
+    assert(lendingUserMonthlyStatementAccount.monthlyDepositedAmount.eq(tenUSDC))
 
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
@@ -620,7 +688,6 @@ describe("lending_protocol", () =>
       successorWallet.publicKey,
       testUserAccountIndex
     ))
-
     assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
     assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
@@ -634,9 +701,21 @@ describe("lending_protocol", () =>
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
     assert(parseInt(tokenReserveATAAccount.value.amount) == 0)
 
+    const lendingUserMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
+    (
+      newStatementMonth,
+      newStatementYear,
+      usdcMint.publicKey,
+      successorWallet.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
+    assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
+    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(bnZero))
+    assert(lendingUserMonthlyStatementAccount.monthlyWithdrawalAmount.eq(tenUSDC))
+
     const userATA = await deriveWalletATA(successorWallet.publicKey, usdcMint.publicKey, true)
     const UserATAAccount = await program.provider.connection.getTokenAccountBalance(userATA)
-
     assert(parseInt(UserATAAccount.value.amount) == tenKUSDC)
   })
 
@@ -707,20 +786,21 @@ describe("lending_protocol", () =>
     return lendingUserTabAccountPDA
   }
 
-  function getLendingUserYearlyTaxAccountPDA(taxYear: number, tokenMintAddress: PublicKey, lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
+  function getlendingUserMonthlyStatementAccountPDA(statementMonth: number, statementYear: number, tokenMintAddress: PublicKey, lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
   {
-    const [lendingUserYearlyTaxAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    const [lendingUserMonthlyStatementAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
     (
       [
-        new TextEncoder().encode("lendingUserYearlyTaxAccount"),
-        new anchor.BN(taxYear).toBuffer('le', 4),
+        new TextEncoder().encode("userMonthlyStatementAccount"),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        new anchor.BN(statementMonth).toBuffer('le', 1),
+        new anchor.BN(statementYear).toBuffer('le', 4),
         tokenMintAddress.toBuffer(),
         lendingUserAddress.toBuffer(),
         new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
       ],
       program.programId
     )
-    return lendingUserYearlyTaxAccountPDA
+    return lendingUserMonthlyStatementAccountPDA
   }
 
   function getLendingUserTabAccountPDA(tokenMintAddress: PublicKey,
