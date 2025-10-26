@@ -7,7 +7,7 @@ use solana_security_txt::security_txt;
 use std::ops::Deref;
 use spl_math::precise_number::PreciseNumber;
 
-declare_id!("647rEvxabMSeBVmnBB4pgqt4qTUQRNJu16ogWHF3PgC2");
+declare_id!("3EdkWLvZttPawtx2V1GjisrM2BCwKw6BdnZW9XiFArHr");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -1095,7 +1095,7 @@ pub struct WithdrawTokens<'info>
         mut,
         seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
         bump)]
-    pub token_reserve: Account<'info, TokenReserve>,
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut, 
@@ -1140,8 +1140,9 @@ pub struct WithdrawTokens<'info>
     pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
 
     #[account(
-        mut,
-        associated_token::mint = token_mint_address,
+        init_if_needed, //SOL has to be withdrawn as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
+        payer = signer,
+        associated_token::mint = mint,
         associated_token::authority = signer
     )]
     pub user_ata: Account<'info, TokenAccount>,
@@ -1153,7 +1154,9 @@ pub struct WithdrawTokens<'info>
     )]
     pub token_reserve_ata: Account<'info, TokenAccount>,
 
+    pub mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
