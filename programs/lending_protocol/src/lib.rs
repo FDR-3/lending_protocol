@@ -360,6 +360,22 @@ pub mod lending_protocol
             let cpi_program = ctx.accounts.token_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
             token::sync_native(cpi_ctx)?;
+
+            //Close temporary wSOL ATA if its balance is zero
+            let user_balance_after_transfer = ctx.accounts.user_ata.amount;
+            if user_balance_after_transfer == 0
+            {
+                
+                let cpi_accounts = CloseAccount
+                {
+                    account: ctx.accounts.user_ata.to_account_info(),
+                    destination: ctx.accounts.signer.to_account_info(),
+                    authority: ctx.accounts.signer.to_account_info(),
+                };
+                let cpi_program = ctx.accounts.token_program.to_account_info();
+                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+                token::close_account(cpi_ctx)?; 
+            }
         }
         //Handle all other tokens
         else
@@ -542,7 +558,7 @@ pub mod lending_protocol
             }
             else
             {
-                //Since the User has no other wrapped SOL, unwrap it all, send it to the User, and close the temporary wrapped SOL account
+                //Since the User has no other wSOL, unwrap it all, send it to the User, and close the temporary wSOL account
                 let cpi_accounts = CloseAccount
                 {
                     account: ctx.accounts.user_ata.to_account_info(),
