@@ -415,13 +415,6 @@ pub mod lending_protocol
         sub_market.last_lending_activity_amount = amount as u128;
         sub_market.last_lending_activity_type = Activity::Deposit as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp; 
-        user_lending_account.last_lending_activity_token_mint_address = token_mint_address.key();
-        user_lending_account.last_lending_activity_amount = amount as u128;
-        user_lending_account.last_lending_activity_type = Activity::Deposit as u8;
-        user_lending_account.last_lending_activity_time_stamp = time_stamp;
-        lending_user_tab_account.last_lending_activity_amount = amount as u128;
-        lending_user_tab_account.last_lending_activity_type = Activity::Deposit as u8;
-        lending_user_tab_account.last_lending_activity_time_stamp = time_stamp;
         lending_user_monthly_statement_account.last_lending_activity_amount = amount as u128;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Deposit as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
@@ -588,13 +581,6 @@ pub mod lending_protocol
         sub_market.last_lending_activity_amount = amount as u128;
         sub_market.last_lending_activity_type = Activity::Withdraw as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp; 
-        user_lending_account.last_lending_activity_token_mint_address = token_mint_address.key();
-        user_lending_account.last_lending_activity_amount = amount as u128;
-        user_lending_account.last_lending_activity_type = Activity::Withdraw as u8;
-        user_lending_account.last_lending_activity_time_stamp = time_stamp;
-        lending_user_tab_account.last_lending_activity_amount = amount as u128;
-        lending_user_tab_account.last_lending_activity_type = Activity::Withdraw as u8;
-        lending_user_tab_account.last_lending_activity_time_stamp = time_stamp;
         lending_user_monthly_statement_account.last_lending_activity_amount = amount as u128;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Withdraw as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
@@ -1427,13 +1413,6 @@ pub struct LendingUserAccount //Giving the lending account an index to allow use
     pub account_name: String,
     pub lending_user_account_added: bool,
     pub tab_account_count: u32,
-    pub interest_accrued: u128,
-    pub debt_repaid: u128,
-    pub amount_liquidated: u128,
-    pub last_lending_activity_token_mint_address: Pubkey,
-    pub last_lending_activity_amount: u128,
-    pub last_lending_activity_type: u8,
-    pub last_lending_activity_time_stamp: u64
 }
 
 #[account]
@@ -1450,10 +1429,7 @@ pub struct LendingUserTabAccount
     pub debt_repaid: u128,
     pub amount_liquidated: u128,
     pub deposited_amount: u128,
-    pub borrowed_amount: u128,
-    pub last_lending_activity_amount: u128,
-    pub last_lending_activity_type: u8,
-    pub last_lending_activity_time_stamp: u64 
+    pub borrowed_amount: u128
 }
 
 #[account]
