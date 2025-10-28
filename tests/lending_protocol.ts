@@ -327,7 +327,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
     assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
-    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(twoSol))
+    assert(lendingUserMonthlyStatementAccount.currentBalanceAmount.eq(twoSol))
     assert(lendingUserMonthlyStatementAccount.monthlyDepositedAmount.eq(twoSol))
   })
 
@@ -373,7 +373,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.withdrawTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tooMuchSol)
-      .accounts({signer: successorWallet.publicKey})
+      .accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
       .signers([successorWallet])
       .rpc()
     }
@@ -392,7 +392,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.withdrawTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
-      .accounts({signer: successorWallet.publicKey})
+      .accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
       .signers([successorWallet])
       .rpc()
     }
@@ -423,7 +423,7 @@ describe("lending_protocol", () =>
     }
 
     await program.methods.withdrawTokens(SOLTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
-    .accounts({signer: successorWallet.publicKey})
+    .accounts({mint: SOLTokenMintAddress, signer: successorWallet.publicKey})
     .signers([successorWallet])
     .remainingAccounts([wSOLLendingUserTabRemainingAccount])
     .rpc()
@@ -477,7 +477,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
     assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
-    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(bnZero))
+    assert(lendingUserMonthlyStatementAccount.currentBalanceAmount.eq(bnZero))
     assert(lendingUserMonthlyStatementAccount.monthlyWithdrawalAmount.eq(twoSol))
 
     //Verify that wrapped SOL ATA for User was closed since it was empty
@@ -578,7 +578,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
     assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
-    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(tenUSDC))
+    assert(lendingUserMonthlyStatementAccount.currentBalanceAmount.eq(tenUSDC))
     assert(lendingUserMonthlyStatementAccount.monthlyDepositedAmount.eq(tenUSDC))
 
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
@@ -623,7 +623,7 @@ describe("lending_protocol", () =>
       }
 
       await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
-      .accounts({signer: successorWallet.publicKey})
+      .accounts({mint: usdcMint.publicKey, signer: successorWallet.publicKey})
       .signers([successorWallet])
       .remainingAccounts([usdcLendingUserTabRemainingAccount, wSOLLendingUserTabRemainingAccount])
       .rpc()
@@ -669,7 +669,7 @@ describe("lending_protocol", () =>
     }
 
     await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
-    .accounts({signer: successorWallet.publicKey})
+    .accounts({mint: usdcMint.publicKey, signer: successorWallet.publicKey})
     .signers([successorWallet])
     .remainingAccounts([wSOLLendingUserTabRemainingAccount, usdcLendingUserTabRemainingAccount])
     .rpc()
@@ -711,7 +711,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
     assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
-    assert(lendingUserMonthlyStatementAccount.lifeTimeBalanceAmount.eq(bnZero))
+    assert(lendingUserMonthlyStatementAccount.currentBalanceAmount.eq(bnZero))
     assert(lendingUserMonthlyStatementAccount.monthlyWithdrawalAmount.eq(tenUSDC))
 
     const userATA = await deriveWalletATA(successorWallet.publicKey, usdcMint.publicKey, true)

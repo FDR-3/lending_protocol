@@ -7,7 +7,7 @@ use solana_security_txt::security_txt;
 use std::ops::Deref;
 use spl_math::precise_number::PreciseNumber;
 
-declare_id!("3EdkWLvZttPawtx2V1GjisrM2BCwKw6BdnZW9XiFArHr");
+declare_id!("EGDt48XGnZh5bPpJ8YBeCDggjFtM3kMMcw4LoV5fEKpF");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -20,8 +20,11 @@ security_txt!
     policy: "If you find a bug, email me and say something please D:"
 }
 
+#[cfg(feature = "dev")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
-//const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+
+#[cfg(feature = "local")] 
+const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -1375,12 +1378,12 @@ pub struct TokenReserve
     pub borrow_apy: u16,
     pub utilization_rate: u64,
     pub global_limit: u128,
+    pub deposited_amount: u128,
     pub accrued_interest_index: u128, //Starts at 1 (in fixed point notation) and increases as supply interest is earned from Borrow Users so that it can be proportionally distributed to Supply Users
     pub interest_accrued: u128,
-    pub debt_repaid: u128,
-    pub amount_liquidated: u128,
-    pub deposited_amount: u128,
     pub borrowed_amount: u128,
+    pub debt_repaid: u128,
+    pub liquidated_amount: u128,
     pub last_lending_activity_amount: u128,
     pub last_lending_activity_type: u8,
     pub last_lending_activity_time_stamp: u64
@@ -1395,11 +1398,11 @@ pub struct SubMarket
     pub sub_market_index: u16,
     pub fee_collector_address: Pubkey,
     pub fee_on_interest_earned_rate: u16,
-    pub interest_accrued: u128,
-    pub debt_repaid: u128,
-    pub amount_liquidated: u128,
     pub deposited_amount: u128,
+    pub interest_accrued_amount: u128,
     pub borrowed_amount: u128,
+    pub repaid_debt_amount: u128,
+    pub liquidated_amount: u128,
     pub last_lending_activity_amount: u128,
     pub last_lending_activity_type: u8,
     pub last_lending_activity_time_stamp: u64
@@ -1425,11 +1428,11 @@ pub struct LendingUserTabAccount
     pub sub_market_index: u16,
     pub user_tab_account_index: u32,
     pub user_tab_account_added: bool,
-    pub interest_accrued: u128,
-    pub debt_repaid: u128,
-    pub amount_liquidated: u128,
     pub deposited_amount: u128,
-    pub borrowed_amount: u128
+    pub interest_accrued_amount: u128,
+    pub borrowed_amount: u128,
+    pub repaid_debt_amount: u128,
+    pub user_was_liquidated_amount: u128
 }
 
 #[account]
@@ -1442,15 +1445,16 @@ pub struct LendingUserMonthlyStatementAccount
     pub statement_year: u32,
     pub monthly_statement_account_added: bool,
     pub current_balance_amount: u128,//The current/life_time properties give a snapshot of the value of the Tab Account at the time it is updated
-    pub life_time_borrowed_amount: u128,
     pub life_time_interest_accrued_amount: u128,
-    pub life_time_debt_repaid_amount: u128,
-    pub life_time_liquidated_amount: u128,
+    pub life_time_borrowed_amount: u128,
+    pub life_time_repaid_debt_amount: u128,
+    pub life_time_user_was_liquidated_amount: u128,
     pub monthly_deposited_amount: u128,//The monthly properties give the specific value changes for that specific month
+    pub monthly_interest_accrued_amount: u128,
     pub monthly_withdrawal_amount: u128,
     pub monthly_borrowed_amount: u128,
-    pub monthly_repaid_amount: u128,
-    pub monthly_liquidated_amount: u128,
+    pub monthly_repaid_debt_amount: u128,
+    pub monthly_user_was_liquidated_amount: u128,
     pub last_lending_activity_amount: u128,
     pub last_lending_activity_type: u8,
     pub last_lending_activity_time_stamp: u64 
