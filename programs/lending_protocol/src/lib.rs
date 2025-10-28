@@ -400,7 +400,7 @@ pub mod lending_protocol
         token_reserve.deposited_amount += amount as u128;
         lending_user_tab_account.deposited_amount += amount as u128;
         lending_user_monthly_statement_account.monthly_deposited_amount += amount as u128;
-        lending_user_monthly_statement_account.life_time_balance_amount = lending_user_tab_account.deposited_amount;
+        lending_user_monthly_statement_account.current_balance_amount = lending_user_tab_account.deposited_amount;
         msg!("{} deposited for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);   
 
         let time_stamp = Clock::get()?.unix_timestamp as u64;
@@ -570,7 +570,7 @@ pub mod lending_protocol
         token_reserve.deposited_amount -= amount as u128;
         lending_user_tab_account.deposited_amount -= amount as u128;
         lending_user_monthly_statement_account.monthly_withdrawal_amount += amount as u128;
-        lending_user_monthly_statement_account.life_time_balance_amount = lending_user_tab_account.deposited_amount;
+        lending_user_monthly_statement_account.current_balance_amount = lending_user_tab_account.deposited_amount;
         
         update_token_reserve_rates(token_reserve)?;
 
@@ -1441,7 +1441,7 @@ pub struct LendingUserMonthlyStatementAccount
     pub statement_month: u8,
     pub statement_year: u32,
     pub monthly_statement_account_added: bool,
-    pub life_time_balance_amount: u128,//The life_time properties give a snapshot of the value of the Tab Account at the time it is updated
+    pub current_balance_amount: u128,//The current/life_time properties give a snapshot of the value of the Tab Account at the time it is updated
     pub life_time_borrowed_amount: u128,
     pub life_time_interest_accrued_amount: u128,
     pub life_time_debt_repaid_amount: u128,
