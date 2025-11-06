@@ -26,3 +26,5 @@ anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = "0.31.1"
 solana-security-txt = "1.1.1"
 spl-math = { version = "0.3.0", features = [ "no-entrypoint" ]}
+pyth-solana-receiver-sdk = "1.0.1"
+hex = "0.4.3"
