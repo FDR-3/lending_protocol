@@ -152,7 +152,7 @@ fn update_token_reserve_rates<'info>(token_reserve: &mut Account<TokenReserve>) 
 }
 
 //Helper function to update User Interest Earned amounts. Also updates deposit amounts on the Token Reserve, SubMarket, and user Monthly Statement
-fn calculate_user_previous_interest_earned<'info>(
+fn update_user_previous_interest_earned<'info>(
     token_reserve: &mut Account<TokenReserve>,
     sub_market: &mut Account<SubMarket>,
     user_tab_account: &mut Account<LendingUserTabAccount>,
@@ -203,7 +203,7 @@ fn calculate_user_previous_interest_earned<'info>(
 }
 
 //Helper function to update User Accured Debt amounts. Also updates debt amounts on the Token Reserve, SubMarket, and user Monthly Statement
-fn calculate_user_previous_interest_accrued<'info>(
+fn update_user_previous_interest_accrued<'info>(
     token_reserve: &mut Account<TokenReserve>,
     sub_market: &mut Account<SubMarket>,
     user_tab_account: &mut Account<LendingUserTabAccount>,
@@ -585,14 +585,14 @@ pub mod lending_protocol
         //Calculate Token Reserve Previously Earned Interest
         update_token_reserve_accrued_interest_index(token_reserve, time_stamp)?;
 
-        calculate_user_previous_interest_earned(
+        update_user_previous_interest_earned(
             token_reserve,
             sub_market,
             lending_user_tab_account,
             lending_user_monthly_statement_account
         )?;
 
-        calculate_user_previous_interest_accrued(
+        update_user_previous_interest_accrued(
             token_reserve,
             sub_market,
             lending_user_tab_account,
@@ -750,14 +750,14 @@ pub mod lending_protocol
         //Calculate Token Reserve Previously Earned Interest
         update_token_reserve_accrued_interest_index(token_reserve, time_stamp)?;
 
-        calculate_user_previous_interest_earned(
+        update_user_previous_interest_earned(
             token_reserve,
             sub_market,
             lending_user_tab_account,
             lending_user_monthly_statement_account
         )?;
 
-        calculate_user_previous_interest_accrued(
+        update_user_previous_interest_accrued(
             token_reserve,
             sub_market,
             lending_user_tab_account,
@@ -896,14 +896,14 @@ pub mod lending_protocol
         //Calculate Token Reserve Previously Earned Interest
         update_token_reserve_accrued_interest_index(token_reserve, time_stamp)?;
 
-        calculate_user_previous_interest_earned(
+        update_user_previous_interest_earned(
             token_reserve,
             sub_market,
             lending_user_tab_account,
             lending_user_monthly_statement_account
         )?;
 
-        calculate_user_previous_interest_accrued(
+        update_user_previous_interest_accrued(
             token_reserve,
             sub_market,
             lending_user_tab_account,
@@ -1005,13 +1005,10 @@ pub mod lending_protocol
         pay_off: bool
     ) -> Result<()> 
     {
-        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
-        //You can't repay an amount that is greater than your borrowed amount
-        require!(lending_user_tab_account.borrowed_amount >= amount as u128, InvalidInputError::TooManyFunds);
-
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;
+        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
 
@@ -1031,24 +1028,33 @@ pub mod lending_protocol
         //Calculate Token Reserve Previously Earned Interest
         update_token_reserve_accrued_interest_index(token_reserve, time_stamp)?;
 
-        calculate_user_previous_interest_earned(
+        update_user_previous_interest_earned(
             token_reserve,
             sub_market,
             lending_user_tab_account,
             lending_user_monthly_statement_account
         )?;
 
-        calculate_user_previous_interest_accrued(
+        update_user_previous_interest_accrued(
             token_reserve,
             sub_market,
             lending_user_tab_account,
             lending_user_monthly_statement_account
         )?;
 
-        /*if pay_off
+        let pay_off_amount;
+
+        if pay_off
         {
+            pay_off_amount = lending_user_tab_account.borrowed_amount as u64;
+        }
+        else
+        {
+            pay_off_amount = amount
+        }
 
-        }*/
+        //You can't repay an amount that is greater than your borrowed amount
+        require!(lending_user_tab_account.borrowed_amount >= pay_off_amount as u128, InvalidInputError::TooManyFunds);
 
         //Cross Program Invocation for Token Transfer
         let cpi_accounts = Transfer
@@ -1061,31 +1067,32 @@ pub mod lending_protocol
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
         //Transfer Tokens Into The Reserve
-        token::transfer(cpi_ctx, amount)?;
+        token::transfer(cpi_ctx, pay_off_amount)?;
 
         //Update Values and Stat Listener
         lending_stats.repayments += 1;
-        sub_market.borrowed_amount -= amount as u128;
-        sub_market.repaid_debt_amount += amount as u128;
-        token_reserve.borrowed_amount -= amount as u128;
-        token_reserve.repaid_debt_amount += amount as u128;
-        lending_user_tab_account.borrowed_amount -= amount as u128;
-        lending_user_tab_account.repaid_debt_amount += amount as u128;
-        lending_user_monthly_statement_account.monthly_repaid_debt_amount += amount as u128;
+        sub_market.borrowed_amount -= pay_off_amount as u128;
+        sub_market.repaid_debt_amount += pay_off_amount as u128;
+        token_reserve.borrowed_amount -= pay_off_amount as u128;
+        token_reserve.repaid_debt_amount += pay_off_amount as u128;
+        lending_user_tab_account.borrowed_amount -= pay_off_amount as u128;
+        lending_user_tab_account.repaid_debt_amount += pay_off_amount as u128;
+        lending_user_monthly_statement_account.monthly_repaid_debt_amount += pay_off_amount as u128;
         lending_user_monthly_statement_account.snap_shot_repaid_debt_amount = lending_user_tab_account.repaid_debt_amount;
+        lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
 
         //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
         update_token_reserve_rates(token_reserve)?;
         lending_user_tab_account.accrued_interest_index = token_reserve.accrued_interest_index;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_amount = amount as u128;
+        token_reserve.last_lending_activity_amount = pay_off_amount as u128;
         token_reserve.last_lending_activity_type = Activity::Repay as u8;
         token_reserve.last_lending_activity_time_stamp = time_stamp;
-        sub_market.last_lending_activity_amount = amount as u128;
+        sub_market.last_lending_activity_amount = pay_off_amount as u128;
         sub_market.last_lending_activity_type = Activity::Repay as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp; 
-        lending_user_monthly_statement_account.last_lending_activity_amount = amount as u128;
+        lending_user_monthly_statement_account.last_lending_activity_amount = pay_off_amount as u128;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
   
