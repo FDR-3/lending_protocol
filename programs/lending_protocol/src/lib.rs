@@ -50,7 +50,9 @@ enum Activity
 pub enum AuthorizationError 
 {
     #[msg("Only the CEO can call this function")]
-    NotCEO
+    NotCEO,
+    #[msg("Only the fee Collector can claim the fees")]
+    NotFeeCollector
 }
 
 #[error_code]
@@ -159,12 +161,12 @@ fn update_token_reserve_rates<'info>(token_reserve: &mut Account<TokenReserve>) 
 fn update_user_previous_interest_earned<'info>(
     token_reserve: &mut Account<TokenReserve>,
     sub_market: &mut Account<SubMarket>,
-    user_tab_account: &mut Account<LendingUserTabAccount>,
+    lending_user_tab_account: &mut Account<LendingUserTabAccount>,
     lending_user_monthly_statement_account: &mut Account<LendingUserMonthlyStatementAccount>
 ) -> Result<()>
 {
     //Skip if the user has no deposited amount
-    if user_tab_account.deposited_amount == 0
+    if lending_user_tab_account.deposited_amount == 0
     {
         return Ok(())
     }
@@ -172,36 +174,59 @@ fn update_user_previous_interest_earned<'info>(
     //Use spl-math library PreciseNumber for fixed point math
     //User New Balance = Old Balance * (Token Reserve Accrued Interest Index/User Accrued Interest Index)
     let token_reserve_index_precise = PreciseNumber::new(token_reserve.interest_change_index).unwrap();
-    let user_index_precise = PreciseNumber::new(user_tab_account.interest_change_index).unwrap();
+    let user_index_precise = PreciseNumber::new(lending_user_tab_account.interest_change_index).unwrap();
     let old_token_reserve_deposited_amount_precise = PreciseNumber::new(token_reserve.deposited_amount).unwrap();
     let old_token_reserve_interest_earned_amount_precise = PreciseNumber::new(token_reserve.interest_earned_amount).unwrap();
+    let old_token_reserve_fees_generated_amount_precise = PreciseNumber::new(token_reserve.fees_generated_amount).unwrap();
     let old_sub_market_deposited_amount_precise = PreciseNumber::new(sub_market.deposited_amount).unwrap();
     let old_sub_market_interest_earned_amount_precise = PreciseNumber::new(sub_market.interest_earned_amount).unwrap();
-    let old_user_deposited_amount_precise = PreciseNumber::new(user_tab_account.deposited_amount).unwrap();
-    let old_user_interest_earned_amount_precise = PreciseNumber::new(user_tab_account.interest_earned_amount).unwrap();
+    let old_sub_market_fees_generated_amount_precise = PreciseNumber::new(sub_market.fees_generated_amount).unwrap();
+    let old_sub_market_uncollected_fees_amount_precise = PreciseNumber::new(sub_market.uncollected_fees_amount).unwrap();
+    let old_user_deposited_amount_precise = PreciseNumber::new(lending_user_tab_account.deposited_amount).unwrap();
+    let old_user_interest_earned_amount_precise = PreciseNumber::new(lending_user_tab_account.interest_earned_amount).unwrap();
+    let old_user_fees_generated_amount_precise = PreciseNumber::new(lending_user_tab_account.fees_generated_amount).unwrap();
     let old_user_monthly_interest_earned_amount_precise = PreciseNumber::new(lending_user_monthly_statement_account.monthly_interest_earned_amount).unwrap();
+    let old_user_monthly_fees_generated_amount_precise = PreciseNumber::new(lending_user_monthly_statement_account.monthly_fees_generated_amount).unwrap();
 
     let token_index_divided_by_user_index_precise = token_reserve_index_precise.checked_div(&user_index_precise).unwrap();
-    let new_user_deposited_amount_precise = old_user_deposited_amount_precise.checked_mul(&token_index_divided_by_user_index_precise).unwrap();
-    let new_user_interest_earned_amount_precise = new_user_deposited_amount_precise.checked_sub(&old_user_deposited_amount_precise).unwrap();
-
-    let new_token_reserve_deposited_amount = old_token_reserve_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_token_reserve_interest_earned_amount = old_token_reserve_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_deposited_amount = old_sub_market_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_interest_earned_amount = old_sub_market_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_precise).unwrap().to_imprecise().unwrap();
+    let new_user_deposited_amount_before_fee_precise = old_user_deposited_amount_precise.checked_mul(&token_index_divided_by_user_index_precise).unwrap();
+    
+    //Apply SubMarket Fee
+    let new_user_interest_earned_amount_before_fee_precise = new_user_deposited_amount_before_fee_precise.checked_sub(&old_user_deposited_amount_precise).unwrap();
+    let sub_market_fee_rate_precise = PreciseNumber::new(sub_market.fee_on_interest_earned_rate as u128).unwrap();
+    let new_fees_generated_amount_precise = new_user_interest_earned_amount_before_fee_precise.checked_mul(&sub_market_fee_rate_precise).unwrap();
+    let new_user_interest_earned_amount_after_fee_precise = new_user_interest_earned_amount_before_fee_precise.checked_sub(&new_fees_generated_amount_precise).unwrap();
+    let new_user_deposited_amount_precise = old_user_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap();
+    
+    //Convert precise values back into imprecise values
+    let new_token_reserve_deposited_amount = old_token_reserve_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
+    let new_token_reserve_interest_earned_amount = old_token_reserve_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
+    let new_token_reserve_fees_generated_amount = old_token_reserve_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
+    let new_sub_market_deposited_amount = old_sub_market_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
+    let new_sub_market_interest_earned_amount = old_sub_market_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
+    let new_sub_market_fees_generated_amount = old_sub_market_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
+    let new_sub_market_uncollected_fees_amount = old_sub_market_uncollected_fees_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
     let new_user_deposited_amount = new_user_deposited_amount_precise.to_imprecise().unwrap();
-    let new_user_total_interest_earned_amount = old_user_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_user_montly_interest_earned_amount = old_user_monthly_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_precise).unwrap().to_imprecise().unwrap();
+    let new_user_total_interest_earned_amount = old_user_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
+    let new_user_total_fees_generated_amount = old_user_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
+    let new_user_montly_interest_earned_amount = old_user_monthly_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
+    let new_user_montly_fees_generated_amount = old_user_monthly_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
 
     token_reserve.deposited_amount = new_token_reserve_deposited_amount;
     token_reserve.interest_earned_amount = new_token_reserve_interest_earned_amount;
+    token_reserve.fees_generated_amount = new_token_reserve_fees_generated_amount;
     sub_market.deposited_amount = new_sub_market_deposited_amount;
     sub_market.interest_earned_amount = new_sub_market_interest_earned_amount;
-    user_tab_account.deposited_amount = new_user_deposited_amount;
-    user_tab_account.interest_earned_amount = new_user_total_interest_earned_amount;
-    lending_user_monthly_statement_account.snap_shot_balance_amount = user_tab_account.deposited_amount;
-    lending_user_monthly_statement_account.snap_shot_interest_earned_amount = user_tab_account.interest_earned_amount;
+    sub_market.fees_generated_amount = new_sub_market_fees_generated_amount;
+    sub_market.uncollected_fees_amount = new_sub_market_uncollected_fees_amount;
+    lending_user_tab_account.deposited_amount = new_user_deposited_amount;
+    lending_user_tab_account.interest_earned_amount = new_user_total_interest_earned_amount;
+    lending_user_tab_account.fees_generated_amount = new_user_total_fees_generated_amount;
+    lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
+    lending_user_monthly_statement_account.snap_shot_interest_earned_amount = lending_user_tab_account.interest_earned_amount;
+    lending_user_monthly_statement_account.snap_shot_fees_generated_amount = lending_user_tab_account.fees_generated_amount;
     lending_user_monthly_statement_account.monthly_interest_earned_amount = new_user_montly_interest_earned_amount;
+    lending_user_monthly_statement_account.monthly_fees_generated_amount = new_user_montly_fees_generated_amount;
 
     Ok(())
 }
@@ -210,12 +235,12 @@ fn update_user_previous_interest_earned<'info>(
 fn update_user_previous_interest_accrued<'info>(
     token_reserve: &mut Account<TokenReserve>,
     sub_market: &mut Account<SubMarket>,
-    user_tab_account: &mut Account<LendingUserTabAccount>,
+    lending_user_tab_account: &mut Account<LendingUserTabAccount>,
     lending_user_monthly_statement_account: &mut Account<LendingUserMonthlyStatementAccount>
 ) -> Result<()>
 {
     //Skip if the user has no borrowed amount
-    if user_tab_account.borrowed_amount == 0
+    if lending_user_tab_account.borrowed_amount == 0
     {
         return Ok(())
     }
@@ -223,13 +248,13 @@ fn update_user_previous_interest_accrued<'info>(
     //Use spl-math library PreciseNumber for fixed point math
     //User New Debt = Old Debt * (Token Reserve Accrued Interest Index/User Accrued Interest Index)
     let token_reserve_index_precise = PreciseNumber::new(token_reserve.interest_change_index).unwrap();
-    let user_index_precise = PreciseNumber::new(user_tab_account.interest_change_index).unwrap();
+    let user_index_precise = PreciseNumber::new(lending_user_tab_account.interest_change_index).unwrap();
     let old_token_reserve_borrowed_amount_precise = PreciseNumber::new(token_reserve.borrowed_amount).unwrap();
     let old_token_reserve_interest_accrued_amount_precise = PreciseNumber::new(token_reserve.interest_accrued_amount).unwrap();
     let old_sub_market_borrowed_amount_precise = PreciseNumber::new(sub_market.borrowed_amount).unwrap();
     let old_sub_market_interest_accrued_amount_precise = PreciseNumber::new(sub_market.interest_accrued_amount).unwrap();
-    let old_user_borrowed_amount_precise = PreciseNumber::new(user_tab_account.borrowed_amount).unwrap();
-    let old_user_interest_accrued_amount_precise = PreciseNumber::new(user_tab_account.interest_accrued_amount).unwrap();
+    let old_user_borrowed_amount_precise = PreciseNumber::new(lending_user_tab_account.borrowed_amount).unwrap();
+    let old_user_interest_accrued_amount_precise = PreciseNumber::new(lending_user_tab_account.interest_accrued_amount).unwrap();
     let old_user_monthly_interest_accrued_amount_precise = PreciseNumber::new(lending_user_monthly_statement_account.monthly_interest_accrued_amount).unwrap();
 
     let token_index_divided_by_user_index_precise = token_reserve_index_precise.checked_div(&user_index_precise).unwrap();
@@ -248,10 +273,10 @@ fn update_user_previous_interest_accrued<'info>(
     token_reserve.interest_accrued_amount = new_token_reserve_interest_accrued_amount;
     sub_market.borrowed_amount = new_sub_market_borrowed_amount;
     sub_market.interest_accrued_amount = new_sub_market_interest_accrued_amount;
-    user_tab_account.borrowed_amount = new_user_borrowed_amount;
-    user_tab_account.interest_accrued_amount = new_user_total_interest_accrued_amount;
-    lending_user_monthly_statement_account.snap_shot_debt_amount = user_tab_account.borrowed_amount;
-    lending_user_monthly_statement_account.snap_shot_interest_accrued_amount = user_tab_account.interest_accrued_amount;
+    lending_user_tab_account.borrowed_amount = new_user_borrowed_amount;
+    lending_user_tab_account.interest_accrued_amount = new_user_total_interest_accrued_amount;
+    lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
+    lending_user_monthly_statement_account.snap_shot_interest_accrued_amount = lending_user_tab_account.interest_accrued_amount;
     lending_user_monthly_statement_account.monthly_interest_accrued_amount = new_user_montly_interest_accrued_amount;
 
     Ok(())
@@ -295,8 +320,9 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         require_keys_eq!(expected_pda.key(), tab_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
 
         //The lending user tab account interest earned and debt accured data (Plus Token Reserve data) must be no older than 120 seconds. The user has to run the update_user_snap_shots function if data is stale.
+        //2 minutes gives the user plenty of time to call both functions. Users shouldn't earn or accrue that much interest or debt within 2 minutes and if they do, that's what the liquidation function is for if there's an issue later :0
         let time_diff = new_lending_activity_time_stamp - tab_account.interest_change_last_updated_time_stamp;
-        require!(time_diff < 120, LendingError::StaleSnapShotData);
+        require!(time_diff <= 120, LendingError::StaleSnapShotData);
 
         //Validate Price Update Account
         let price_update_account_serialized = remaining_accounts_iter.next().unwrap(); //The Price Update Account comes after the Tab Account
@@ -712,7 +738,7 @@ pub mod lending_protocol
         sub_market.last_lending_activity_amount = amount as u128;
         sub_market.last_lending_activity_type = Activity::Deposit as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp;
-        lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp; //This gets set when calling deposit_tokens, repay_tokens, or update_user_snap_shots
+        lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp; //This gets set when calling deposit_tokens, repay_tokens, update_user_snap_shots, or claim_sub_market_fees
         lending_user_monthly_statement_account.last_lending_activity_amount = amount as u128;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Deposit as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
@@ -886,7 +912,6 @@ pub mod lending_protocol
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account should have a corresponding Pyth Price Update Account directly after it in the passed in array
         require!(user_lending_account.tab_account_count as usize == ctx.remaining_accounts.len() * 2 as usize, InvalidInputError::IncorrectNumberOfTabAccounts);
 
-        let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
@@ -1104,7 +1129,7 @@ pub mod lending_protocol
         sub_market.last_lending_activity_amount = payment_amount as u128;
         sub_market.last_lending_activity_type = Activity::Repay as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp;
-        lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp; //This gets set when calling deposit_tokens, repay_tokens, or update_user_snap_shots
+        lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp; //This gets set when calling deposit_tokens, repay_tokens, update_user_snap_shots, or claim_sub_market_fees
         lending_user_monthly_statement_account.last_lending_activity_amount = payment_amount as u128;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
@@ -1274,6 +1299,80 @@ pub mod lending_protocol
         lending_stats.snap_shots += 1;
 
         msg!("Snap Shots updated for address: {}, user index: {}", ctx.accounts.signer.key(), user_account_index);
+
+        Ok(())
+    }
+
+    pub fn claim_sub_market_fees(ctx: Context<ClaimSubMarketFees>,
+        token_mint_address: Pubkey,
+        sub_market_owner_address: Pubkey,
+        sub_market_index: u16,
+        user_account_index: u8
+    ) -> Result<()> 
+    {
+        let sub_market = &mut ctx.accounts.sub_market;
+        //Only the Fee Collector can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), sub_market.fee_collector_address.key(), AuthorizationError::NotFeeCollector);
+
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        let lending_stats = &mut ctx.accounts.lending_stats;
+        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
+        let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
+        let time_stamp = Clock::get()?.unix_timestamp as u64;
+
+        //Initialize monthly statement account if the statement month/year has changed.
+        if lending_user_monthly_statement_account.monthly_statement_account_added == false
+        {
+            let lending_protocol = &ctx.accounts.lending_protocol;
+            initialize_lending_user_monthly_statement_account(
+                lending_user_monthly_statement_account,
+                lending_protocol,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                token_mint_address.key()
+            )?;
+        }
+
+        //Calculate Token Reserve Previously Earned Interest
+        update_token_reserve_accrued_interest_index(token_reserve, time_stamp)?;
+
+        update_user_previous_interest_earned(
+            token_reserve,
+            sub_market,
+            lending_user_tab_account,
+            lending_user_monthly_statement_account
+        )?;
+
+        update_user_previous_interest_accrued(
+            token_reserve,
+            sub_market,
+            lending_user_tab_account,
+            lending_user_monthly_statement_account
+        )?;
+
+        //Collect Fees
+        lending_user_tab_account.deposited_amount = lending_user_tab_account.deposited_amount + sub_market.uncollected_fees_amount;
+        lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
+        lending_user_monthly_statement_account.snap_shot_fees_collected_amount = lending_user_tab_account.fees_collected_amount;
+        lending_user_monthly_statement_account.monthly_fees_collected_amount = sub_market.uncollected_fees_amount;
+
+        sub_market.uncollected_fees_amount = 0;
+
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        update_token_reserve_rates(token_reserve)?;
+        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+
+        //Stat Listener
+        lending_stats.fee_collections += 1;
+
+        lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp; //This gets set when calling deposit_tokens, repay_tokens, update_user_snap_shots, or claim_sub_market_fees
+        
+        msg!("Fees Collected for TokenReserve: {}, SubMarketOwner: {}, SubMarketIndex: {}, FeeCollector: {}, FeeCollectorAccountIndex: {}",
+        token_mint_address.key(),
+        sub_market_owner_address.key(),
+        sub_market_index,
+        ctx.accounts.signer.key(),
+        user_account_index);
 
         Ok(())
     }
@@ -1492,7 +1591,7 @@ pub struct DepositTokens<'info>
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
+    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
 
     #[account(
         mut,
@@ -1617,7 +1716,7 @@ pub struct WithdrawTokens<'info>
         mut,
         seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
-    pub sub_market: Account<'info, SubMarket>,
+    pub sub_market: Box<Account<'info, SubMarket>>,
 
     #[account(
         mut,
@@ -1698,7 +1797,7 @@ pub struct BorrowTokens<'info>
         mut,
         seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
-    pub sub_market: Account<'info, SubMarket>,
+    pub sub_market: Box<Account<'info, SubMarket>>,
 
     #[account(
         mut,
@@ -1779,7 +1878,7 @@ pub struct RepayTokens<'info>
         mut,
         seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
-    pub sub_market: Account<'info, SubMarket>,
+    pub sub_market: Box<Account<'info, SubMarket>>,
 
     #[account(
         mut,
@@ -1858,6 +1957,68 @@ pub struct UpdateUserSnapShots<'info>
     pub system_program: Program<'info, System>
 }
 
+#[derive(Accounts)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+pub struct ClaimSubMarketFees<'info> 
+{
+     #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        bump)]
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
+
+    #[account(
+        mut, 
+        seeds = [b"lendingStats".as_ref()],
+        bump)]
+    pub lending_stats: Account<'info, LendingStats>,
+
+    #[account(
+        mut,
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub sub_market: Account<'info, SubMarket>,
+
+    #[account(
+        mut,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub user_lending_account: Account<'info, LendingUserAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint_address.key().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
 //Accounts
 #[account]
 pub struct LendingProtocolCEO
@@ -1895,6 +2056,7 @@ pub struct LendingStats
     pub repayments: u128,
     pub liquidations: u128,
     pub snap_shots: u128,
+    pub fee_collections: u128,
     pub collateral_swaps: u128
 }
 
@@ -1919,6 +2081,7 @@ pub struct TokenReserve
     pub interest_change_index: u128, //Starts at 1 (in fixed point notation) and increases as Supply User interest is earned from Borrow Users so that it can be proportionally distributed to Supply Users
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
+    pub fees_generated_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
@@ -1939,6 +2102,8 @@ pub struct SubMarket
     pub fee_on_interest_earned_rate: u16,
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
+    pub fees_generated_amount: u128,
+    pub uncollected_fees_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
@@ -1973,6 +2138,8 @@ pub struct LendingUserTabAccount
     pub interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest and debt is updated
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
+    pub fees_generated_amount: u128,
+    pub fees_collected_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
@@ -1991,12 +2158,16 @@ pub struct LendingUserMonthlyStatementAccount
     pub monthly_statement_account_added: bool,
     pub snap_shot_balance_amount: u128,//The snap_shot properties give a snapshot of the value of the Tab Account over its whole life time at the time it is updated
     pub snap_shot_interest_earned_amount: u128,
+    pub snap_shot_fees_generated_amount: u128,
+    pub snap_shot_fees_collected_amount: u128,
     pub snap_shot_debt_amount: u128,
     pub snap_shot_interest_accrued_amount: u128,
     pub snap_shot_repaid_debt_amount: u128,
     pub snap_shot_user_was_liquidated_amount: u128,
     pub monthly_deposited_amount: u128,//The monthly properties give the specific value changes for that specific month
     pub monthly_interest_earned_amount: u128,
+    pub monthly_fees_generated_amount: u128,
+    pub monthly_fees_collected_amount: u128,
     pub monthly_withdrawal_amount: u128,
     pub monthly_borrowed_amount: u128,
     pub monthly_interest_accrued_amount: u128,
