@@ -66,6 +66,8 @@ pub enum InvalidInputError
     TooManyFunds,
     #[msg("You must provide all of the sub user's tab accounts")]
     IncorrectNumberOfTabAccounts,
+    #[msg("You must provide all of the sub user's tab accounts and Pyth price update accounts")]
+    IncorrectNumberOfTabAndPythPriceUpdateAccounts,
     #[msg("You must provide the sub user's tab accounts ordered by user_tab_account_index")]
     IncorrectOrderOfTabAccounts,
     #[msg("Unexpected Tab Account PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]
@@ -784,7 +786,7 @@ pub mod lending_protocol
 
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
-        require!(user_lending_account.tab_account_count as usize == ctx.remaining_accounts.len() * 2 as usize, InvalidInputError::IncorrectNumberOfTabAccounts);
+        require!(user_lending_account.tab_account_count as usize == ctx.remaining_accounts.len() * 2 as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
 
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -910,7 +912,7 @@ pub mod lending_protocol
     {
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account should have a corresponding Pyth Price Update Account directly after it in the passed in array
-        require!(user_lending_account.tab_account_count as usize == ctx.remaining_accounts.len() * 2 as usize, InvalidInputError::IncorrectNumberOfTabAccounts);
+        require!(user_lending_account.tab_account_count as usize == ctx.remaining_accounts.len() * 2 as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
 
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;
