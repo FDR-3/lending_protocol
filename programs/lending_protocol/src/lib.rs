@@ -35,6 +35,7 @@ const LENDING_USER_ACCOUNT_EXTRA_SIZE: usize = 4;
 
 const MAX_ACCOUNT_NAME_LENGTH: usize = 25;
 const PYTH_FEED_ID_LEN: usize = 32;
+pub const PRICE_UPDATE_V2_SIZE: usize = size_of::<PriceUpdateV2>();
 
 enum Activity
 {
@@ -89,10 +90,10 @@ pub enum LendingError
     StaleSnapShotData
 }
 
-//Helper function to get the token price by the pyth ID
+/*//Helper function to get the token price by the pyth ID
 fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_feed_id: [u8; 32]) -> Result<Price>
 {
-    pub const MAXIMUM_AGE: u64 = 30; //30 seconds
+    pub const MAXIMUM_AGE: u64 = 4000; //30 seconds
 
     let current_price: Price = price_update_account
     .get_price_no_older_than(
@@ -103,7 +104,7 @@ fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_f
     .map_err(|_| error!(LendingError::StalePriceData))?; //Handle Option returned by pyth (None if stale or wrong feed)
 
     Ok(current_price)
-}
+}*/
 
 //Helper function to update Token Reserve Accrued Interest Index before a lending transaction (deposit, withdraw, borrow, repay, liqudate)
 //This function helps determine how much compounding interest a Token Reserve has earned for its token over the whole life of the Token Reserve's entire existence
@@ -299,6 +300,8 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     let mut user_deposited_value = PreciseNumber::new(0 as u128).unwrap();
     let mut user_borrowed_value = PreciseNumber::new(0 as u128).unwrap();
     let mut user_withdraw_or_borrow_request_value = PreciseNumber::new(0 as u128).unwrap();
+    let time_stamp = Clock::get()?.unix_timestamp;
+    const MAXIMUM_PRICE_AGE: u64 = 30; //30 seconds
 
     while let Some(tab_account_serialized) = remaining_accounts_iter.next()
     {
@@ -325,7 +328,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         //2 minutes gives the user plenty of time to call both functions. Users shouldn't earn or accrue that much interest or debt within 2 minutes and if they do, that's what the liquidation function is for if there's an issue later :0
         let time_diff = new_lending_activity_time_stamp - tab_account.interest_change_last_updated_time_stamp;
         require!(time_diff <= 120, LendingError::StaleSnapShotData);
-
+        
         //Validate Price Update Account
         let price_update_account_serialized = remaining_accounts_iter.next().unwrap(); //The Price Update Account comes after the Tab Account
         require_keys_eq!(tab_account.pyth_feed_address.key(), price_update_account_serialized.key(), InvalidInputError::UnexpectedPythPriceUpdateAccount);
@@ -334,12 +337,22 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         let mut data_slice: &[u8] = data_ref.deref();
 
         let price_update_account = PriceUpdateV2::try_deserialize(&mut data_slice)?;
+        
+        //The published time for the Pyth Price Update Account can be no older than 30 seconds
+        let time_diff = (time_stamp - price_update_account.price_message.publish_time) as u64;
+        require!(time_diff <= MAXIMUM_PRICE_AGE, LendingError::StalePriceData);
 
-        let current_price = get_token_pyth_price_by_id(price_update_account, tab_account.pyth_feed_id)?;
+        let current_price = price_update_account.price_message;
 
         msg!
         (
-            "Token/USD Price: {} +- {} x 10^{}",
+            "Token: {}",
+            tab_account.token_mint_address.key()
+        );
+
+        msg!
+        (
+            "Token Price: {} +- {} x 10^{}",
             current_price.price,
             current_price.conf,
             current_price.exponent
@@ -419,7 +432,7 @@ pub mod lending_protocol
     use super::*;
 
     pub fn initialize_lending_protocol(ctx: Context<InitializeLendingProtocol>, statement_month: u8, statement_year: u32) -> Result<()> 
-    {
+    {msg!("PriceUpdateV2 Expected Size: {}", size_of::<PriceUpdateV2>());
         //Only the initial CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), INITIAL_CEO_ADDRESS, AuthorizationError::NotCEO);
 
@@ -626,6 +639,7 @@ pub mod lending_protocol
             lending_user_tab_account.user_account_index = user_account_index;
             lending_user_tab_account.token_mint_address = token_mint_address;
             lending_user_tab_account.pyth_feed_id = token_reserve.pyth_feed_id;
+            lending_user_tab_account.pyth_feed_address = token_reserve.pyth_feed_address;
             lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
             lending_user_tab_account.sub_market_index = sub_market_index;
             lending_user_tab_account.user_tab_account_index = user_lending_account.tab_account_count;
@@ -786,7 +800,7 @@ pub mod lending_protocol
 
         let user_lending_account = &mut ctx.accounts.user_lending_account;
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
-        require!(user_lending_account.tab_account_count as usize == ctx.remaining_accounts.len() * 2 as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
+        require!((user_lending_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
 
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;

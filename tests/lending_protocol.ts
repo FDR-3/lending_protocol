@@ -1,12 +1,13 @@
 import * as anchor from "@coral-xyz/anchor"
 import { Program } from "@coral-xyz/anchor"
 import { LendingProtocol } from "../target/types/lending_protocol"
+import { PythMock } from "../target/types/pyth_mock"
 import { assert } from "chai"
 import * as fs from 'fs'
-import { PublicKey, LAMPORTS_PER_SOL, Transaction, Keypair } from '@solana/web3.js'
+import { PublicKey, LAMPORTS_PER_SOL, Transaction, Keypair, SystemProgram } from '@solana/web3.js'
 import { Token, ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token"
-import { PythSolanaReceiver, InstructionWithEphemeralSigners } from "@pythnetwork/pyth-solana-receiver";
-import { HermesClient } from "@pythnetwork/hermes-client";
+
+//IMPORTANT: #pyth-mock (in Anchor.toml) should be uncommented out when not testing on local net or this test file won't run properly
 
 describe("lending_protocol", () =>
 {
@@ -14,6 +15,8 @@ describe("lending_protocol", () =>
   anchor.setProvider(anchor.AnchorProvider.env())
 
   const program = anchor.workspace.LendingProtocol as Program<LendingProtocol>
+  const mockProgram = anchor.workspace.PythMock as Program<PythMock>
+  const mockedPythAccountSpace = 134
   const notCEOErrorMsg = "Only the CEO can call this function"
   const feeOnInterestEarnedRateTooHighMsg = "The fee on interest earned rate can't be greater than 100%"
   const feeOnInterestEarnedRateTooLowMsg = "ERR_OUT_OF_RANGE"
@@ -27,30 +30,23 @@ describe("lending_protocol", () =>
   const solTokenMintAddress = new PublicKey("So11111111111111111111111111111111111111112")
   const solTokenDecimalAmount = 9
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
-  //const solPythFeedIdByteArray = [Number(0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d)]
-  const solPythFeedIdString = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
+  const solTestPrice = new anchor.BN(12345)
+  const solTestConf = new anchor.BN(12345)
+  var solPythPriceUpdateAccountKeypair: Keypair
   const solPythFeedIdByteArray = Buffer.from("ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", 'hex')
-  const solPythFeedAccountKey = new PublicKey("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE")
-  const solPythPriceUpdateRemainingAccount = 
-  {
-    pubkey: solPythFeedAccountKey,
-    isSigner: false,
-    isWritable: true
-  }
+  var solLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var solPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   
   var usdcMint = undefined
-  const usdcDecimalAmount = 6
+  const usdcTokenDecimalAmount = 6
   const tenUSDC = new anchor.BN(10_000_000)
   const tenKUSDC = 10_000_000_000
-  //const usdcPythFeedIdByteArray = [Number(0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a)]
+  const usdcTestPrice = new anchor.BN(12345)
+  const usdcTestConf = new anchor.BN(12345)
+  var usdcPythPriceUpdateAccountKeypair: Keypair
   const usdcPythFeedIdByteArray = Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", 'hex')
-  const usdcPythFeedAccountKey = new PublicKey("Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX")
-  const usdcPythPriceUpdateRemainingAccount = 
-  {
-    pubkey: usdcPythFeedAccountKey,
-    isSigner: false,
-    isWritable: true
-  }
+  var usdcLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var usdcPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
   const borrowAPY5Percent = 500
   const borrowAPY7Percent = 700
@@ -73,13 +69,81 @@ describe("lending_protocol", () =>
   const accountName25Characters = "Lorem ipsum dolor sit ame"
   const accountName26Characters = "Lorem ipsum dolor sit amet"
 
-  const hermesClient = new HermesClient("https://hermes.pyth.network/")
-  const pythSolanaReceiver = new PythSolanaReceiver({
-    connection: program.provider.connection,
-    wallet: program.provider.wallet,
+  //Load the keypair from config file
+  const keypairPath = '/home/fdr-3/.config/solana/id.json';
+  const keypairData = JSON.parse(fs.readFileSync(keypairPath, 'utf8'));
+  const testingWalletKeypair = Keypair.fromSecretKey(Uint8Array.from(keypairData))
+  const successorWalletKeypair = anchor.web3.Keypair.generate()
+
+  before(async () =>
+  {
+    //Fund Successor Wallet
+    console.log("Funding Sucessor Wallet")
+    await airDropSol(successorWalletKeypair.publicKey)
+
+    //Create a new USDC Mint for testing
+    console.log("Creating a USDC Token Mint and ATA for Testing")
+
+    usdcMint = await Token.createMint
+    (
+      program.provider.connection,
+      testingWalletKeypair, //Payer for the mint creation
+      program.provider.publicKey, // Mint authority (who can mint tokens)
+      null, //Freeze authority (optional)
+      usdcTokenDecimalAmount, //Decimals for USDC
+      TOKEN_PROGRAM_ID //SPL Token program ID
+    )
+
+    const walletATA = await deriveWalletATA(successorWalletKeypair.publicKey, usdcMint.publicKey)
+    await createATAForWallet(successorWalletKeypair, usdcMint.publicKey, walletATA)
+    await mintUSDCToWallet(usdcMint.publicKey, walletATA)
+
+    //Get Solana Block Chain latest time stamp
+    const slot = await program.provider.connection.getSlot();
+    const timestamp = new anchor.BN(await program.provider.connection.getBlockTime(slot));
+
+    //Mock Sol Pyth Price Update Account
+    console.log("Setting up SOL Mocked Pyth Price Update Account")
+
+    solPythPriceUpdateAccountKeypair = await createMockedPythPriceUpdateAccount()
+
+    await updateMockedPriceUpdateV2Account
+    (
+      solPythPriceUpdateAccountKeypair,
+      solTestPrice,
+      solTestConf,
+      solTokenDecimalAmount
+    )
+    
+    solPythPriceUpdateRemainingAccount = 
+    {
+      pubkey: solPythPriceUpdateAccountKeypair.publicKey,
+      isSigner: false,
+      isWritable: true
+    }
+
+    //Mock USDC Pyth Price Update Account
+    console.log("Setting up USDC Mocked Pyth Price Update Account")
+
+    usdcPythPriceUpdateAccountKeypair = await createMockedPythPriceUpdateAccount()
+
+    await updateMockedPriceUpdateV2Account
+    (
+      usdcPythPriceUpdateAccountKeypair,
+      usdcTestPrice,
+      usdcTestConf,
+      usdcTokenDecimalAmount
+    )
+
+    usdcPythPriceUpdateRemainingAccount = 
+    {
+      pubkey: usdcPythPriceUpdateAccountKeypair.publicKey,
+      isSigner: false,
+      isWritable: true
+    }
+
+    console.log("Setup Complete")
   })
-  
-  let successorWallet = anchor.web3.Keypair.generate()
 
   it("Initializes Lending Protocol", async () => 
   {
@@ -100,8 +164,8 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
-      .accounts({signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      .accounts({signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -114,19 +178,17 @@ describe("lending_protocol", () =>
 
   it("Passes on the Lending Protocol CEO Account", async () => 
   {
-    await airDropSol(successorWallet.publicKey)
-
-    await program.methods.passOnLendingProtocolCeo(successorWallet.publicKey).rpc()
+    await program.methods.passOnLendingProtocolCeo(successorWalletKeypair.publicKey).rpc()
     
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOAccountPDA())
-    assert(ceoAccount.address.toBase58() == successorWallet.publicKey.toBase58())
+    assert(ceoAccount.address.toBase58() == successorWalletKeypair.publicKey.toBase58())
   })
   
   it("Passes back the Lending Protocol CEO Account", async () => 
   {
     await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
-    .accounts({signer: successorWallet.publicKey})
-    .signers([successorWallet])
+    .accounts({signer: successorWalletKeypair.publicKey})
+    .signers([successorWalletKeypair])
     .rpc()
     
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOAccountPDA())
@@ -140,8 +202,8 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.updateCurrentStatementMonthAndYear(newStatementMonth, newStatementYear)
-      .accounts({signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      .accounts({signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -168,9 +230,9 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIdByteArray, solPythFeedAccountKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
-      .accounts({mint: solTokenMintAddress, signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIdByteArray, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+      .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -183,7 +245,7 @@ describe("lending_protocol", () =>
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIdByteArray, solPythFeedAccountKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIdByteArray, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({mint: solTokenMintAddress})
     .rpc()
     
@@ -192,6 +254,8 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
+    assert(Buffer.from(tokenReserve.pythFeedId).equals(solPythFeedIdByteArray))
+    assert(tokenReserve.pythFeedAddress.toBase58() == solPythPriceUpdateAccountKeypair.publicKey.toBase58())
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
   })
@@ -203,8 +267,8 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, globalLimit1)
-      .accounts({signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      .accounts({signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -271,12 +335,12 @@ describe("lending_protocol", () =>
 
   it("Edits a wSOL SubMarket", async () => 
   {
-    await program.methods.editSubMarket(solTokenMintAddress, testSubMarketIndex, successorWallet.publicKey, feeRate100Percent).rpc()
+    await program.methods.editSubMarket(solTokenMintAddress, testSubMarketIndex, successorWalletKeypair.publicKey, feeRate100Percent).rpc()
 
     const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex))
     
     assert(subMarket.owner.toBase58() == program.provider.publicKey.toBase58())
-    assert(subMarket.feeCollectorAddress.toBase58() == successorWallet.publicKey.toBase58())
+    assert(subMarket.feeCollectorAddress.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(subMarket.feeOnInterestEarnedRate == feeRate100Percent)
     assert(subMarket.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(subMarket.subMarketIndex == testSubMarketIndex)
@@ -289,9 +353,9 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.editSubMarket(solTokenMintAddress, testSubMarketIndex, successorWallet.publicKey, feeRate100Percent)
-      .accounts({signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      await program.methods.editSubMarket(solTokenMintAddress, testSubMarketIndex, successorWalletKeypair.publicKey, feeRate100Percent)
+      .accounts({signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -305,26 +369,37 @@ describe("lending_protocol", () =>
   it("Deposits wSOL Into the Token Reserve", async () => 
   {
     await program.methods.depositTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
-    .accounts({mint: solTokenMintAddress, signer: successorWallet.publicKey})
-    .signers([successorWallet])
+    .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+    .signers([successorWalletKeypair])
     .rpc()
    
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
-
     assert(tokenReserve.tokenReserveProtocolIndex == 0)
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(twoSol))
+  
+    const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(solTokenMintAddress), solTokenMintAddress, true)
+    const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
+    assert(parseInt(tokenReserveATAAccount.value.amount) == twoSol.toNumber())
+
+    const lendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
+    (
+      successorWalletKeypair.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserAccount.accountName == accountName)
+    assert(lendingUserAccount.tabAccountCount == 1)
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
       solTokenMintAddress,
       program.provider.publicKey,
       testSubMarketIndex,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
     assert(lendingUserTabAccount.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
@@ -333,29 +408,35 @@ describe("lending_protocol", () =>
     assert(lendingUserTabAccount.userTabAccountAdded == true)
     assert(lendingUserTabAccount.depositedAmount.eq(twoSol))
 
-    const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(solTokenMintAddress), solTokenMintAddress, true)
-    const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
-    assert(parseInt(tokenReserveATAAccount.value.amount) == twoSol.toNumber())
-
-    const lendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
-    (
-      successorWallet.publicKey,
-      testUserAccountIndex
-    ))
-    assert(lendingUserAccount.accountName == accountName)
-
     const lendingUserMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
     (
       newStatementMonth,
       newStatementYear,
       solTokenMintAddress,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
     assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
     assert(lendingUserMonthlyStatementAccount.snapShotBalanceAmount.eq(twoSol))
     assert(lendingUserMonthlyStatementAccount.monthlyDepositedAmount.eq(twoSol))
+
+    //Populate sol remaining account
+    const solLendingUserTabAccountPDA = getLendingUserTabAccountPDA
+    (
+      solTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWalletKeypair.publicKey,
+      testUserAccountIndex
+    )
+
+    solLendingUserTabRemainingAccount = 
+    {
+      pubkey: solLendingUserTabAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
   })
 
   it("Verifies a User Can't Have an Account Name Longer Than 25 Characters", async () => 
@@ -365,8 +446,8 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.editLendingUserAccountName(testUserAccountIndex, accountName26Characters)
-      .accounts({signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      .accounts({signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -380,13 +461,13 @@ describe("lending_protocol", () =>
   it("Verifies a User Can Change Their Account Names", async () => 
   {
     await program.methods.editLendingUserAccountName(testUserAccountIndex, accountName25Characters)
-    .accounts({signer: successorWallet.publicKey})
-    .signers([successorWallet])
+    .accounts({signer: successorWalletKeypair.publicKey})
+    .signers([successorWalletKeypair])
     .rpc()
 
     const lendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
     (
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
     assert(lendingUserAccount.accountName == accountName25Characters)
@@ -400,8 +481,8 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tooMuchSol)
-      .accounts({mint: solTokenMintAddress, signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -412,15 +493,15 @@ describe("lending_protocol", () =>
     assert(errorMessage == insufficientFundsErrorMsg)
   })
 
-  it("Verifies a User Can't Withdraw wSOL Funds Without Showing All of Their Tabs", async () => 
+  it("Verifies a User Can't Withdraw wSOL Funds Without Showing All of Their Tabs and Price Update Accounts", async () => 
   {
     var errorMessage = ""
 
     try
     {
       await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
-      .accounts({mint: solTokenMintAddress, signer: successorWallet.publicKey})
-      .signers([successorWallet])
+      .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -433,45 +514,24 @@ describe("lending_protocol", () =>
 
   it("Withdraws wSOL From the Token Reserve", async () => 
   {
-    const wSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
-    (
+    const remainingAccounts = [solLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
+
+    await program.methods.withdrawTokens(
       solTokenMintAddress,
       program.provider.publicKey,
       testSubMarketIndex,
-      successorWallet.publicKey,
-      testUserAccountIndex
+      testUserAccountIndex,
+      twoSol
     )
-
-    var wSOLLendingUserTabRemainingAccount = 
-    {
-      pubkey: wSOLLendingUserTabAccountPDA,
-      isSigner: false,
-      isWritable: true
-    }
-
-    const remainingAccounts = [wSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
-
-    const priceUpdateArray = [solPythFeedIdString]
-
-    await getPythPriceUpdateAndWithdrawTokens(solTokenMintAddress,
-    program.provider.publicKey,
-    testSubMarketIndex,
-    testUserAccountIndex,
-    twoSol,
-    remainingAccounts,
-    priceUpdateArray)
-
-    /*await program.methods.withdrawTokens(, , , , )
-    .accounts({mint: solTokenMintAddress, signer: successorWallet.publicKey})
-    .signers([successorWallet]) TODO
-    .remainingAccounts([wSOLLendingUserTabRemainingAccount])
-    .rpc()*/
+    .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
+    .remainingAccounts(remainingAccounts)
+    .signers([successorWalletKeypair])
+    .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
     assert(tokenReserve.tokenReserveProtocolIndex == 0)
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
-    console.log(tokenReserve)
     assert(tokenReserve.depositedAmount.eq(bnZero))
 
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
@@ -479,10 +539,10 @@ describe("lending_protocol", () =>
       solTokenMintAddress,
       program.provider.publicKey,
       testSubMarketIndex,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
     assert(lendingUserTabAccount.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
@@ -497,7 +557,7 @@ describe("lending_protocol", () =>
 
     var errorMessage = ""
 
-    const userATA = await deriveWalletATA(successorWallet.publicKey, solTokenMintAddress, true)
+    const userATA = await deriveWalletATA(successorWalletKeypair.publicKey, solTokenMintAddress, true)
     try
     {
       await program.provider.connection.getTokenAccountBalance(userATA)
@@ -512,7 +572,7 @@ describe("lending_protocol", () =>
       newStatementMonth,
       newStatementYear,
       solTokenMintAddress,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
@@ -523,44 +583,21 @@ describe("lending_protocol", () =>
     //Verify that wrapped SOL ATA for User was closed since it was empty
     assert(errorMessage == ataDoesNotExistErrorMsg)
 
-    var userBalance = await program.provider.connection.getBalance(successorWallet.publicKey)
+    var userBalance = await program.provider.connection.getBalance(successorWalletKeypair.publicKey)
 
     assert(userBalance >= 9999)
   })
 
-  //Load the keypair from config file
-  const keypairPath = '/home/fdr-3/.config/solana/id.json';
-  const keypairData = JSON.parse(fs.readFileSync(keypairPath, 'utf8'));
-  const testingWalletKeypair = Keypair.fromSecretKey(Uint8Array.from(keypairData))
-
-  it("Creates A USDC Token Mint For Testing", async () => 
-  {
-    //Create a new USDC Mint for testing
-    usdcMint = await Token.createMint
-    (
-      program.provider.connection,
-      testingWalletKeypair, //Payer for the mint creation
-      program.provider.publicKey, // Mint authority (who can mint tokens)
-      null, //Freeze authority (optional)
-      usdcDecimalAmount, //Decimals for USDC
-      TOKEN_PROGRAM_ID //SPL Token program ID
-    )
-
-    const walletATA = await deriveWalletATA(successorWallet.publicKey, usdcMint.publicKey)
-    await createATAForWallet(successorWallet, usdcMint.publicKey, walletATA)
-    await mintUSDCToWallet(usdcMint.publicKey, walletATA)
-  })
-
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcMint.publicKey, usdcDecimalAmount, usdcPythFeedIdByteArray, usdcPythFeedAccountKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythFeedIdByteArray, usdcPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({mint: usdcMint.publicKey})
     .rpc()
     
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     assert(tokenReserve.tokenReserveProtocolIndex == 1)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
-    assert(tokenReserve.tokenDecimalAmount == usdcDecimalAmount)
+    assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
@@ -581,25 +618,32 @@ describe("lending_protocol", () =>
   it("Deposits USDC Into the Token Reserve", async () => 
   {
     await program.methods.depositTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC, null)
-    .accounts({mint: usdcMint.publicKey, signer: successorWallet.publicKey})
-    .signers([successorWallet])
+    .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+    .signers([successorWalletKeypair])
     .rpc()
    
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     assert(tokenReserve.tokenReserveProtocolIndex == 1)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
-    assert(tokenReserve.tokenDecimalAmount == usdcDecimalAmount)
+    assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(tenUSDC))
+
+    const lendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
+    (
+      successorWalletKeypair.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserAccount.tabAccountCount == 2)
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
       usdcMint.publicKey,
       program.provider.publicKey,
       testSubMarketIndex,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
     assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
@@ -613,7 +657,7 @@ describe("lending_protocol", () =>
       newStatementMonth,
       newStatementYear,
       usdcMint.publicKey,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
@@ -624,6 +668,23 @@ describe("lending_protocol", () =>
     const tokenReserveATA = await deriveWalletATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
     assert(parseInt(tokenReserveATAAccount.value.amount) == tenUSDC.toNumber())
+
+    //Populate USDC remaining account
+    const usdcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
+    (
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWalletKeypair.publicKey,
+      testUserAccountIndex
+    )
+
+    usdcLendingUserTabRemainingAccount = 
+    {
+      pubkey: usdcLendingUserTabAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
   })
 
   it("Verifies you Must Pass in the User Tab Accounts in the Order They Were Created", async () => 
@@ -632,40 +693,12 @@ describe("lending_protocol", () =>
 
     try
     {
-      const wSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
-      (
-        solTokenMintAddress,
-        program.provider.publicKey,
-        testSubMarketIndex,
-        successorWallet.publicKey,
-        testUserAccountIndex
-      )
-      const usdcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
-      (
-        usdcMint.publicKey,
-        program.provider.publicKey,
-        testSubMarketIndex,
-        successorWallet.publicKey,
-        testUserAccountIndex
-      )
-
-      var wSOLLendingUserTabRemainingAccount = 
-      {
-        pubkey: wSOLLendingUserTabAccountPDA,
-        isSigner: false,
-        isWritable: true
-      }
-      var usdcLendingUserTabRemainingAccount = 
-      {
-        pubkey: usdcLendingUserTabAccountPDA,
-        isSigner: false,
-        isWritable: true
-      }
-
+      const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, solLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
+      
       await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
-      .accounts({mint: usdcMint.publicKey, signer: successorWallet.publicKey})
-      .signers([successorWallet])
-      .remainingAccounts([usdcLendingUserTabRemainingAccount, wSOLLendingUserTabRemainingAccount])
+      .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+      .remainingAccounts(remainingAccounts)
+      .signers([successorWalletKeypair])
       .rpc()
     }
     catch(error)
@@ -678,46 +711,24 @@ describe("lending_protocol", () =>
 
   it("Withdraws USDC From the Token Reserve", async () => 
   {
-    const wSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
-    (
-      solTokenMintAddress,
-      program.provider.publicKey,
-      testSubMarketIndex,
-      successorWallet.publicKey,
-      testUserAccountIndex
-    )
-    const usdcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
-    (
+    const remainingAccounts = [solLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount, usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount]
+
+    await program.methods.withdrawTokens(
       usdcMint.publicKey,
       program.provider.publicKey,
       testSubMarketIndex,
-      successorWallet.publicKey,
-      testUserAccountIndex
+      testUserAccountIndex,
+      tenUSDC
     )
-
-    var wSOLLendingUserTabRemainingAccount = 
-    {
-      pubkey: wSOLLendingUserTabAccountPDA,
-      isSigner: false,
-      isWritable: true
-    }
-    var usdcLendingUserTabRemainingAccount = 
-    {
-      pubkey: usdcLendingUserTabAccountPDA,
-      isSigner: false,
-      isWritable: true
-    }
-
-    await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
-    .accounts({mint: usdcMint.publicKey, signer: successorWallet.publicKey})
-    .signers([successorWallet])
-    .remainingAccounts([wSOLLendingUserTabRemainingAccount, usdcLendingUserTabRemainingAccount])
+    .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+    .remainingAccounts(remainingAccounts)
+    .signers([successorWalletKeypair])
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     assert(tokenReserve.tokenReserveProtocolIndex == 1)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
-    assert(tokenReserve.tokenDecimalAmount == usdcDecimalAmount)
+    assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
 
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
@@ -725,10 +736,10 @@ describe("lending_protocol", () =>
       usdcMint.publicKey,
       program.provider.publicKey,
       testSubMarketIndex,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    assert(lendingUserTabAccount.owner.toBase58() == successorWallet.publicKey.toBase58())
+    assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
     assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == program.provider.publicKey.toBase58())
@@ -746,7 +757,7 @@ describe("lending_protocol", () =>
       newStatementMonth,
       newStatementYear,
       usdcMint.publicKey,
-      successorWallet.publicKey,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
@@ -754,7 +765,7 @@ describe("lending_protocol", () =>
     assert(lendingUserMonthlyStatementAccount.snapShotBalanceAmount.eq(bnZero))
     assert(lendingUserMonthlyStatementAccount.monthlyWithdrawalAmount.eq(tenUSDC))
 
-    const userATA = await deriveWalletATA(successorWallet.publicKey, usdcMint.publicKey, true)
+    const userATA = await deriveWalletATA(successorWalletKeypair.publicKey, usdcMint.publicKey, true)
     const UserATAAccount = await program.provider.connection.getTokenAccountBalance(userATA)
     assert(parseInt(UserATAAccount.value.amount) == tenKUSDC)
   })
@@ -938,50 +949,116 @@ describe("lending_protocol", () =>
       )
     )
 
-    // 3. Send the transaction
+    //2. Send the transaction
     await program.provider.sendAndConfirm(transaction);
   }
 
-  async function getPythPriceUpdateAndWithdrawTokens(tokenMintAddress: PublicKey,
-    subMarketOwnerAddress: PublicKey,
-    subMarketIndex: number,
-    accountIndex: number,
-    amount: anchor.BN,
-    remainingAccounts: any,
-    priceUpdateArray: string[])
+  async function createMockedPythPriceUpdateAccount()
   {
+    const newAccount = Keypair.generate();
+    const createTx = new Transaction().add(
+      SystemProgram.createAccount({
+        fromPubkey: program.provider.publicKey,
+        newAccountPubkey: newAccount.publicKey,
+        programId: mockProgram.programId,
+        lamports:
+          await program.provider.connection.getMinimumBalanceForRentExemption(
+            mockedPythAccountSpace
+          ),
+        space: mockedPythAccountSpace,
+      })
+    );
 
-    /*await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
-    .accounts({mint: solTokenMintAddress, signer: successorWallet.publicKey})
-    .signers([successorWallet])
-    .remainingAccounts([remainingAccounts])
-    .rpc()*/
+    await program.provider.sendAndConfirm(createTx, [testingWalletKeypair, newAccount]);
+  
+    return newAccount;
+  }
 
-    const priceUpdateData = await hermesClient.getLatestPriceUpdates([priceUpdateArray[0]], { encoding: "base64" })
-    const transactionBuilder = pythSolanaReceiver.newTransactionBuilder({ closeUpdateAccounts: true })
-    await transactionBuilder.addPostPriceUpdates(priceUpdateData.binary.data)
+  async function updateMockedPriceUpdateV2Account(
+  mockedPythKeyPair: Keypair,
+  price: anchor.BN,
+  conf: anchor.BN,
+  exponent: number)
+  {
+    //Get latest block chain timestamp.
+    const slot = await program.provider.connection.getSlot();
+    const timeStamp = await program.provider.connection.getBlockTime(slot);
+    //const timeStamp = Math.floor(Date.now() / 1000); 
 
-    const withdrawInstruction = await program.methods
-    .withdrawTokens(
-      tokenMintAddress,
-      subMarketOwnerAddress,
-      subMarketIndex,
-      accountIndex,
-      amount
-    )
-    .accounts({ mint: tokenMintAddress, signer: successorWallet.publicKey })
-    .remainingAccounts(remainingAccounts)
-    .instruction()
- 
-    transactionBuilder.addInstruction(
-    {
-      instruction: withdrawInstruction,
-      signers: [], // No ephemeral signers needed for this instruction
-    });
+    const publish_time = new anchor.BN(timeStamp);
+    const prev_publish_time = new anchor.BN(timeStamp - 1);
 
-    const _tx = await pythSolanaReceiver.provider.sendAll
-    (
-      transactionBuilder.buildLegacyTransactions({ computeUnitPriceMicroLamports: 50000 }), { skipPreflight: true }
-    )
+    // Allocate a 136-byte buffer.
+    const buf = Buffer.alloc(mockedPythAccountSpace);
+    let offset = 0;
+    
+    //1. Write the 8-byte Pyth Discriminator/Magic Number. (8 bytes)
+    const discriminator = Buffer.from([34, 241, 35, 99, 157, 126, 244, 205]);
+    discriminator.copy(buf, offset);
+    offset += 8; // offset = 8
+    
+    //2. Write the write_authority (32 bytes).
+    const writeAuthority = PublicKey.unique().toBuffer();
+    writeAuthority.copy(buf, offset);
+    offset += 32; // offset = 40
+    
+    //3. Write verification_level (1 byte tag).
+    buf.writeUInt8(1, offset); // tag '1' for Full verification (1 byte)
+    offset += 1; // offset = 41
+    
+    //PriceFeedMessage starts here (Total 92 bytes):
+    //4. feedID (32 bytes)
+    const feedID = mockedPythKeyPair.publicKey; 
+    feedID.toBuffer().copy(buf, offset);
+    offset += 32; // offset = 76
+    
+    //6. price (i64, 8 bytes)
+    price.toArrayLike(Buffer, "le", 8).copy(buf, offset);
+    offset += 8; // offset = 84
+    
+    //7. conf (u64, 8 bytes)
+    conf.toArrayLike(Buffer, "le", 8).copy(buf, offset);
+    offset += 8; // offset = 92
+    
+    //8. exponent (i32, 4 bytes)
+    buf.writeInt32LE(exponent, offset);
+    offset += 4; // offset = 96
+    
+    //9. publish_time (i64, 8 bytes)
+    publish_time.toArrayLike(Buffer, "le", 8).copy(buf, offset);
+    offset += 8; // offset = 104
+    
+    //10. prev_publish_time (i64, 8 bytes)
+    prev_publish_time.toArrayLike(Buffer, "le", 8).copy(buf, offset);
+    offset += 8; // offset = 112
+    
+    //11. ema_price (i64, 8 bytes)
+    price.toArrayLike(Buffer, "le", 8).copy(buf, offset);
+    offset += 8; // offset = 120
+    
+    //12. ema_conf (u64, 8 bytes)
+    conf.toArrayLike(Buffer, "le", 8).copy(buf, offset);
+    offset += 8; // offset = 128
+    
+    //13. posted_slot (u64, 8 bytes)
+    (new anchor.BN(0)).toArrayLike(Buffer, "le", 8).copy(buf, offset);
+    offset += 8; // offset = 136
+
+    //Write the buffer data to the mock account
+    await mockProgram.methods.setMockedPythPriceUpdateAccount(buf)
+    .accounts({mockedPythPriceUpdatePda: mockedPythKeyPair.publicKey})
+    .signers([mockedPythKeyPair])
+    .rpc()
+  }
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+  var counter = 0
+  
+  async function sleepFunction()
+  {
+    console.log('Start sleep: ', counter)
+    await sleep(5000) // Sleep for 5 seconds
+    console.log('End sleep: ', counter)
+    counter += 1
   }
 })
