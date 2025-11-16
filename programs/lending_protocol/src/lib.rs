@@ -6,7 +6,7 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 use spl_math::precise_number::PreciseNumber;
-use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
+use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 use hex;
 
 declare_id!("4rmvxmwwBFdHsyGsTZ4PRYtasfm3oDiyx3eoibJn48PP");
@@ -89,22 +89,6 @@ pub enum LendingError
     #[msg("The Lending User snap shot data was stale")]
     StaleSnapShotData
 }
-
-/*//Helper function to get the token price by the pyth ID
-fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_feed_id: [u8; 32]) -> Result<Price>
-{
-    pub const MAXIMUM_AGE: u64 = 4000; //30 seconds
-
-    let current_price: Price = price_update_account
-    .get_price_no_older_than(
-        &Clock::get()?, 
-        MAXIMUM_AGE, 
-        &pyth_feed_id
-    )
-    .map_err(|_| error!(LendingError::StalePriceData))?; //Handle Option returned by pyth (None if stale or wrong feed)
-
-    Ok(current_price)
-}*/
 
 //Helper function to update Token Reserve Accrued Interest Index before a lending transaction (deposit, withdraw, borrow, repay, liqudate)
 //This function helps determine how much compounding interest a Token Reserve has earned for its token over the whole life of the Token Reserve's entire existence
