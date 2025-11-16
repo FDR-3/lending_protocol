@@ -7,7 +7,6 @@ use solana_security_txt::security_txt;
 use std::ops::Deref;
 use spl_math::precise_number::PreciseNumber;
 use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
-use hex;
 
 declare_id!("4rmvxmwwBFdHsyGsTZ4PRYtasfm3oDiyx3eoibJn48PP");
 
@@ -34,8 +33,6 @@ const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So111111111111111111111111111111
 const LENDING_USER_ACCOUNT_EXTRA_SIZE: usize = 4;
 
 const MAX_ACCOUNT_NAME_LENGTH: usize = 25;
-const PYTH_FEED_ID_LEN: usize = 32;
-pub const PRICE_UPDATE_V2_SIZE: usize = size_of::<PriceUpdateV2>();
 
 enum Activity
 {
@@ -416,7 +413,7 @@ pub mod lending_protocol
     use super::*;
 
     pub fn initialize_lending_protocol(ctx: Context<InitializeLendingProtocol>, statement_month: u8, statement_year: u32) -> Result<()> 
-    {msg!("PriceUpdateV2 Expected Size: {}", size_of::<PriceUpdateV2>());
+    {
         //Only the initial CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), INITIAL_CEO_ADDRESS, AuthorizationError::NotCEO);
 
@@ -466,7 +463,6 @@ pub mod lending_protocol
     pub fn add_token_reserve(ctx: Context<AddTokenReserve>,
         token_mint_address: Pubkey,
         token_decimal_amount: u8,
-        pyth_feed_id: [u8; PYTH_FEED_ID_LEN],
         pyth_feed_address: Pubkey,
         borrow_apy: u16,
         global_limit: u128) -> Result<()> 
@@ -479,7 +475,6 @@ pub mod lending_protocol
         let token_reserve = &mut ctx.accounts.token_reserve;
         token_reserve.token_mint_address = token_mint_address.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
-        token_reserve.pyth_feed_id = pyth_feed_id;
         token_reserve.pyth_feed_address = pyth_feed_address.key();
         token_reserve.borrow_apy = borrow_apy;
         token_reserve.global_limit = global_limit;
@@ -487,12 +482,10 @@ pub mod lending_protocol
         token_reserve.token_reserve_protocol_index = token_reserve_stats.token_reserve_count;
         token_reserve_stats.token_reserve_count += 1;
 
-        let hex_string = hex::encode(pyth_feed_id);
-
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
         msg!("Token Mint Address: {}", token_mint_address.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
-        msg!("Pyth Feed ID: 0x{}", hex_string);
+        msg!("Pyth PriceUpdate Account: {}", pyth_feed_address);
         msg!("Borrow APY: {}", borrow_apy);
         msg!("Global Limit: {}", global_limit);
             
@@ -622,7 +615,6 @@ pub mod lending_protocol
             lending_user_tab_account.owner = ctx.accounts.signer.key();
             lending_user_tab_account.user_account_index = user_account_index;
             lending_user_tab_account.token_mint_address = token_mint_address;
-            lending_user_tab_account.pyth_feed_id = token_reserve.pyth_feed_id;
             lending_user_tab_account.pyth_feed_address = token_reserve.pyth_feed_address;
             lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
             lending_user_tab_account.sub_market_index = sub_market_index;
@@ -2072,7 +2064,6 @@ pub struct TokenReserve
     pub token_reserve_protocol_index: u32,
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
-    pub pyth_feed_id: [u8; PYTH_FEED_ID_LEN],
     pub pyth_feed_address: Pubkey,
     pub supply_apy: u128,
     pub borrow_apy: u16,
@@ -2129,7 +2120,6 @@ pub struct LendingUserTabAccount
     pub owner: Pubkey,
     pub user_account_index: u8,
     pub token_mint_address: Pubkey,
-    pub pyth_feed_id: [u8; PYTH_FEED_ID_LEN],
     pub pyth_feed_address: Pubkey,
     pub sub_market_owner_address: Pubkey,
     pub sub_market_index: u16,

@@ -33,7 +33,6 @@ describe("lending_protocol", () =>
   const solTestPrice = new anchor.BN(12345)
   const solTestConf = new anchor.BN(12345)
   var solPythPriceUpdateAccountKeypair: Keypair
-  const solPythFeedIdByteArray = Buffer.from("ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", 'hex')
   var solLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var solPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   
@@ -44,7 +43,6 @@ describe("lending_protocol", () =>
   const usdcTestPrice = new anchor.BN(12345)
   const usdcTestConf = new anchor.BN(12345)
   var usdcPythPriceUpdateAccountKeypair: Keypair
-  const usdcPythFeedIdByteArray = Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", 'hex')
   var usdcLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
@@ -230,7 +228,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIdByteArray, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
       .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
       .signers([successorWalletKeypair])
       .rpc()
@@ -245,7 +243,7 @@ describe("lending_protocol", () =>
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIdByteArray, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({mint: solTokenMintAddress})
     .rpc()
     
@@ -254,7 +252,6 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(Buffer.from(tokenReserve.pythFeedId).equals(solPythFeedIdByteArray))
     assert(tokenReserve.pythFeedAddress.toBase58() == solPythPriceUpdateAccountKeypair.publicKey.toBase58())
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
@@ -590,7 +587,7 @@ describe("lending_protocol", () =>
 
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythFeedIdByteArray, usdcPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({mint: usdcMint.publicKey})
     .rpc()
     
