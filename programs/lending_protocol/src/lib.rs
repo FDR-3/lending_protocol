@@ -324,7 +324,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         //The lending user tab account interest earned and debt accured data (Plus Token Reserve data) must be no older than 120 seconds. The user has to run the update_user_snap_shots function if data is stale.
         //2 minutes gives the user plenty of time to call both functions. Users shouldn't earn or accrue that much interest or debt within 2 minutes and if they do, that's what the liquidation function is for if there's an issue later :0
         let time_diff = new_lending_activity_time_stamp - tab_account.interest_change_last_updated_time_stamp;
-        //require!(time_diff <= 120, LendingError::StaleSnapShotData);
+        require!(time_diff <= 120, LendingError::StaleSnapShotData);
         
         //Validate Price Update Account
         let price_update_account_serialized = remaining_accounts_iter.next().unwrap(); //The Price Update Account comes after the Tab Account
@@ -1169,168 +1169,63 @@ pub mod lending_protocol
         Ok(())
     }
 
-    //Updates interest earned and debt accrued amounts for all of a User's Tab Accounts, and the Token Reserves, Sub Markets, and Monthly Statement Accounts associated with them
-    pub fn update_user_snap_shots<'info>(ctx: Context<'_, '_, 'info, 'info, UpdateUserSnapShots<'info>>, user_account_index: u8, user_touched_dynamic_market_array: Vec<u8>) -> Result<()>
+    //Updates the interest earned and accrued for a given user's tab account. The last calculation must be no older than 120 seconds when doing withdrawals or borrows and this function helps refresh it.
+    pub fn update_user_snap_shot(ctx: Context<UpdateUserSnapShot>,
+        token_mint_address: Pubkey,
+        sub_market_owner_address: Pubkey,
+        sub_market_index: u16,
+        user_account_index: u8
+    ) -> Result<()> 
     {
-        let lending_protocol = &mut ctx.accounts.lending_protocol;
         let lending_stats = &mut ctx.accounts.lending_stats;
-        let user_lending_account = &mut ctx.accounts.user_lending_account;
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        let sub_market = &mut ctx.accounts.sub_market;
+        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
+        let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
 
-        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
-        let mut user_tab_index = 0;
-
-        for user_touched_token_reserve_market_count in &user_touched_dynamic_market_array
+        //Initialize monthly statement account if the statement month/year has changed or brand new sub user account.
+        if lending_user_monthly_statement_account.monthly_statement_account_added == false
         {
-            //Token Reserve
-            let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap(); //The Price Update Account comes after the Tab Account
-            let mut token_reserve = Account::<TokenReserve>::try_from(&token_reserve_account_serialized)?;
-            let (expected_token_reserve_pda, _token_reserve_bump) = Pubkey::find_program_address(
-                &[b"tokenReserve",
-                token_reserve.token_mint_address.as_ref()],
-                &ctx.program_id
-            );
-
-            //Validate Token Reserve Account
-            require_keys_eq!(expected_token_reserve_pda.key(), token_reserve_account_serialized.key(), InvalidInputError::UnexpectedTokenReserveAccount);
-
-            //Calculate Token Reserve Previously Earned Interest
-            update_token_reserve_accrued_interest_index(&mut token_reserve, time_stamp)?;
-
-            for _i in 0..(*user_touched_token_reserve_market_count).into()
-            {
-                //Sub Market Account
-                //The Sub Market Account comes after the Token Reserve Account. Repeats if additional markets after Monthly Statement Account.
-                let sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
-                let mut sub_market = Account::<SubMarket>::try_from(&sub_market_account_serialized)?;
-                let (expected_sub_market_pda, _sub_market_bump) = Pubkey::find_program_address(
-                    &[b"subMarket",
-                    sub_market.token_mint_address.as_ref(),
-                    sub_market.owner.as_ref(),
-                    &sub_market.sub_market_index.to_le_bytes()],
-                    &ctx.program_id
-                );
-
-                //Lending User Tab Account
-                //The Lending User Tab Account comes after the Sub Market Account.
-                let lending_user_tab_account_serialized = remaining_accounts_iter.next().unwrap();
-                let mut lending_user_tab_account = Account::<LendingUserTabAccount>::try_from(&lending_user_tab_account_serialized)?;
-                let (expected_lending_user_tab_account_pda, _bump) = Pubkey::find_program_address(
-                    &[b"lendingUserTabAccount",
-                    lending_user_tab_account.token_mint_address.as_ref(),
-                    lending_user_tab_account.sub_market_owner_address.as_ref(),
-                    &lending_user_tab_account.sub_market_index.to_le_bytes(),
-                    ctx.accounts.signer.key().as_ref(),
-                    &user_account_index.to_le_bytes().as_ref()],
-                    &ctx.program_id
-                );
-
-                //Lending User Monthly Statement Account
-                //The Lending User Monthly Statement Account comes after the Lending User Tab Account.
-                let lending_user_monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
-                let mut lending_user_monthly_statement_account = Account::<LendingUserMonthlyStatementAccount>::try_from(&lending_user_monthly_statement_account_serialized)?;
-                let (expected_user_monthly_statement_account_pda, user_monthly_statement_account_bump) = Pubkey::find_program_address(
-                    &[b"userMonthlyStatementAccount",
-                    lending_protocol.current_statement_month.to_le_bytes().as_ref(),
-                    lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-                    token_reserve.token_mint_address.as_ref(), //Using Token Mint Address on Token Reserve since the Monthly Statment Account may not be initialized
-                    ctx.accounts.signer.key().as_ref(),
-                    &user_account_index.to_le_bytes().as_ref()],
-                    &ctx.program_id
-                );
-
-                //Monthly Statement Account may not be initliazed if new month or user just hasn't done anything recently on this specific Token Sub Market
-                if lending_user_monthly_statement_account_serialized.data_len() == 0
-                {
-                    let month_binding = lending_protocol.current_statement_month.to_le_bytes();
-                    let current_statement_month_le_bytes_ref = month_binding.as_ref();
-                    let year_binding = lending_protocol.current_statement_year.to_le_bytes();
-                    let current_statement_year_le_bytes_ref = year_binding.as_ref();
-                    let signer_binding = ctx.accounts.signer.key();
-                    let signer_ref = signer_binding.as_ref();
-                    let user_account_index_binding = user_account_index.to_le_bytes();
-                    let user_account_index_le_ref = user_account_index_binding.as_ref();
-
-                    let seeds: &[&[u8]] =
-                    &[
-                        b"userMonthlyStatementAccount",
-                        current_statement_month_le_bytes_ref,
-                        current_statement_year_le_bytes_ref,
-                        token_reserve.token_mint_address.as_ref(),
-                        signer_ref,
-                        user_account_index_le_ref,
-                        &[user_monthly_statement_account_bump]
-                    ];
-
-                    let account_space = 8 + std::mem::size_of::<LendingUserMonthlyStatementAccount>();
-
-                    //CPI to create the account
-                    anchor_lang::solana_program::program::invoke_signed(
-                        &anchor_lang::solana_program::system_instruction::create_account(
-                            &ctx.accounts.signer.key(),
-                            &lending_user_monthly_statement_account_serialized.key(),
-                            anchor_lang::solana_program::sysvar::rent::Rent::get()?.minimum_balance(account_space),
-                            account_space as u64,
-                            ctx.program_id,
-                        ),
-                        &[
-                            ctx.accounts.signer.to_account_info(),
-                            lending_user_monthly_statement_account_serialized.clone(),
-                            ctx.accounts.system_program.to_account_info(),
-                            ctx.accounts.rent.to_account_info(),
-                        ],
-                        &[seeds]//Seeds since this is a PDA and we want other functions to be able to update this Monthly Statement Account if it is initialized in this function that uses remaining accounts.
-                    )?;
-                    
-                    initialize_lending_user_monthly_statement_account(
-                        &mut lending_user_monthly_statement_account,
-                        lending_protocol,
-                        sub_market.token_mint_address.key(),
-                        sub_market.owner.key(),
-                        sub_market.sub_market_index,
-                        ctx.accounts.signer.key(),
-                        user_account_index
-                    )?;
-                }
-
-                //Validate Sub Market, User Tab, and User Monthly Statement Accounts
-                require_keys_eq!(expected_sub_market_pda.key(), sub_market_account_serialized.key(), InvalidInputError::UnexpectedSubMarketAccount);
-                require_keys_eq!(expected_lending_user_tab_account_pda.key(), lending_user_tab_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
-                require_keys_eq!(expected_user_monthly_statement_account_pda.key(), lending_user_monthly_statement_account_serialized.key(), InvalidInputError::UnexpectedMonthlyStatementAccount);
-
-                //You must provide all of the sub user's tab accounts ordered by user_tab_account_index
-                require!(user_tab_index == lending_user_tab_account.user_tab_account_index, InvalidInputError::IncorrectOrderOfTabAccounts);
-
-                update_user_previous_interest_earned(
-                    &mut token_reserve,
-                    &mut sub_market,
-                    &mut lending_user_tab_account,
-                    &mut lending_user_monthly_statement_account
-                )?;
-
-                update_user_previous_interest_accrued(
-                    &mut token_reserve,
-                    &mut sub_market,
-                    &mut lending_user_tab_account,
-                    &mut lending_user_monthly_statement_account
-                )?;
-
-                //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
-                update_token_reserve_rates(&mut token_reserve)?;
-                lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
-                lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
-
-                user_tab_index += 1;
-            }
+            let lending_protocol = &ctx.accounts.lending_protocol;
+            initialize_lending_user_monthly_statement_account(
+                lending_user_monthly_statement_account,
+                lending_protocol,
+                token_mint_address.key(),
+                sub_market_owner_address.key(),
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+            )?;
         }
 
-        //You must provide all of the sub user's Tab Accounts in remaining accounts. Every Tab Account should have a corresponding Sub Market Account before it and Monthly Statement Account after it.(Token Reserve should be mentioned once at the beginning of the sequences)
-        require!(user_lending_account.tab_account_count == user_tab_index, InvalidInputError::IncorrectNumberOfTabAccounts);
+        //Calculate Token Reserve Previously Earned Interest
+        update_token_reserve_accrued_interest_index(token_reserve, time_stamp)?;
+
+        update_user_previous_interest_earned(
+            token_reserve,
+            sub_market,
+            lending_user_tab_account,
+            lending_user_monthly_statement_account
+        )?;
+
+        update_user_previous_interest_accrued(
+            token_reserve,
+            sub_market,
+            lending_user_tab_account,
+            lending_user_monthly_statement_account
+        )?;
+
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        update_token_reserve_rates(token_reserve)?;
+        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+        lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Stat Listener
         lending_stats.snap_shots += 1;
 
-        msg!("Snap Shots updated for address: {}, user index: {}", ctx.accounts.signer.key(), user_account_index);
+        msg!("Snap Shots updated for TokenMintAddress: {}, SubMarketOwner: {}, SubMarketIndex: {}", token_reserve.token_mint_address.key(), sub_market.owner.key(), sub_market_index);
+        msg!("UserAddress: {}, UserAccountIndex: {}", ctx.accounts.signer.key(), user_account_index);
 
         Ok(())
     }
@@ -1346,8 +1241,8 @@ pub mod lending_protocol
         //Only the Fee Collector can call this function
         require_keys_eq!(ctx.accounts.signer.key(), sub_market.fee_collector_address.key(), AuthorizationError::NotFeeCollector);
 
-        let token_reserve = &mut ctx.accounts.token_reserve;
         let lending_stats = &mut ctx.accounts.lending_stats;
+        let token_reserve = &mut ctx.accounts.token_reserve;
         let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
@@ -1965,6 +1860,7 @@ pub struct RepayTokens<'info>
     pub system_program: Program<'info, System>
 }
 
+/*
 #[derive(Accounts)]
 #[instruction(user_account_index: u8)]
 pub struct UpdateUserSnapShots<'info> 
@@ -1989,28 +1885,90 @@ pub struct UpdateUserSnapShots<'info>
     pub signer: Signer<'info>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>
-}
+}*/
 
 #[derive(Accounts)]
 #[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
-pub struct ClaimSubMarketFees<'info> 
+pub struct UpdateUserSnapShot<'info> 
 {
-     #[account(
+    #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
     pub lending_protocol: Account<'info, LendingProtocol>,
-
-    #[account(
-        mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
-        bump)]
-    pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
     pub lending_stats: Account<'info, LendingStats>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        bump)]
+    pub token_reserve: Account<'info, TokenReserve>,
+
+    #[account(
+        mut,
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub sub_market: Account<'info, SubMarket>,
+
+    #[account(
+        mut,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub user_lending_account: Account<'info, LendingUserAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint_address.key().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+pub struct ClaimSubMarketFees<'info> 
+{
+    #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        mut, 
+        seeds = [b"lendingStats".as_ref()],
+        bump)]
+    pub lending_stats: Account<'info, LendingStats>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        bump)]
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut,
