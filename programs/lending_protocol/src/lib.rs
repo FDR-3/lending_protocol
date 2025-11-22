@@ -72,7 +72,9 @@ pub enum InvalidInputError
     UnexpectedTabAccount,
     #[msg("Unexpected Pyth Price Update Account detected. Feed in only legitimate accounts :)")]
     UnexpectedPythPriceUpdateAccount,
-    #[msg("Unexpected SubMareket Account PDA detected")]
+    #[msg("Unexpected Token Reserve Account PDA detected")]
+    UnexpectedTokenReserveAccount,
+    #[msg("Unexpected SubMarket Account PDA detected")]
     UnexpectedSubMarketAccount,
     #[msg("Unexpected Monthly Statement Account PDA detected")]
     UnexpectedMonthlyStatementAccount,
@@ -1190,7 +1192,7 @@ pub mod lending_protocol
             );
 
             //Validate Token Reserve Account
-            require_keys_eq!(expected_token_reserve_pda.key(), token_reserve_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
+            require_keys_eq!(expected_token_reserve_pda.key(), token_reserve_account_serialized.key(), InvalidInputError::UnexpectedTokenReserveAccount);
 
             //Calculate Token Reserve Previously Earned Interest
             update_token_reserve_accrued_interest_index(&mut token_reserve, time_stamp)?;
