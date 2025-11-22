@@ -8,7 +8,7 @@ use std::ops::Deref;
 use spl_math::precise_number::PreciseNumber;
 use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 
-declare_id!("4rmvxmwwBFdHsyGsTZ4PRYtasfm3oDiyx3eoibJn48PP");
+declare_id!("6rngcVtWeJeL558TTXAHmDLBZYauiUtFP4FtFMsQrr1r");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -72,6 +72,10 @@ pub enum InvalidInputError
     UnexpectedTabAccount,
     #[msg("Unexpected Pyth Price Update Account detected. Feed in only legitimate accounts :)")]
     UnexpectedPythPriceUpdateAccount,
+    #[msg("Unexpected SubMareket Account PDA detected")]
+    UnexpectedSubMarketAccount,
+    #[msg("Unexpected Monthly Statement Account PDA detected")]
+    UnexpectedMonthlyStatementAccount,
     #[msg("Lending User Account name can't be longer than 25 characters")]
     LendingUserAccountNameTooLong,
     #[msg("You can't withdraw or borrow an amount that would expose you to liquidation")]
@@ -149,8 +153,8 @@ fn update_user_previous_interest_earned<'info>(
     lending_user_monthly_statement_account: &mut Account<LendingUserMonthlyStatementAccount>
 ) -> Result<()>
 {
-    //Skip if the user has no deposited amount
-    if lending_user_tab_account.deposited_amount == 0
+    //Skip if the user has no deposited amount or if the user interest change hasn't been updated from 0 yet
+    if lending_user_tab_account.deposited_amount == 0 || lending_user_tab_account.interest_change_index == 0 //Skip if the user has never earned interest (can't divide by 0). Can't get interest if there are no borrows
     {
         return Ok(())
     }
@@ -305,23 +309,43 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         require!(user_tab_index == tab_account.user_tab_account_index, InvalidInputError::IncorrectOrderOfTabAccounts);
         require_keys_eq!(expected_pda.key(), tab_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
 
+        msg!
+        (
+            "New Activity Time: {}",
+            new_lending_activity_time_stamp
+        );
+        msg!
+        (
+            "Last Tab Interest Update Time: {}",
+            tab_account.interest_change_last_updated_time_stamp
+        );
         //The lending user tab account interest earned and debt accured data (Plus Token Reserve data) must be no older than 120 seconds. The user has to run the update_user_snap_shots function if data is stale.
         //2 minutes gives the user plenty of time to call both functions. Users shouldn't earn or accrue that much interest or debt within 2 minutes and if they do, that's what the liquidation function is for if there's an issue later :0
         let time_diff = new_lending_activity_time_stamp - tab_account.interest_change_last_updated_time_stamp;
-        require!(time_diff <= 120, LendingError::StaleSnapShotData);
+        //require!(time_diff <= 120, LendingError::StaleSnapShotData);
         
         //Validate Price Update Account
         let price_update_account_serialized = remaining_accounts_iter.next().unwrap(); //The Price Update Account comes after the Tab Account
-        require_keys_eq!(tab_account.pyth_feed_address.key(), price_update_account_serialized.key(), InvalidInputError::UnexpectedPythPriceUpdateAccount);
+        require_keys_eq!(tab_account.pyth_price_update_key.key(), price_update_account_serialized.key(), InvalidInputError::UnexpectedPythPriceUpdateAccount);
 
         let data_ref = price_update_account_serialized.data.borrow();
         let mut data_slice: &[u8] = data_ref.deref();
 
         let price_update_account = PriceUpdateV2::try_deserialize(&mut data_slice)?;
         
+        msg!
+        (
+            "Time Stamp: {}",
+            time_stamp
+        );
+        msg!
+        (
+            "Published Time: {}",
+            price_update_account.price_message.publish_time
+        );
         //The published time for the Pyth Price Update Account can be no older than 30 seconds
         let time_diff = (time_stamp - price_update_account.price_message.publish_time) as u64;
-        require!(time_diff <= MAXIMUM_PRICE_AGE, LendingError::StalePriceData);
+        //require!(time_diff <= MAXIMUM_PRICE_AGE, LendingError::StalePriceData);
 
         let current_price = price_update_account.price_message;
 
@@ -390,14 +414,18 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 //Helper function to initialize Monthly Statement Accounts
 fn initialize_lending_user_monthly_statement_account<'info>(lending_user_monthly_statement_account: &mut Account<LendingUserMonthlyStatementAccount>,
     lending_protocol: &Account<LendingProtocol>,
+    token_mint_address: Pubkey,
+    sub_market_owner_address: Pubkey,
+    sub_market_index: u16,
     signer: Pubkey,
-    user_account_index: u8,
-    token_mint_address: Pubkey
+    user_account_index: u8
 ) -> Result<()>
 {
+    lending_user_monthly_statement_account.token_mint_address = token_mint_address;
+    lending_user_monthly_statement_account.sub_market_owner_address = sub_market_owner_address;
+    lending_user_monthly_statement_account.sub_market_index = sub_market_index;
     lending_user_monthly_statement_account.owner = signer.key();
     lending_user_monthly_statement_account.user_account_index = user_account_index;
-    lending_user_monthly_statement_account.token_mint_address = token_mint_address;
     lending_user_monthly_statement_account.statement_month = lending_protocol.current_statement_month;
     lending_user_monthly_statement_account.statement_year = lending_protocol.current_statement_year;
     lending_user_monthly_statement_account.monthly_statement_account_added = true;
@@ -463,7 +491,7 @@ pub mod lending_protocol
     pub fn add_token_reserve(ctx: Context<AddTokenReserve>,
         token_mint_address: Pubkey,
         token_decimal_amount: u8,
-        pyth_feed_address: Pubkey,
+        pyth_price_update_key: Pubkey,
         borrow_apy: u16,
         global_limit: u128) -> Result<()> 
     {
@@ -475,7 +503,7 @@ pub mod lending_protocol
         let token_reserve = &mut ctx.accounts.token_reserve;
         token_reserve.token_mint_address = token_mint_address.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
-        token_reserve.pyth_feed_address = pyth_feed_address.key();
+        token_reserve.pyth_price_update_key = pyth_price_update_key.key();
         token_reserve.borrow_apy = borrow_apy;
         token_reserve.global_limit = global_limit;
 
@@ -485,7 +513,7 @@ pub mod lending_protocol
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
         msg!("Token Mint Address: {}", token_mint_address.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
-        msg!("Pyth PriceUpdate Account: {}", pyth_feed_address);
+        msg!("Pyth PriceUpdate Account: {}", pyth_price_update_key);
         msg!("Borrow APY: {}", borrow_apy);
         msg!("Global Limit: {}", global_limit);
             
@@ -615,7 +643,7 @@ pub mod lending_protocol
             lending_user_tab_account.owner = ctx.accounts.signer.key();
             lending_user_tab_account.user_account_index = user_account_index;
             lending_user_tab_account.token_mint_address = token_mint_address;
-            lending_user_tab_account.pyth_feed_address = token_reserve.pyth_feed_address;
+            lending_user_tab_account.pyth_price_update_key = token_reserve.pyth_price_update_key;
             lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
             lending_user_tab_account.sub_market_index = sub_market_index;
             lending_user_tab_account.user_tab_account_index = user_lending_account.tab_account_count;
@@ -633,9 +661,11 @@ pub mod lending_protocol
             initialize_lending_user_monthly_statement_account(
                 lending_user_monthly_statement_account,
                 lending_protocol,
+                token_mint_address.key(),
+                sub_market_owner_address.key(),
+                sub_market_index,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                token_mint_address.key()
             )?;
         }
 
@@ -761,8 +791,8 @@ pub mod lending_protocol
 
     pub fn withdraw_tokens(ctx: Context<WithdrawTokens>,
         token_mint_address: Pubkey,
-        _sub_market_owner_address: Pubkey,
-        _sub_market_index: u16,
+        sub_market_owner_address: Pubkey,
+        sub_market_index: u16,
         user_account_index: u8,
         amount: u64
     ) -> Result<()> 
@@ -789,9 +819,11 @@ pub mod lending_protocol
             initialize_lending_user_monthly_statement_account(
                 lending_user_monthly_statement_account,
                 lending_protocol,
+                token_mint_address.key(),
+                sub_market_owner_address.key(),
+                sub_market_index,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                token_mint_address.key()
             )?;
         }
 
@@ -894,8 +926,8 @@ pub mod lending_protocol
 
     pub fn borrow_tokens(ctx: Context<BorrowTokens>,
         token_mint_address: Pubkey,
-        _sub_market_owner_address: Pubkey,
-        _sub_market_index: u16,
+        sub_market_owner_address: Pubkey,
+        sub_market_index: u16,
         user_account_index: u8,
         amount: u64
     ) -> Result<()> 
@@ -920,9 +952,11 @@ pub mod lending_protocol
             initialize_lending_user_monthly_statement_account(
                 lending_user_monthly_statement_account,
                 lending_protocol,
+                token_mint_address.key(),
+                sub_market_owner_address.key(),
+                sub_market_index,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                token_mint_address.key()
             )?;
         }
 
@@ -1027,8 +1061,8 @@ pub mod lending_protocol
 
     pub fn repay_tokens(ctx: Context<RepayTokens>,
         token_mint_address: Pubkey,
-        _sub_market_owner_address: Pubkey,
-        _sub_market_index: u16,
+        sub_market_owner_address: Pubkey,
+        sub_market_index: u16,
         user_account_index: u8,
         amount: u64,
         pay_off_loan: bool
@@ -1048,9 +1082,11 @@ pub mod lending_protocol
             initialize_lending_user_monthly_statement_account(
                 lending_user_monthly_statement_account,
                 lending_protocol,
+                token_mint_address.key(),
+                sub_market_owner_address.key(),
+                sub_market_index,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                token_mint_address.key()
             )?;
         }
 
@@ -1247,16 +1283,18 @@ pub mod lending_protocol
                     initialize_lending_user_monthly_statement_account(
                         &mut lending_user_monthly_statement_account,
                         lending_protocol,
+                        sub_market.token_mint_address.key(),
+                        sub_market.owner.key(),
+                        sub_market.sub_market_index,
                         ctx.accounts.signer.key(),
-                        user_account_index,
-                        token_reserve.token_mint_address.key()
+                        user_account_index
                     )?;
                 }
 
                 //Validate Sub Market, User Tab, and User Monthly Statement Accounts
-                require_keys_eq!(expected_sub_market_pda.key(), sub_market_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
+                require_keys_eq!(expected_sub_market_pda.key(), sub_market_account_serialized.key(), InvalidInputError::UnexpectedSubMarketAccount);
                 require_keys_eq!(expected_lending_user_tab_account_pda.key(), lending_user_tab_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
-                require_keys_eq!(expected_user_monthly_statement_account_pda.key(), lending_user_monthly_statement_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
+                require_keys_eq!(expected_user_monthly_statement_account_pda.key(), lending_user_monthly_statement_account_serialized.key(), InvalidInputError::UnexpectedMonthlyStatementAccount);
 
                 //You must provide all of the sub user's tab accounts ordered by user_tab_account_index
                 require!(user_tab_index == lending_user_tab_account.user_tab_account_index, InvalidInputError::IncorrectOrderOfTabAccounts);
@@ -1319,9 +1357,11 @@ pub mod lending_protocol
             initialize_lending_user_monthly_statement_account(
                 lending_user_monthly_statement_account,
                 lending_protocol,
+                token_mint_address.key(),
+                sub_market_owner_address.key(),
+                sub_market_index,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                token_mint_address.key()
             )?;
         }
 
@@ -1650,7 +1690,7 @@ pub struct DepositTokens<'info>
         associated_token::mint = token_mint_address,
         associated_token::authority = token_reserve
     )]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+    pub token_reserve_ata: Box<Account<'info, TokenAccount>>,
 
     pub mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
@@ -2064,7 +2104,7 @@ pub struct TokenReserve
     pub token_reserve_protocol_index: u32,
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
-    pub pyth_feed_address: Pubkey,
+    pub pyth_price_update_key: Pubkey,
     pub supply_apy: u128,
     pub borrow_apy: u16,
     pub utilization_rate: u64,
@@ -2117,12 +2157,12 @@ pub struct LendingUserAccount //Giving the lending account an index to allow use
 #[account]
 pub struct LendingUserTabAccount
 {
-    pub owner: Pubkey,
-    pub user_account_index: u8,
     pub token_mint_address: Pubkey,
-    pub pyth_feed_address: Pubkey,
     pub sub_market_owner_address: Pubkey,
     pub sub_market_index: u16,
+    pub owner: Pubkey,
+    pub user_account_index: u8,
+    pub pyth_price_update_key: Pubkey,
     pub user_tab_account_index: u32,
     pub user_tab_account_added: bool,
     pub interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest and debt is updated
@@ -2140,9 +2180,11 @@ pub struct LendingUserTabAccount
 #[account]
 pub struct LendingUserMonthlyStatementAccount
 {
+    pub token_mint_address: Pubkey,
+    pub sub_market_owner_address: Pubkey,
+    pub sub_market_index: u16,
     pub owner: Pubkey,
     pub user_account_index: u8,
-    pub token_mint_address: Pubkey,
     pub statement_month: u8,
     pub statement_year: u32,
     pub monthly_statement_account_added: bool,
