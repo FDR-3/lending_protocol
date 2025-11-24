@@ -5,15 +5,15 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-lending_protocol = "6rngcVtWeJeL558TTXAHmDLBZYauiUtFP4FtFMsQrr1r"
+lending_protocol = "7gqqfEn1MtCs9MLhUzSCnv9g1szn7cLAJAETW8XdZnRs"
 #pyth-mock should be commented out when not testing on local net
-pyth-mock = "GRANH65x1BwPVFh7aBGtELY4YFFPVv1onoC56Wn6euuB"
+pyth-mock = "AtyG669w2f3v2p1oAzjCMkodpNmHvULxgvuN8y3BMt7i"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

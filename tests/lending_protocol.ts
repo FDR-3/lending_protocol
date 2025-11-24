@@ -252,7 +252,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(tokenReserve.pythFeedAddress.toBase58() == solPythPriceUpdateAccountKeypair.publicKey.toBase58())
+    assert(tokenReserve.pythPriceUpdateKey.toBase58() == solPythPriceUpdateAccountKeypair.publicKey.toBase58())
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
   })
@@ -410,6 +410,8 @@ describe("lending_protocol", () =>
       newStatementMonth,
       newStatementYear,
       solTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
       successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
@@ -569,6 +571,8 @@ describe("lending_protocol", () =>
       newStatementMonth,
       newStatementYear,
       solTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
       successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
@@ -654,6 +658,8 @@ describe("lending_protocol", () =>
       newStatementMonth,
       newStatementYear,
       usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
       successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
@@ -754,6 +760,8 @@ describe("lending_protocol", () =>
       newStatementMonth,
       newStatementYear,
       usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
       successorWalletKeypair.publicKey,
       testUserAccountIndex
     ))
@@ -834,7 +842,13 @@ describe("lending_protocol", () =>
     return lendingUserTabAccountPDA
   }
 
-  function getlendingUserMonthlyStatementAccountPDA(statementMonth: number, statementYear: number, tokenMintAddress: PublicKey, lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
+  function getlendingUserMonthlyStatementAccountPDA(statementMonth: number,
+    statementYear: number,
+    tokenMintAddress: PublicKey,
+    subMarketOwnerAddress: PublicKey,
+    subMarketIndex: number,
+    lendingUserAddress: PublicKey,
+    lendingUserAccountIndex: number)
   {
     const [lendingUserMonthlyStatementAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
     (
@@ -843,6 +857,8 @@ describe("lending_protocol", () =>
         new anchor.BN(statementMonth).toBuffer('le', 1),
         new anchor.BN(statementYear).toBuffer('le', 4),
         tokenMintAddress.toBuffer(),
+        subMarketOwnerAddress.toBuffer(),
+        new anchor.BN(subMarketIndex).toBuffer('le', 2),
         lendingUserAddress.toBuffer(),
         new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
       ],

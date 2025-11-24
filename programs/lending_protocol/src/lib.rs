@@ -8,7 +8,7 @@ use std::ops::Deref;
 use spl_math::precise_number::PreciseNumber;
 use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 
-declare_id!("6rngcVtWeJeL558TTXAHmDLBZYauiUtFP4FtFMsQrr1r");
+declare_id!("7gqqfEn1MtCs9MLhUzSCnv9g1szn7cLAJAETW8XdZnRs");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -1568,6 +1568,8 @@ pub struct DepositTokens<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
@@ -1662,7 +1664,7 @@ pub struct WithdrawTokens<'info>
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+    pub lending_user_tab_account: Box<Account<'info, LendingUserTabAccount>>,
 
     #[account(
         init_if_needed,
@@ -1671,6 +1673,8 @@ pub struct WithdrawTokens<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
@@ -1743,7 +1747,7 @@ pub struct BorrowTokens<'info>
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+    pub lending_user_tab_account: Box<Account<'info, LendingUserTabAccount>>,
 
     #[account(
         init_if_needed,
@@ -1752,6 +1756,8 @@ pub struct BorrowTokens<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
@@ -1833,6 +1839,8 @@ pub struct RepayTokens<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
@@ -1938,6 +1946,8 @@ pub struct UpdateUserSnapShot<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
@@ -2000,6 +2010,8 @@ pub struct ClaimSubMarketFees<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
