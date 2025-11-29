@@ -21,9 +21,11 @@ describe("lending_protocol", () =>
   const feeOnInterestEarnedRateTooHighMsg = "The fee on interest earned rate can't be greater than 100%"
   const feeOnInterestEarnedRateTooLowMsg = "ERR_OUT_OF_RANGE"
   const expectedThisAccountToExistErrorMsg = "The program expected this account to be already initialized"
-  const insufficientFundsErrorMsg = "You can't withdraw more funds than you've deposited or an amount that would expose you to liquidation on purpose"
+  const insufficientFundsErrorMsg = "You can't withdraw more funds than you've deposited"
   const incorrentTabAndPythPriceUpdateAccountsErrorMsg = "You must provide all of the sub user's tab accounts and Pyth price update accounts"
   const ataDoesNotExistErrorMsg = "failed to get token account balance: Invalid param: could not find account"
+  const insufficientLiquidity = "Not enough liquidity in the Token Reserve for this withdraw or borrow"
+  const tooManyFunds = "You can't pay back more funds than you've borrowed"
   const incorrectOrderOfTabAccountsErrorMsg = "You must provide the sub user's tab accounts ordered by user_tab_account_index"
   const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
 
@@ -33,12 +35,14 @@ describe("lending_protocol", () =>
   const solTestPrice = new anchor.BN(12345)
   const solTestConf = new anchor.BN(12345)
   var solPythPriceUpdateAccountKeypair: Keypair
-  var solLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var successorSOLLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var borrowerSOLLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var solPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   
   var usdcMint = undefined
   const usdcTokenDecimalAmount = 6
   const tenUSDC = new anchor.BN(10_000_000)
+  const elevenUSDC = new anchor.BN(11_000_000)
   const tenKUSDC = 10_000_000_000
   const usdcTestPrice = new anchor.BN(12345)
   const usdcTestConf = new anchor.BN(12345)
@@ -72,12 +76,17 @@ describe("lending_protocol", () =>
   const keypairData = JSON.parse(fs.readFileSync(keypairPath, 'utf8'));
   const testingWalletKeypair = Keypair.fromSecretKey(Uint8Array.from(keypairData))
   const successorWalletKeypair = anchor.web3.Keypair.generate()
+  const borrowerWalletKeypair = anchor.web3.Keypair.generate()
 
   before(async () =>
   {
     //Fund Successor Wallet
     console.log("Funding Sucessor Wallet")
     await airDropSol(successorWalletKeypair.publicKey)
+
+    //Fund Borrower Wallet
+    console.log("Funding Borrower Wallet")
+    await airDropSol(borrowerWalletKeypair.publicKey)
 
     //Create a new USDC Mint for testing
     console.log("Creating a USDC Token Mint and ATA for Testing")
@@ -92,13 +101,15 @@ describe("lending_protocol", () =>
       TOKEN_PROGRAM_ID //SPL Token program ID
     )
 
-    const walletATA = await deriveWalletATA(successorWalletKeypair.publicKey, usdcMint.publicKey)
-    await createATAForWallet(successorWalletKeypair, usdcMint.publicKey, walletATA)
-    await mintUSDCToWallet(usdcMint.publicKey, walletATA)
+    //Mint USDC to Successor Wallet
+    const successorWalletATA = await deriveWalletATA(successorWalletKeypair.publicKey, usdcMint.publicKey)
+    await createATAForWallet(successorWalletKeypair, usdcMint.publicKey, successorWalletATA)
+    await mintUSDCToWallet(usdcMint.publicKey, successorWalletATA)
 
-    //Get Solana Block Chain latest time stamp
-    const slot = await program.provider.connection.getSlot();
-    const timestamp = new anchor.BN(await program.provider.connection.getBlockTime(slot));
+    //Mint USDC to Borrower Wallet
+    const borrowerWalletATA = await deriveWalletATA(borrowerWalletKeypair.publicKey, usdcMint.publicKey)
+    await createATAForWallet(borrowerWalletKeypair, usdcMint.publicKey, borrowerWalletATA)
+    await mintUSDCToWallet(usdcMint.publicKey, borrowerWalletATA)
 
     //Mock Sol Pyth Price Update Account
     console.log("Setting up SOL Mocked Pyth Price Update Account")
@@ -421,7 +432,7 @@ describe("lending_protocol", () =>
     assert(lendingUserMonthlyStatementAccount.monthlyDepositedAmount.eq(twoSol))
 
     //Populate sol remaining account
-    const solLendingUserTabAccountPDA = getLendingUserTabAccountPDA
+    const successorSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
       solTokenMintAddress,
       program.provider.publicKey,
@@ -429,10 +440,9 @@ describe("lending_protocol", () =>
       successorWalletKeypair.publicKey,
       testUserAccountIndex
     )
-
-    solLendingUserTabRemainingAccount = 
+    successorSOLLendingUserTabRemainingAccount = 
     {
-      pubkey: solLendingUserTabAccountPDA,
+      pubkey: successorSOLLendingUserTabAccountPDA,
       isSigner: false,
       isWritable: true
     }
@@ -488,7 +498,7 @@ describe("lending_protocol", () =>
     {
       errorMessage = error.error.errorMessage
     }
- 
+
     assert(errorMessage == insufficientFundsErrorMsg)
   })
 
@@ -513,7 +523,7 @@ describe("lending_protocol", () =>
 
   it("Withdraws wSOL From the Token Reserve", async () => 
   {
-    const remainingAccounts = [solLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
+    const remainingAccounts = [successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
 
     await program.methods.withdrawTokens(
       solTokenMintAddress,
@@ -588,7 +598,7 @@ describe("lending_protocol", () =>
 
     assert(userBalance >= 9999)
   })
-
+  
   it("Adds a USDC Token Reserve", async () => 
   {
     await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
@@ -690,13 +700,115 @@ describe("lending_protocol", () =>
     }
   })
 
+  it("Borrows USDC From the Token Reserve", async () => 
+  {
+    //Depositing 2 Sol as Collateral
+    await program.methods.depositTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
+    .accounts({mint: solTokenMintAddress, signer: borrowerWalletKeypair.publicKey})
+    .signers([borrowerWalletKeypair])
+    .rpc()
+
+    //Populate sol remaining account
+    const borrowerSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
+    (
+      solTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      borrowerWalletKeypair.publicKey,
+      testUserAccountIndex
+    )
+    borrowerSOLLendingUserTabRemainingAccount = 
+    {
+      pubkey: borrowerSOLLendingUserTabAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
+
+    //Borrowing the 10 USDC that the Successor deposited
+    const remainingAccounts = [borrowerSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
+    await program.methods.borrowTokens(
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex,
+      tenUSDC
+    )
+    .accounts({ mint: usdcMint.publicKey, signer: borrowerWalletKeypair.publicKey })
+    .remainingAccounts(remainingAccounts)
+    .signers([borrowerWalletKeypair])
+    .rpc()
+  })
+
+  it("Verifies you can't Withdraw When too many Tokens are Currently Being Borrowed.", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
+      
+      await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
+      .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+      .remainingAccounts(remainingAccounts)
+      .signers([successorWalletKeypair])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == insufficientLiquidity)
+  })
+
+  it("Verifies you can't Over Repay.", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.repayTokens(
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex,
+      elevenUSDC,
+      false
+      )
+      .accounts({ signer: borrowerWalletKeypair.publicKey })
+      .signers([borrowerWalletKeypair])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == tooManyFunds)
+  })
+
+  it("Repays Borrowed USDC To the Token Reserve", async () => 
+  {
+    await program.methods.repayTokens(
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex,
+      tenUSDC,
+      true
+    )
+    .accounts({ signer: borrowerWalletKeypair.publicKey })
+    .signers([borrowerWalletKeypair])
+    .rpc()
+  })
+
   it("Verifies you Must Pass in the User Tab Accounts in the Order They Were Created", async () => 
   {
     var errorMessage = ""
 
     try
     {
-      const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, solLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
+      const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
       
       await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
       .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
@@ -714,7 +826,7 @@ describe("lending_protocol", () =>
 
   it("Withdraws USDC From the Token Reserve", async () => 
   {
-    const remainingAccounts = [solLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount, usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount]
+    const remainingAccounts = [successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount, usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount]
 
     await program.methods.withdrawTokens(
       usdcMint.publicKey,
@@ -996,7 +1108,6 @@ describe("lending_protocol", () =>
     //Get latest block chain timestamp.
     const slot = await program.provider.connection.getSlot();
     const timeStamp = await program.provider.connection.getBlockTime(slot);
-    //const timeStamp = Math.floor(Date.now() / 1000); 
 
     const publish_time = new anchor.BN(timeStamp);
     const prev_publish_time = new anchor.BN(timeStamp - 1);
@@ -1073,5 +1184,11 @@ describe("lending_protocol", () =>
     await sleep(5000) // Sleep for 5 seconds
     console.log('End sleep: ', counter)
     counter += 1
+  }
+
+  async function timeOutFunction(timeToWait: number)
+  {
+    console.log("Sleeping for: " + timeToWait + " milli seconds")
+    await sleep(timeToWait)
   }
 })
