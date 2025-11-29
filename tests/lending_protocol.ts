@@ -761,6 +761,28 @@ describe("lending_protocol", () =>
     assert(errorMessage == insufficientLiquidity)
   })
 
+  it("Verifies you can't Borrow When too many Tokens are Currently Being Borrowed.", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
+      
+      await program.methods.borrowTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
+      .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+      .remainingAccounts(remainingAccounts)
+      .signers([successorWalletKeypair])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == insufficientLiquidity)
+  })
+
   it("Verifies you can't Over Repay.", async () => 
   {
     var errorMessage = ""
