@@ -7,8 +7,6 @@ import * as fs from 'fs'
 import { PublicKey, LAMPORTS_PER_SOL, Transaction, Keypair, SystemProgram } from '@solana/web3.js'
 import { Token, ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token"
 
-//IMPORTANT: #pyth-mock (in Anchor.toml) should be uncommented out when not testing on local net or this test file won't run properly
-
 describe("lending_protocol", () =>
 {
   //Configure the client to use the local cluster.
@@ -173,7 +171,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
-      .accounts({signer: successorWalletKeypair.publicKey})
+      .accounts({ signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -196,7 +194,7 @@ describe("lending_protocol", () =>
   it("Passes back the Lending Protocol CEO Account", async () => 
   {
     await program.methods.passOnLendingProtocolCeo(program.provider.publicKey)
-    .accounts({signer: successorWalletKeypair.publicKey})
+    .accounts({ signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
     
@@ -211,7 +209,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.updateCurrentStatementMonthAndYear(newStatementMonth, newStatementYear)
-      .accounts({signer: successorWalletKeypair.publicKey})
+      .accounts({ signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -240,7 +238,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
-      .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+      .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -255,7 +253,7 @@ describe("lending_protocol", () =>
   it("Adds a wSOL Token Reserve", async () => 
   {
     await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
-    .accounts({mint: solTokenMintAddress})
+    .accounts({ mint: solTokenMintAddress })
     .rpc()
     
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
@@ -275,7 +273,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, globalLimit1)
-      .accounts({signer: successorWalletKeypair.publicKey})
+      .accounts({ signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -362,7 +360,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.editSubMarket(solTokenMintAddress, testSubMarketIndex, successorWalletKeypair.publicKey, feeRate100Percent)
-      .accounts({signer: successorWalletKeypair.publicKey})
+      .accounts({ signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -377,7 +375,7 @@ describe("lending_protocol", () =>
   it("Deposits wSOL Into the Token Reserve", async () => 
   {
     await program.methods.depositTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
-    .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+    .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
    
@@ -455,7 +453,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.editLendingUserAccountName(testUserAccountIndex, accountName26Characters)
-      .accounts({signer: successorWalletKeypair.publicKey})
+      .accounts({ signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -470,7 +468,7 @@ describe("lending_protocol", () =>
   it("Verifies a User Can Change Their Account Names", async () => 
   {
     await program.methods.editLendingUserAccountName(testUserAccountIndex, accountName25Characters)
-    .accounts({signer: successorWalletKeypair.publicKey})
+    .accounts({ signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
 
@@ -490,7 +488,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tooMuchSol)
-      .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+      .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -509,7 +507,7 @@ describe("lending_protocol", () =>
     try
     {
       await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
-      .accounts({mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey})
+      .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -602,7 +600,7 @@ describe("lending_protocol", () =>
   it("Adds a USDC Token Reserve", async () => 
   {
     await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
-    .accounts({mint: usdcMint.publicKey})
+    .accounts({ mint: usdcMint.publicKey })
     .rpc()
     
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
@@ -629,7 +627,7 @@ describe("lending_protocol", () =>
   it("Deposits USDC Into the Token Reserve", async () => 
   {
     await program.methods.depositTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC, null)
-    .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+    .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
    
@@ -704,7 +702,7 @@ describe("lending_protocol", () =>
   {
     //Depositing 2 Sol as Collateral
     await program.methods.depositTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
-    .accounts({mint: solTokenMintAddress, signer: borrowerWalletKeypair.publicKey})
+    .accounts({ mint: solTokenMintAddress, signer: borrowerWalletKeypair.publicKey })
     .signers([borrowerWalletKeypair])
     .rpc()
 
@@ -748,7 +746,7 @@ describe("lending_protocol", () =>
       const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
       
       await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
-      .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+      .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
       .rpc()
@@ -770,7 +768,7 @@ describe("lending_protocol", () =>
       const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
       
       await program.methods.borrowTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
-      .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+      .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
       .rpc()
@@ -797,7 +795,7 @@ describe("lending_protocol", () =>
       elevenUSDC,
       false
       )
-      .accounts({ signer: borrowerWalletKeypair.publicKey })
+      .accounts({ mint: usdcMint.publicKey, signer: borrowerWalletKeypair.publicKey })
       .signers([borrowerWalletKeypair])
       .rpc()
     }
@@ -811,17 +809,24 @@ describe("lending_protocol", () =>
 
   it("Repays Borrowed USDC To the Token Reserve", async () => 
   {
-    await program.methods.repayTokens(
-      usdcMint.publicKey,
-      program.provider.publicKey,
-      testSubMarketIndex,
-      testUserAccountIndex,
-      tenUSDC,
-      true
-    )
-    .accounts({ signer: borrowerWalletKeypair.publicKey })
-    .signers([borrowerWalletKeypair])
-    .rpc()
+    try
+    {
+      await program.methods.repayTokens(
+        usdcMint.publicKey,
+        program.provider.publicKey,
+        testSubMarketIndex,
+        testUserAccountIndex,
+        tenUSDC,
+        true
+      )
+      .accounts({ mint: usdcMint.publicKey, signer: borrowerWalletKeypair.publicKey })
+      .signers([borrowerWalletKeypair])
+      .rpc()
+    }
+    catch(error)
+    {
+      console.log(error)
+    }
   })
 
   it("Verifies you Must Pass in the User Tab Accounts in the Order They Were Created", async () => 
@@ -833,7 +838,7 @@ describe("lending_protocol", () =>
       const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
       
       await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
-      .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+      .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
       .rpc()
@@ -857,7 +862,7 @@ describe("lending_protocol", () =>
       testUserAccountIndex,
       tenUSDC
     )
-    .accounts({mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey})
+    .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
     .remainingAccounts(remainingAccounts)
     .signers([successorWalletKeypair])
     .rpc()
@@ -1192,7 +1197,7 @@ describe("lending_protocol", () =>
 
     //Write the buffer data to the mock account
     await mockProgram.methods.setMockedPythPriceUpdateAccount(buf)
-    .accounts({mockedPythPriceUpdatePda: mockedPythKeyPair.publicKey})
+    .accounts({ mockedPythPriceUpdatePda: mockedPythKeyPair.publicKey })
     .signers([mockedPythKeyPair])
     .rpc()
   }

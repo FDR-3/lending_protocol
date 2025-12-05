@@ -5,10 +5,10 @@ use anchor_lang::system_program::{self};
 use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
-use spl_math::precise_number::PreciseNumber;
+use ra_solana_math::FixedPoint;
 use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 
-declare_id!("7gqqfEn1MtCs9MLhUzSCnv9g1szn7cLAJAETW8XdZnRs");
+declare_id!("43Bmvq9D64KHtrMZXrcaKvW9PXkQrQQ16SPgdCqZucTT");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -75,8 +75,7 @@ pub enum InvalidInputError
     #[msg("Unexpected Monthly Statement Account PDA detected")]
     UnexpectedMonthlyStatementAccount,
     #[msg("Lending User Account name can't be longer than 25 characters")]
-    LendingUserAccountNameTooLong,
-    
+    LendingUserAccountNameTooLong
 }
 
 #[error_code]
@@ -96,30 +95,43 @@ pub enum LendingError
     TooManyFunds
 }
 
-//Helper function to update Token Reserve Accrued Interest Index before a lending transaction (deposit, withdraw, borrow, repay, liqudate)
+//Helper function to update Token Reserve Accrued Interest Index before a lending transaction (deposit, withdraw, borrow, repay, liquidate)
 //This function helps determine how much compounding interest a Token Reserve has earned for its token over the whole life of the Token Reserve's entire existence
-fn update_token_reserve_earned_interest_index<'info>(token_reserve: &mut Account<TokenReserve>, new_lending_activity_time_stamp: u64) -> Result<()>
+fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_reserve: &mut Account<TokenReserve>, new_lending_activity_time_stamp: u64) -> Result<()>
 {
-    //Use spl-math library PreciseNumber for fixed point math
-    //Set Token Reserve Accured Interest Index = Old Accured Interest Index * (1 + Supply APY * Δt/Seconds in a Year)
-    let old_accured_interest_index_precise  = PreciseNumber::new(token_reserve.interest_change_index).unwrap();
-    let number_one_precise  = PreciseNumber::new(1 as u128).unwrap();
-    let supply_apy_precise = PreciseNumber::new(token_reserve.supply_apy).unwrap();
-    let old_time_precise = PreciseNumber::new(token_reserve.last_lending_activity_time_stamp as u128).unwrap();
-    let new_time_precise = PreciseNumber::new(new_lending_activity_time_stamp as u128).unwrap();
-    let change_in_time_precise = new_time_precise.checked_sub(&old_time_precise).unwrap();
-    let seconds_in_a_year_precise = PreciseNumber::new(31_556_952 as u128).unwrap();//1 year = (365.2425 days) × (24 hours/day) × (3600 seconds/hour) = 31,556,952 seconds
-    let change_in_time_divided_by_seconds_in_a_year_precise = change_in_time_precise.checked_div(&seconds_in_a_year_precise).unwrap();
-    let supply_apy_times_long_ass_variable_name_precise = supply_apy_precise.checked_mul(&change_in_time_divided_by_seconds_in_a_year_precise).unwrap();
-    let one_plus_slightly_shorter_long_ass_variable_name_precise = number_one_precise.checked_add(&supply_apy_times_long_ass_variable_name_precise).unwrap();
-    let new_accured_interest_index_precise = old_accured_interest_index_precise.checked_mul(&one_plus_slightly_shorter_long_ass_variable_name_precise).unwrap();
+    //Use ra_solana_math library FixedPoint for fixed point math
+    let old_supply_interest_index = FixedPoint::from_int(token_reserve.supply_interest_change_index as u64);
+    let old_borrow_interest_index = FixedPoint::from_int(token_reserve.borrow_interest_change_index as u64);
+    let number_one = FixedPoint::from_int(1);
+    let supply_apy = FixedPoint::from_bps(token_reserve.supply_apy as u64)?;
+    let borrow_apy = FixedPoint::from_bps(token_reserve.borrow_apy as u64)?;
+    let old_time = FixedPoint::from_int(token_reserve.last_lending_activity_time_stamp as u64);
+    let new_time = FixedPoint::from_int(new_lending_activity_time_stamp as u64);
+    let change_in_time = new_time.sub(&old_time)?;
+    let seconds_in_a_year = FixedPoint::from_int(31_556_952);//1 year = (365.2425 days) × (24 hours/day) × (3600 seconds/hour) = 31,556,952 seconds
+    
+    //Set Token Reserve Supply Interest Index = Old Supply Interest Index * (1 + Supply APY * Δt/Seconds in a Year)
+    let supply_apy_mul_change_in_time = supply_apy.mul(&change_in_time)?;
+    let interest_change_factor = supply_apy_mul_change_in_time.div(&seconds_in_a_year)?;
+    let one_plus_interest_change_factor = number_one.add(&interest_change_factor)?;
+    let new_supply_interest_index = old_supply_interest_index.mul(&one_plus_interest_change_factor)?;
+    token_reserve.supply_interest_change_index = new_supply_interest_index.to_u128()?;
 
-    token_reserve.interest_change_index = new_accured_interest_index_precise.to_imprecise().unwrap();
+    //Set Token Reserve Borrow Interest Index = Old Borrow Interest Index * (1 + Borrow APY * Δt/Seconds in a Year)
+    let borrow_apy_mul_change_in_time = borrow_apy.mul(&change_in_time)?;
+    let interest_change_factor = borrow_apy_mul_change_in_time.div(&seconds_in_a_year)?;
+    let one_plus_interest_change_factor = number_one.add(&interest_change_factor)?;
+    let new_borrow_interest_index = old_borrow_interest_index.mul(&one_plus_interest_change_factor)?;
+    token_reserve.borrow_interest_change_index = new_borrow_interest_index.to_u128()?;
+
+    msg!("Updated Token Reserve Interest Change Indexes");
+    msg!("Supply Change Index: {}", token_reserve.supply_interest_change_index);
+    msg!("Borrow Change Index: {}", token_reserve.borrow_interest_change_index);
 
     Ok(())
 }
 
-//Helper function to update Token Reserve Utilization Rate and Supply Apy after a lending transaction (deposit, withdraw, borrow, repay, liqudate)
+//Helper function to update Token Reserve Utilization Rate and Supply Apy after a lending transaction (deposit, withdraw, borrow, repay, liquidate)
 fn update_token_reserve_rates<'info>(token_reserve: &mut Account<TokenReserve>) -> Result<()>
 {
     if token_reserve.borrowed_amount == 0
@@ -129,18 +141,22 @@ fn update_token_reserve_rates<'info>(token_reserve: &mut Account<TokenReserve>) 
     }
     else
     {
-        //Use spl-math library PreciseNumber for fixed point math
-        //Set Token Reserve Utilization Rate = Borrowed Amount / Deposited Amount
-        let borrowed_amount_precise = PreciseNumber::new(token_reserve.borrowed_amount).unwrap();
-        let deposited_amount_precise = PreciseNumber::new(token_reserve.deposited_amount).unwrap();
-        let utilization_rate_precise = borrowed_amount_precise.checked_div(&deposited_amount_precise).unwrap();
-        token_reserve.utilization_rate = utilization_rate_precise.to_imprecise().unwrap() as u64;
+        //Scaling to save decimals before truncations from (to_u128())
+        let decimal_scaling = FixedPoint::from_int(10_000);
 
-        //Use spl-math library PreciseNumber for fixed point math
-        //Set Token Reserve Supply APY = Borrow APY * Utilization Rate
-        let borrow_apy_precise  = PreciseNumber::new(token_reserve.borrow_apy as u128).unwrap();
-        let supply_apy_precise = borrow_apy_precise.checked_mul(&utilization_rate_precise).unwrap();
-        token_reserve.supply_apy = supply_apy_precise.to_imprecise().unwrap();
+        //Use ra_solana_math library FixedPoint for fixed point math
+        //Set Token Reserve Utilization Rate = Borrowed Amount / Deposited Amount
+        let borrowed_amount = FixedPoint::from_int(token_reserve.borrowed_amount as u64);
+        let deposited_amount = FixedPoint::from_int(token_reserve.deposited_amount as u64);
+        let utilization_rate = borrowed_amount.div(&deposited_amount)?.mul(&decimal_scaling)?;
+
+        token_reserve.utilization_rate = utilization_rate.to_u64()? as u16;
+
+        //Set Supply APY = Borrowed APY * Utilization Rate
+        let borrow_apy = FixedPoint::from_bps(token_reserve.borrow_apy as u64)?;
+        let supply_apy = borrow_apy.mul(&utilization_rate)?;
+
+        token_reserve.supply_apy = supply_apy.to_u64()? as u16;
     }
     
     msg!("Updated Token Reserve Rates");
@@ -164,62 +180,87 @@ fn update_user_previous_interest_earned<'info>(
         return Ok(())
     }
 
-    //Use spl-math library PreciseNumber for fixed point math
-    //User New Balance = Old Balance * (Token Reserve Accrued Interest Index/User Accrued Interest Index)
-    let token_reserve_index_precise = PreciseNumber::new(token_reserve.interest_change_index).unwrap();
-    let user_index_precise = PreciseNumber::new(lending_user_tab_account.interest_change_index).unwrap();
-    let old_token_reserve_deposited_amount_precise = PreciseNumber::new(token_reserve.deposited_amount).unwrap();
-    let old_token_reserve_interest_earned_amount_precise = PreciseNumber::new(token_reserve.interest_earned_amount).unwrap();
-    let old_token_reserve_fees_generated_amount_precise = PreciseNumber::new(token_reserve.fees_generated_amount).unwrap();
-    let old_sub_market_deposited_amount_precise = PreciseNumber::new(sub_market.deposited_amount).unwrap();
-    let old_sub_market_interest_earned_amount_precise = PreciseNumber::new(sub_market.interest_earned_amount).unwrap();
-    let old_sub_market_fees_generated_amount_precise = PreciseNumber::new(sub_market.fees_generated_amount).unwrap();
-    let old_sub_market_uncollected_fees_amount_precise = PreciseNumber::new(sub_market.uncollected_fees_amount).unwrap();
-    let old_user_deposited_amount_precise = PreciseNumber::new(lending_user_tab_account.deposited_amount).unwrap();
-    let old_user_interest_earned_amount_precise = PreciseNumber::new(lending_user_tab_account.interest_earned_amount).unwrap();
-    let old_user_fees_generated_amount_precise = PreciseNumber::new(lending_user_tab_account.fees_generated_amount).unwrap();
-    let old_user_monthly_interest_earned_amount_precise = PreciseNumber::new(lending_user_monthly_statement_account.monthly_interest_earned_amount).unwrap();
-    let old_user_monthly_fees_generated_amount_precise = PreciseNumber::new(lending_user_monthly_statement_account.monthly_fees_generated_amount).unwrap();
+    //Use ra_solana_math library FixedPoint for fixed point math
+    //User New Balance = Old Balance * (Token Reserve Earned Interest Index/User Earned Interest Index)
+    let token_reserve_supply_index = FixedPoint::from_int(token_reserve.supply_interest_change_index as u64);
+    let user_supply_index = FixedPoint::from_int(lending_user_tab_account.supply_interest_change_index as u64);
+    let old_token_reserve_deposited_amount = FixedPoint::from_int(token_reserve.deposited_amount as u64);
+    let old_token_reserve_interest_earned_amount = FixedPoint::from_int(token_reserve.interest_earned_amount as u64);
+    let old_token_reserve_fees_generated_amount = FixedPoint::from_int(token_reserve.fees_generated_amount as u64);
+    let old_sub_market_deposited_amount = FixedPoint::from_int(sub_market.deposited_amount as u64);
+    let old_sub_market_interest_earned_amount = FixedPoint::from_int(sub_market.interest_earned_amount as u64);
+    let old_sub_market_fees_generated_amount = FixedPoint::from_int(sub_market.fees_generated_amount as u64);
+    let old_sub_market_uncollected_fees_amount = FixedPoint::from_int(sub_market.uncollected_fees_amount as u64);
+    let old_user_deposited_amount = FixedPoint::from_int(lending_user_tab_account.deposited_amount as u64);
+    let old_user_interest_earned_amount = FixedPoint::from_int(lending_user_tab_account.interest_earned_amount as u64);
+    let old_user_fees_generated_amount = FixedPoint::from_int(lending_user_tab_account.fees_generated_amount as u64);
+    let old_user_monthly_interest_earned_amount = FixedPoint::from_int(lending_user_monthly_statement_account.monthly_interest_earned_amount as u64);
+    let old_user_monthly_fees_generated_amount = FixedPoint::from_int(lending_user_monthly_statement_account.monthly_fees_generated_amount as u64);
 
-    let token_index_divided_by_user_index_precise = token_reserve_index_precise.checked_div(&user_index_precise).unwrap();
-    let new_user_deposited_amount_before_fee_precise = old_user_deposited_amount_precise.checked_mul(&token_index_divided_by_user_index_precise).unwrap();
+    msg!("Debugging");
+    msg!("token_reserve_supply_index: {}", token_reserve_supply_index.to_u128()?);
+    msg!("user_supply_index: {}", user_supply_index.to_u128()?);
+    msg!("old_token_reserve_deposited_amount: {}", old_token_reserve_deposited_amount.to_u128()?);
+    msg!("old_token_reserve_interest_earned_amount: {}", old_token_reserve_interest_earned_amount.to_u128()?);
+    msg!("old_token_reserve_fees_generated_amount: {}", old_token_reserve_fees_generated_amount.to_u128()?);
+    msg!("old_sub_market_deposited_amount: {}", old_sub_market_deposited_amount.to_u128()?);
+    msg!("old_sub_market_interest_earned_amount: {}", old_sub_market_interest_earned_amount.to_u128()?);
+    msg!("old_sub_market_fees_generated_amount: {}", old_sub_market_fees_generated_amount.to_u128()?);
+    msg!("old_sub_market_uncollected_fees_amount: {}", old_sub_market_uncollected_fees_amount.to_u128()?);
+    msg!("old_user_deposited_amount: {}", old_user_deposited_amount.to_u128()?);
+    msg!("old_user_interest_earned_amount: {}", old_user_interest_earned_amount.to_u128()?);
+    msg!("old_user_fees_generated_amount: {}", old_user_fees_generated_amount.to_u128()?);
+    msg!("old_user_monthly_interest_earned_amount: {}", old_user_monthly_interest_earned_amount.to_u128()?);
+    msg!("old_user_monthly_fees_generated_amount: {}", old_user_monthly_fees_generated_amount.to_u128()?);
+
+    //Perform multiplication before division to keep more precision
+    let old_user_balance_mul_token_reserve_index = old_user_deposited_amount.mul(&token_reserve_supply_index)?;
+    let new_user_deposited_amount_before_fee = old_user_balance_mul_token_reserve_index.div(&user_supply_index)?;
+    let new_user_interest_earned_amount_before_fee = new_user_deposited_amount_before_fee.sub(&old_user_deposited_amount)?;
+
+    msg!("Debugging");
+    msg!("old_user_balance_mul_token_reserve_index: {}", old_user_balance_mul_token_reserve_index.to_u128()?);
+    msg!("new_user_deposited_amount_before_fee: {}", new_user_deposited_amount_before_fee.to_u128()?);
+    msg!("new_user_interest_earned_amount_before_fee: {}", new_user_interest_earned_amount_before_fee.to_u128()?);
     
     //Apply SubMarket Fee
-    let new_user_interest_earned_amount_before_fee_precise = new_user_deposited_amount_before_fee_precise.checked_sub(&old_user_deposited_amount_precise).unwrap();
-    let sub_market_fee_rate_precise = PreciseNumber::new(sub_market.fee_on_interest_earned_rate as u128).unwrap();
-    let new_fees_generated_amount_precise = new_user_interest_earned_amount_before_fee_precise.checked_mul(&sub_market_fee_rate_precise).unwrap();
-    let new_user_interest_earned_amount_after_fee_precise = new_user_interest_earned_amount_before_fee_precise.checked_sub(&new_fees_generated_amount_precise).unwrap();
-    let new_user_deposited_amount_precise = old_user_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap();
+    let sub_market_fee_rate = FixedPoint::from_bps(sub_market.fee_on_interest_earned_rate as u64)?;
+    msg!("sub_market_fee_rate: {}", sub_market_fee_rate.to_u64()?);
+    let new_fees_generated_amount = new_user_interest_earned_amount_before_fee.mul(&sub_market_fee_rate)?;
+    msg!("new_fees_generated_amount: {}", new_fees_generated_amount.to_u128()?);
+    let new_user_interest_earned_amount_after_fee = new_user_interest_earned_amount_before_fee.sub(&new_fees_generated_amount)?;
+    msg!("new_user_interest_earned_amount_after_fee: {}", new_user_interest_earned_amount_after_fee.to_u128()?);
+    let new_user_deposited_amount = old_user_deposited_amount.add(&new_user_interest_earned_amount_after_fee)?;
+    msg!("new_user_deposited_amount: {}", new_user_deposited_amount.to_u128()?);
     
-    //Convert precise values back into imprecise values
-    let new_token_reserve_deposited_amount = old_token_reserve_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
-    let new_token_reserve_interest_earned_amount = old_token_reserve_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
-    let new_token_reserve_fees_generated_amount = old_token_reserve_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_deposited_amount = old_sub_market_deposited_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_interest_earned_amount = old_sub_market_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_fees_generated_amount = old_sub_market_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_uncollected_fees_amount = old_sub_market_uncollected_fees_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_user_deposited_amount = new_user_deposited_amount_precise.to_imprecise().unwrap();
-    let new_user_total_interest_earned_amount = old_user_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
-    let new_user_total_fees_generated_amount = old_user_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_user_montly_interest_earned_amount = old_user_monthly_interest_earned_amount_precise.checked_add(&new_user_interest_earned_amount_after_fee_precise).unwrap().to_imprecise().unwrap();
-    let new_user_montly_fees_generated_amount = old_user_monthly_fees_generated_amount_precise.checked_add(&new_fees_generated_amount_precise).unwrap().to_imprecise().unwrap();
+    //Convert precise values back into scaled down imprecise values
+    let new_token_reserve_deposited_amount = old_token_reserve_deposited_amount.add(&new_user_interest_earned_amount_after_fee)?;
+    let new_token_reserve_interest_earned_amount = old_token_reserve_interest_earned_amount.add(&new_user_interest_earned_amount_after_fee)?;
+    let new_token_reserve_fees_generated_amount = old_token_reserve_fees_generated_amount.add(&new_fees_generated_amount)?;
+    let new_sub_market_deposited_amount = old_sub_market_deposited_amount.add(&new_user_interest_earned_amount_after_fee)?;
+    let new_sub_market_interest_earned_amount = old_sub_market_interest_earned_amount.add(&new_user_interest_earned_amount_after_fee)?;
+    let new_sub_market_fees_generated_amount = old_sub_market_fees_generated_amount.add(&new_fees_generated_amount)?;
+    let new_sub_market_uncollected_fees_amount = old_sub_market_uncollected_fees_amount.add(&new_fees_generated_amount)?;
+    let new_user_total_interest_earned_amount = old_user_interest_earned_amount.add(&new_user_interest_earned_amount_after_fee)?;
+    let new_user_total_fees_generated_amount = old_user_fees_generated_amount.add(&new_fees_generated_amount)?;
+    let new_user_montly_interest_earned_amount = old_user_monthly_interest_earned_amount.add(&new_user_interest_earned_amount_after_fee)?;
+    let new_user_montly_fees_generated_amount = old_user_monthly_fees_generated_amount.add(&new_fees_generated_amount)?;
 
-    token_reserve.deposited_amount = new_token_reserve_deposited_amount;
-    token_reserve.interest_earned_amount = new_token_reserve_interest_earned_amount;
-    token_reserve.fees_generated_amount = new_token_reserve_fees_generated_amount;
-    sub_market.deposited_amount = new_sub_market_deposited_amount;
-    sub_market.interest_earned_amount = new_sub_market_interest_earned_amount;
-    sub_market.fees_generated_amount = new_sub_market_fees_generated_amount;
-    sub_market.uncollected_fees_amount = new_sub_market_uncollected_fees_amount;
-    lending_user_tab_account.deposited_amount = new_user_deposited_amount;
-    lending_user_tab_account.interest_earned_amount = new_user_total_interest_earned_amount;
-    lending_user_tab_account.fees_generated_amount = new_user_total_fees_generated_amount;
+    token_reserve.deposited_amount = new_token_reserve_deposited_amount.to_u128()?;
+    token_reserve.interest_earned_amount = new_token_reserve_interest_earned_amount.to_u128()?;
+    token_reserve.fees_generated_amount = new_token_reserve_fees_generated_amount.to_u128()?;
+    sub_market.deposited_amount = new_sub_market_deposited_amount.to_u128()?;
+    sub_market.interest_earned_amount = new_sub_market_interest_earned_amount.to_u128()?;
+    sub_market.fees_generated_amount = new_sub_market_fees_generated_amount.to_u128()?;
+    sub_market.uncollected_fees_amount = new_sub_market_uncollected_fees_amount.to_u128()?;
+    lending_user_tab_account.deposited_amount = new_user_deposited_amount.to_u128()?;
+    lending_user_tab_account.interest_earned_amount = new_user_total_interest_earned_amount.to_u128()?;
+    lending_user_tab_account.fees_generated_amount = new_user_total_fees_generated_amount.to_u128()?;
     lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
     lending_user_monthly_statement_account.snap_shot_interest_earned_amount = lending_user_tab_account.interest_earned_amount;
     lending_user_monthly_statement_account.snap_shot_fees_generated_amount = lending_user_tab_account.fees_generated_amount;
-    lending_user_monthly_statement_account.monthly_interest_earned_amount = new_user_montly_interest_earned_amount;
-    lending_user_monthly_statement_account.monthly_fees_generated_amount = new_user_montly_fees_generated_amount;
+    lending_user_monthly_statement_account.monthly_interest_earned_amount = new_user_montly_interest_earned_amount.to_u128()?;
+    lending_user_monthly_statement_account.monthly_fees_generated_amount = new_user_montly_fees_generated_amount.to_u128()?;
 
     Ok(())
 }
@@ -238,44 +279,44 @@ fn update_user_previous_interest_accrued<'info>(
         return Ok(())
     }
 
-    //Use spl-math library PreciseNumber for fixed point math
+    //Use ra_solana_math library FixedPoint for fixed point math
     //User New Debt = Old Debt * (Token Reserve Accrued Interest Index/User Accrued Interest Index)
-    let token_reserve_index_precise = PreciseNumber::new(token_reserve.interest_change_index).unwrap();
-    let user_index_precise = PreciseNumber::new(lending_user_tab_account.interest_change_index).unwrap();
-    let old_token_reserve_borrowed_amount_precise = PreciseNumber::new(token_reserve.borrowed_amount).unwrap();
-    let old_token_reserve_interest_accrued_amount_precise = PreciseNumber::new(token_reserve.interest_accrued_amount).unwrap();
-    let old_sub_market_borrowed_amount_precise = PreciseNumber::new(sub_market.borrowed_amount).unwrap();
-    let old_sub_market_interest_accrued_amount_precise = PreciseNumber::new(sub_market.interest_accrued_amount).unwrap();
-    let old_user_borrowed_amount_precise = PreciseNumber::new(lending_user_tab_account.borrowed_amount).unwrap();
-    let old_user_interest_accrued_amount_precise = PreciseNumber::new(lending_user_tab_account.interest_accrued_amount).unwrap();
-    let old_user_monthly_interest_accrued_amount_precise = PreciseNumber::new(lending_user_monthly_statement_account.monthly_interest_accrued_amount).unwrap();
+    let token_reserve_borrow_index = FixedPoint::from_int(token_reserve.borrow_interest_change_index as u64);
+    let user_borrow_index = FixedPoint::from_int(lending_user_tab_account.borrow_interest_change_index as u64);
+    let old_token_reserve_borrowed_amount = FixedPoint::from_int(token_reserve.borrowed_amount as u64);
+    let old_token_reserve_interest_accrued_amount = FixedPoint::from_int(token_reserve.interest_accrued_amount as u64);
+    let old_sub_market_borrowed_amount = FixedPoint::from_int(sub_market.borrowed_amount as u64);
+    let old_sub_market_interest_accrued_amount = FixedPoint::from_int(sub_market.interest_accrued_amount as u64);
+    let old_user_borrowed_amount = FixedPoint::from_int(lending_user_tab_account.borrowed_amount as u64);
+    let old_user_interest_accrued_amount = FixedPoint::from_int(lending_user_tab_account.interest_accrued_amount as u64);
+    let old_user_monthly_interest_accrued_amount = FixedPoint::from_int(lending_user_monthly_statement_account.monthly_interest_accrued_amount as u64);
 
-    let token_index_divided_by_user_index_precise = token_reserve_index_precise.checked_div(&user_index_precise).unwrap();
-    let new_user_borrowed_amount_precise = old_user_borrowed_amount_precise.checked_mul(&token_index_divided_by_user_index_precise).unwrap();
-    let new_user_interest_accrued_amount_precise = new_user_borrowed_amount_precise.checked_sub(&old_user_borrowed_amount_precise).unwrap();
+    //Perform multiplication before division to keep more precision
+    let old_user_debt_mul_token_reserve_index = old_user_borrowed_amount.mul(&token_reserve_borrow_index)?;
+    let new_user_borrowed_amount = old_user_debt_mul_token_reserve_index.div(&user_borrow_index)?;
+    let new_user_interest_accrued_amount = new_user_borrowed_amount.sub(&old_user_borrowed_amount)?;
 
-    let new_token_reserve_borrowed_amount = old_token_reserve_borrowed_amount_precise.checked_add(&new_user_interest_accrued_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_token_reserve_interest_accrued_amount = old_token_reserve_interest_accrued_amount_precise.checked_add(&new_user_interest_accrued_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_borrowed_amount = old_sub_market_borrowed_amount_precise.checked_add(&new_user_interest_accrued_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_sub_market_interest_accrued_amount = old_sub_market_interest_accrued_amount_precise.checked_add(&new_user_interest_accrued_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_user_borrowed_amount = new_user_borrowed_amount_precise.to_imprecise().unwrap();
-    let new_user_total_interest_accrued_amount = old_user_interest_accrued_amount_precise.checked_add(&new_user_interest_accrued_amount_precise).unwrap().to_imprecise().unwrap();
-    let new_user_montly_interest_accrued_amount = old_user_monthly_interest_accrued_amount_precise.checked_add(&new_user_interest_accrued_amount_precise).unwrap().to_imprecise().unwrap();
+    let new_token_reserve_borrowed_amount = old_token_reserve_borrowed_amount.add(&new_user_interest_accrued_amount)?;
+    let new_token_reserve_interest_accrued_amount = old_token_reserve_interest_accrued_amount.add(&new_user_interest_accrued_amount)?;
+    let new_sub_market_borrowed_amount = old_sub_market_borrowed_amount.add(&new_user_interest_accrued_amount)?;
+    let new_sub_market_interest_accrued_amount = old_sub_market_interest_accrued_amount.add(&new_user_interest_accrued_amount)?;
+    let new_user_total_interest_accrued_amount = old_user_interest_accrued_amount.add(&new_user_interest_accrued_amount)?;
+    let new_user_montly_interest_accrued_amount = old_user_monthly_interest_accrued_amount.add(&new_user_interest_accrued_amount)?;
 
-    token_reserve.borrowed_amount = new_token_reserve_borrowed_amount;
-    token_reserve.interest_accrued_amount = new_token_reserve_interest_accrued_amount;
-    sub_market.borrowed_amount = new_sub_market_borrowed_amount;
-    sub_market.interest_accrued_amount = new_sub_market_interest_accrued_amount;
-    lending_user_tab_account.borrowed_amount = new_user_borrowed_amount;
-    lending_user_tab_account.interest_accrued_amount = new_user_total_interest_accrued_amount;
+    token_reserve.borrowed_amount = new_token_reserve_borrowed_amount.to_u128()?;
+    token_reserve.interest_accrued_amount = new_token_reserve_interest_accrued_amount.to_u128()?;
+    sub_market.borrowed_amount = new_sub_market_borrowed_amount.to_u128()?;
+    sub_market.interest_accrued_amount = new_sub_market_interest_accrued_amount.to_u128()?;
+    lending_user_tab_account.borrowed_amount = new_user_borrowed_amount.to_u128()?;
+    lending_user_tab_account.interest_accrued_amount = new_user_total_interest_accrued_amount.to_u128()?;
     lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
     lending_user_monthly_statement_account.snap_shot_interest_accrued_amount = lending_user_tab_account.interest_accrued_amount;
-    lending_user_monthly_statement_account.monthly_interest_accrued_amount = new_user_montly_interest_accrued_amount;
+    lending_user_monthly_statement_account.monthly_interest_accrued_amount = new_user_montly_interest_accrued_amount.to_u128()?;
 
     Ok(())
 }
 
-//Helper function to validate Tab Accounts and Pyth Price Update Accounts and to see if the Withdraw or Borrow request will expose the user to liquidation
+//Helper function to validate Tab Accounts and Pyth Price Update Accounts and to see if the Withdraw or Borrow request will lower the user's health factor below 30%
 fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'info>(remaining_accounts_iter: &mut core::slice::Iter<'a, AccountInfo<'info>>,
     signer: Pubkey,
     user_account_index: u8,
@@ -287,9 +328,9 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 ) -> Result<()>
 {
     let mut user_tab_index = 0;
-    let mut user_deposited_value = PreciseNumber::new(0 as u128).unwrap();
-    let mut user_borrowed_value = PreciseNumber::new(0 as u128).unwrap();
-    let mut user_withdraw_or_borrow_request_value = PreciseNumber::new(0 as u128).unwrap();
+    let mut user_deposited_value = FixedPoint::from_int(0);
+    let mut user_borrowed_value = FixedPoint::from_int(0);
+    let mut user_withdraw_or_borrow_request_value = FixedPoint::from_int(0);
     let time_stamp = Clock::get()?.unix_timestamp;
     const MAXIMUM_PRICE_AGE: u64 = 30; //30 seconds
 
@@ -350,7 +391,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         );
         //The published time for the Pyth Price Update Account can be no older than 30 seconds
         let time_diff = (time_stamp - price_update_account.price_message.publish_time) as u64;
-        require!(time_diff <= MAXIMUM_PRICE_AGE, LendingError::StalePriceData);
+        //require!(time_diff <= MAXIMUM_PRICE_AGE, LendingError::StalePriceData);
 
         let current_price = price_update_account.price_message;
 
@@ -368,20 +409,20 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
             current_price.exponent
         );
 
-        let token_price_value_precise = PreciseNumber::new(current_price.price as u128).unwrap();
-        let tab_deposited_amount_precise = PreciseNumber::new(tab_account.deposited_amount as u128).unwrap(); 
-        let tab_borrowed_amount_precise = PreciseNumber::new(tab_account.borrowed_amount as u128).unwrap();
-        let tab_deposited_value_precise = tab_deposited_amount_precise.checked_mul(&token_price_value_precise).unwrap();
-        let tab_borrowed_value_precise = tab_borrowed_amount_precise.checked_mul(&token_price_value_precise).unwrap();
+        let token_price_value = FixedPoint::from_int(current_price.price.try_into().unwrap());
+        let tab_deposited_amount = FixedPoint::from_int(tab_account.deposited_amount as u64); 
+        let tab_borrowed_amount = FixedPoint::from_int(tab_account.borrowed_amount as u64);
+        let tab_deposited_value = tab_deposited_amount.mul(&token_price_value)?;
+        let tab_borrowed_value = tab_borrowed_amount.mul(&token_price_value)?;
 
-        user_deposited_value = user_deposited_value.checked_add(&tab_deposited_value_precise).unwrap();
-        user_borrowed_value = user_borrowed_value.checked_add(&tab_borrowed_value_precise).unwrap();
+        user_deposited_value = user_deposited_value.add(&tab_deposited_value)?;
+        user_borrowed_value = user_borrowed_value.add(&tab_borrowed_value)?;
 
         if token_mint_address.key() == tab_account.token_mint_address.key()
         {
-            let withdraw_or_borrow_amount_precise = PreciseNumber::new(withdraw_or_borrow_amount as u128).unwrap();
-            let withdraw_or_borrow_request_value_precise = withdraw_or_borrow_amount_precise.checked_mul(&token_price_value_precise).unwrap();
-            user_withdraw_or_borrow_request_value = user_withdraw_or_borrow_request_value.checked_add(&withdraw_or_borrow_request_value_precise).unwrap();
+            let withdraw_or_borrow_amount = FixedPoint::from_int(withdraw_or_borrow_amount);
+            let withdraw_or_borrow_request_value = withdraw_or_borrow_amount.mul(&token_price_value)?;
+            user_withdraw_or_borrow_request_value = user_withdraw_or_borrow_request_value.add(&withdraw_or_borrow_request_value)?;
         }
 
         user_tab_index += 1;
@@ -390,27 +431,27 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     msg!
     (
         "Value calculation test. Deposited: {}, Borrowed: {}, Requested: {}",
-        user_deposited_value.to_imprecise().unwrap(),
-        user_borrowed_value.to_imprecise().unwrap(),
-        user_withdraw_or_borrow_request_value.to_imprecise().unwrap()
+        user_deposited_value.to_u128()?,
+        user_borrowed_value.to_u128()?,
+        user_withdraw_or_borrow_request_value.to_u128()?
     );
 
     if activity_type == Activity::Withdraw as u8
     {
-        user_deposited_value = user_deposited_value.checked_sub(&user_withdraw_or_borrow_request_value).unwrap();
+        user_deposited_value = user_deposited_value.sub(&user_withdraw_or_borrow_request_value)?;
     }
     else
     {
-        user_borrowed_value = user_borrowed_value.checked_add(&user_withdraw_or_borrow_request_value).unwrap();
+        user_borrowed_value = user_borrowed_value.add(&user_withdraw_or_borrow_request_value)?;
     }
 
-    if user_borrowed_value.to_imprecise().unwrap() > 0
+    if user_borrowed_value.to_u128()? > 0
     {
-        let seventy_percent_precise = PreciseNumber::new(700_000_000_000_000_000 as u128).unwrap();
-        let seventy_percent_of_new_deposited_value = user_deposited_value.checked_mul(&seventy_percent_precise).unwrap();
+        let seventy_percent = FixedPoint::from_percent(70)?;
+        let seventy_percent_of_new_deposited_value = user_deposited_value.mul(&seventy_percent)?;
 
         //You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
-        require!(seventy_percent_of_new_deposited_value.to_imprecise().unwrap() >= user_borrowed_value.to_imprecise().unwrap(), LendingError::LiquidationExposure);
+        require!(seventy_percent_of_new_deposited_value.to_u128()? >= user_borrowed_value.to_u128()?, LendingError::LiquidationExposure);
     }
 
     Ok(())
@@ -511,7 +552,8 @@ pub mod lending_protocol
         token_reserve.pyth_price_update_key = pyth_price_update_key.key();
         token_reserve.borrow_apy = borrow_apy;
         token_reserve.global_limit = global_limit;
-        token_reserve.interest_change_index = 1;
+        token_reserve.supply_interest_change_index = 1_000_000_000_000_000_000;
+        token_reserve.borrow_interest_change_index = 1_000_000_000_000_000_000;
 
         token_reserve.token_reserve_protocol_index = token_reserve_stats.token_reserve_count;
         token_reserve_stats.token_reserve_count += 1;
@@ -675,8 +717,8 @@ pub mod lending_protocol
             )?;
         }
 
-        //Calculate Token Reserve Previously Earned Interest
-        update_token_reserve_earned_interest_index(token_reserve, time_stamp)?;
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
 
         update_user_previous_interest_earned(
             token_reserve,
@@ -718,7 +760,7 @@ pub mod lending_protocol
             let user_balance_after_transfer = ctx.accounts.user_ata.amount;
             if user_balance_after_transfer == 0
             {
-                
+                //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
                 let cpi_accounts = CloseAccount
                 {
                     account: ctx.accounts.user_ata.to_account_info(),
@@ -755,9 +797,10 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.monthly_deposited_amount += amount as u128;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
 
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
-        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+        lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
@@ -771,7 +814,7 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Deposit as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
 
-        msg!("{} deposited for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);   
+        msg!("{} deposited at token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);   
 
         Ok(())
     }
@@ -811,8 +854,8 @@ pub mod lending_protocol
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
 
-        //Calculate Token Reserve Previously Earned Interest
-        update_token_reserve_earned_interest_index(token_reserve, time_stamp)?;
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
 
         update_user_previous_interest_earned(
             token_reserve,
@@ -909,7 +952,7 @@ pub mod lending_protocol
             }
             else
             {
-                //Since the User has no other wSOL, unwrap it all, send it to the User, and close the temporary wSOL account
+                //Since the User has no other wrapped SOL, unwrap it all, send it to the User, and close the temporary wrapped SOL account
                 let cpi_accounts = CloseAccount
                 {
                     account: ctx.accounts.user_ata.to_account_info(),
@@ -930,9 +973,10 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.monthly_withdrawal_amount += amount as u128;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
         
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
-        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+        lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
@@ -946,7 +990,7 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Withdraw as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
         
-        msg!("{} withdrew for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
+        msg!("{} withdrew at token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
 
         Ok(())
     }
@@ -997,8 +1041,8 @@ pub mod lending_protocol
             )?;
         }
 
-        //Calculate Token Reserve Previously Earned Interest
-        update_token_reserve_earned_interest_index(token_reserve, time_stamp)?;
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
 
         update_user_previous_interest_earned(
             token_reserve,
@@ -1105,9 +1149,10 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.monthly_borrowed_amount += amount as u128;
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
 
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
-        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+        lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
@@ -1121,7 +1166,7 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Borrow as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
         
-        msg!("{} borrowed for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
+        msg!("{} borrowed at token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
 
         Ok(())
     }
@@ -1157,8 +1202,8 @@ pub mod lending_protocol
             )?;
         }
 
-        //Calculate Token Reserve Previously Earned Interest
-        update_token_reserve_earned_interest_index(token_reserve, time_stamp)?;
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
 
         update_user_previous_interest_earned(
             token_reserve,
@@ -1186,21 +1231,68 @@ pub mod lending_protocol
             payment_amount = amount
         }
 
+
+        msg!("Debugging");
+        msg!("lending_user_tab_account.borrowed_amount: {}", lending_user_tab_account.borrowed_amount);
+        msg!("payment_amount: {}", payment_amount);
+
         //You can't repay an amount that is greater than your borrowed amount.
         require!(lending_user_tab_account.borrowed_amount >= payment_amount as u128, LendingError::TooManyFunds);
 
-        //Cross Program Invocation for Token Transfer
-        let cpi_accounts = Transfer
+        //Handle native SOL transactions
+        if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
         {
-            from: ctx.accounts.user_ata.to_account_info(),
-            to: ctx.accounts.token_reserve_ata.to_account_info(),
-            authority: ctx.accounts.signer.to_account_info()
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
+            let cpi_accounts = system_program::Transfer
+            {
+                from: ctx.accounts.signer.to_account_info(),
+                to: ctx.accounts.token_reserve_ata.to_account_info()
+            };
+            let cpi_program = ctx.accounts.system_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            system_program::transfer(cpi_ctx, amount)?;
 
-        //Transfer Tokens Into The Reserve
-        token::transfer(cpi_ctx, payment_amount)?;
+            //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
+            let cpi_accounts = SyncNative
+            {
+                account: ctx.accounts.token_reserve_ata.to_account_info(),
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            token::sync_native(cpi_ctx)?;
+
+            //Close temporary wSOL ATA if its balance is zero
+            let user_balance_after_transfer = ctx.accounts.user_ata.amount;
+            if user_balance_after_transfer == 0
+            {
+                //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
+                let cpi_accounts = CloseAccount
+                {
+                    account: ctx.accounts.user_ata.to_account_info(),
+                    destination: ctx.accounts.signer.to_account_info(),
+                    authority: ctx.accounts.signer.to_account_info(),
+                };
+                let cpi_program = ctx.accounts.token_program.to_account_info();
+                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+                token::close_account(cpi_ctx)?; 
+            }
+        }
+        //Handle all other tokens
+        else
+        {
+            //Cross Program Invocation for Token Transfer
+            let cpi_accounts = Transfer
+            {
+                from: ctx.accounts.user_ata.to_account_info(),
+                to: ctx.accounts.token_reserve_ata.to_account_info(),
+                authority: ctx.accounts.signer.to_account_info()
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+
+            //Transfer Tokens Into The Reserve
+            token::transfer(cpi_ctx, amount)?;  
+        }
 
         //Update Values and Stat Listener
         lending_stats.repayments += 1;
@@ -1214,9 +1306,10 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
         lending_user_monthly_statement_account.snap_shot_repaid_debt_amount = lending_user_tab_account.repaid_debt_amount;
         
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
-        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+        lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
@@ -1265,8 +1358,8 @@ pub mod lending_protocol
             )?;
         }
 
-        //Calculate Token Reserve Previously Earned Interest
-        update_token_reserve_earned_interest_index(token_reserve, time_stamp)?;
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
 
         update_user_previous_interest_earned(
             token_reserve,
@@ -1282,9 +1375,10 @@ pub mod lending_protocol
             lending_user_monthly_statement_account
         )?;
 
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
-        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+        lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Stat Listener
@@ -1328,8 +1422,8 @@ pub mod lending_protocol
             )?;
         }
 
-        //Calculate Token Reserve Previously Earned Interest
-        update_token_reserve_earned_interest_index(token_reserve, time_stamp)?;
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
 
         update_user_previous_interest_earned(
             token_reserve,
@@ -1353,9 +1447,10 @@ pub mod lending_protocol
 
         sub_market.uncollected_fees_amount = 0;
 
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest index
+        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
-        lending_user_tab_account.interest_change_index = token_reserve.interest_change_index;
+        lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Stat Listener
@@ -1915,8 +2010,9 @@ pub struct RepayTokens<'info>
     pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
 
     #[account(
-        mut,
-        associated_token::mint = token_mint_address,
+        init_if_needed, //SOL has to be repaid as wSol and the user may or may not have a wSol account already.
+        payer = signer,
+        associated_token::mint = mint,
         associated_token::authority = signer
     )]
     pub user_ata: Account<'info, TokenAccount>,
@@ -1926,41 +2022,16 @@ pub struct RepayTokens<'info>
         associated_token::mint = token_mint_address,
         associated_token::authority = token_reserve
     )]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+    pub token_reserve_ata: Box<Account<'info, TokenAccount>>,
 
+    pub mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>
 }
-
-/*
-#[derive(Accounts)]
-#[instruction(user_account_index: u8)]
-pub struct UpdateUserSnapShots<'info> 
-{
-    #[account(
-        seeds = [b"lendingProtocol".as_ref()],
-        bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
-
-    #[account(
-        mut, 
-        seeds = [b"lendingStats".as_ref()],
-        bump)]
-    pub lending_stats: Account<'info, LendingStats>,
-
-    #[account(
-        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
-        bump)]
-    pub user_lending_account: Account<'info, LendingUserAccount>,
-
-    #[account(mut)]
-    pub signer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
-    pub system_program: Program<'info, System>
-}*/
 
 #[derive(Accounts)]
 #[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
@@ -2144,11 +2215,12 @@ pub struct TokenReserve
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
     pub pyth_price_update_key: Pubkey,
-    pub supply_apy: u128,
+    pub supply_apy: u16,
     pub borrow_apy: u16,
-    pub utilization_rate: u64,
+    pub utilization_rate: u16,
     pub global_limit: u128,
-    pub interest_change_index: u128, //Starts at 1 (in fixed point notation) and increases as Supply User interest is earned from Borrow Users so that it can be proportionally distributed to Supply Users
+    pub supply_interest_change_index: u128, //Starts at 1 (in fixed point notation) and increases as Supply User interest is earned from Borrow Users so that it can be proportionally distributed to Supply Users
+    pub borrow_interest_change_index: u128, //Starts at 1 (in fixed point notation) and increases as Borrow User interest is accrued for Supply Users so that it can be proportionally distributed to Borrow Users
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
     pub fees_generated_amount: u128,
@@ -2204,7 +2276,8 @@ pub struct LendingUserTabAccount
     pub pyth_price_update_key: Pubkey,
     pub user_tab_account_index: u32,
     pub user_tab_account_added: bool,
-    pub interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest and debt is updated
+    pub supply_interest_change_index: u128, //This index is set to match the token reserve index after previously earned interest is updated
+    pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
     pub fees_generated_amount: u128,

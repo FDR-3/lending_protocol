@@ -5,9 +5,8 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-lending_protocol = "7gqqfEn1MtCs9MLhUzSCnv9g1szn7cLAJAETW8XdZnRs"
-#pyth-mock should be commented out when not testing on local net
-pyth-mock = "AtyG669w2f3v2p1oAzjCMkodpNmHvULxgvuN8y3BMt7i"
+lending_protocol = "43Bmvq9D64KHtrMZXrcaKvW9PXkQrQQ16SPgdCqZucTT"
+pyth-mock = "2D5WWR83mdkeip2mxns1YZQfBdL5LpjNXhmCD88cWdEf"
 
 [registry]
 url = "https://api.apr.dev"

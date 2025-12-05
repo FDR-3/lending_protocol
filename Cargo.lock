@@ -829,8 +829,8 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "pyth-solana-receiver-sdk",
+ "ra-solana-math",
  "solana-security-txt",
- "spl-math",
 ]
 
 [[package]]
@@ -1190,6 +1190,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ra-solana-math"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58c6437b886e7f504238d3e7a8eeab47dd94c63479b8314089295e5d260a3c90"
+dependencies = [
+ "anchor-lang",
+ "uint",
+]
+
+[[package]]
 name = "rand"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1297,6 +1307,12 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+
+[[package]]
+name = "rustc-hex"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e75f6a532d0fd9f7f13144f392b6ad56a32696bfcd9c78f797f16bbb6f072d6"
 
 [[package]]
 name = "rustc_version"
@@ -2413,20 +2429,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spl-math"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc5a6cc7a4f0cf7813ce44153bba73280909f697d7f6baf7b9f223a255e7887"
-dependencies = [
- "borsh 1.5.7",
- "num-derive",
- "num-traits",
- "solana-program",
- "thiserror 1.0.69",
- "uint",
-]
-
-[[package]]
 name = "spl-memo"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2817,13 +2819,13 @@ checksum = "1dccffe3ce07af9386bfd29e80c0ab1a8205a2fc34e4bcd40364df902cfa8f3f"
 
 [[package]]
 name = "uint"
-version = "0.10.0"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "909988d098b2f738727b161a106cfc7cab00c539c2687a8836f8e565976fb53e"
+checksum = "9db035e67dfaf7edd9aebfe8676afcd63eed53c8a4044fed514c8cccf1835177"
 dependencies = [
  "byteorder",
  "crunchy",
- "hex",
+ "rustc-hex",
  "static_assertions",
 ]
 
