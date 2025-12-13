@@ -8,7 +8,7 @@ use std::ops::Deref;
 use ra_solana_math::FixedPoint;
 use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 
-declare_id!("5cAHP93tbTEwTBs6Xr3AGu6fCrkrwP9BRy7YCNXKsaqP");
+declare_id!("ETxhQkfMtfaP5PJP8mdi2h89WdWAFPfxePVXoaeZxJ2t");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -374,10 +374,9 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
     if user_borrowed_value > 0
     {
-        let seventy_percent_fixed_point = FixedPoint::from_percent(70)?;
-        let user_deposited_value_fixed_point  = FixedPoint::from_int(user_deposited_value.try_into().unwrap());
-        let seventy_percent_of_new_deposited_value_fixed_point = user_deposited_value_fixed_point.mul(&seventy_percent_fixed_point)?;
-        let seventy_percent_of_new_deposited_value = seventy_percent_of_new_deposited_value_fixed_point.to_u128()? as i128;
+        //Multiple before dividing to help keep precision
+        let user_deposited_value_x_70 = user_deposited_value * 70;
+        let seventy_percent_of_new_deposited_value = user_deposited_value_x_70 / 100;
 
         //You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
         require!(seventy_percent_of_new_deposited_value >= user_borrowed_value, LendingError::LiquidationExposure);
