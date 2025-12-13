@@ -27,6 +27,7 @@ describe("lending_protocol", () =>
   const incorrectOrderOfTabAccountsErrorMsg = "You must provide the sub user's tab accounts ordered by user_tab_account_index"
   const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
 
+  const borrowWaitTimeInSeconds = 100
   const solTokenMintAddress = new PublicKey("So11111111111111111111111111111111111111112")
   const solTokenDecimalAmount = 9
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
@@ -738,8 +739,8 @@ describe("lending_protocol", () =>
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    console.log(Number(tokenReserve.supplyInterestChangeIndex))
-    console.log(Number(tokenReserve.borrowInterestChangeIndex))
+    console.log("Token Reserve Supply Interest Change Index", Number(tokenReserve.supplyInterestChangeIndex))
+    console.log("Token Reserve Borrow Interest Change Index", Number(tokenReserve.borrowInterestChangeIndex))
     assert(tokenReserve.borrowedAmount.eq(tenUSDC))
     assert(tokenReserve.borrowApy == 500)
     assert(tokenReserve.supplyApy == 500)
@@ -758,7 +759,8 @@ describe("lending_protocol", () =>
 
   it("Verifies you can't Withdraw When too many Tokens are Currently Being Borrowed.", async () => 
   {
-    await timeOutFunction(8000)
+    //Allow some time after borrow for interest to increase
+    await timeOutFunction(borrowWaitTimeInSeconds)
 
     var errorMessage = ""
 
@@ -830,34 +832,61 @@ describe("lending_protocol", () =>
 
   it("Updates SnapShot", async () => 
   {
+    //Update Supplier SOL Tab SnapShot
     await program.methods.updateUserSnapShot(
-        usdcMint.publicKey,
-        program.provider.publicKey,
-        testSubMarketIndex,
-        testUserAccountIndex
-      )
-      .accounts({ signer: borrowerWalletKeypair.publicKey })
-      .signers([borrowerWalletKeypair])
-      .rpc()
+      solTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex
+    )
+    .accounts({ signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
 
-    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    console.log(Number(tokenReserve.borrowedAmount))
-    console.log(Number(tokenReserve.supplyInterestChangeIndex))
-    console.log(Number(tokenReserve.borrowInterestChangeIndex))
-
-    var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
-    (
+    //Update Supplier USDC Tab SnapShot
+    await program.methods.updateUserSnapShot(
       usdcMint.publicKey,
       program.provider.publicKey,
       testSubMarketIndex,
-      borrowerWalletKeypair.publicKey,
       testUserAccountIndex
-    ))
-    console.log(Number(lendingUserTabAccount.borrowedAmount))
+    )
+    .accounts({ signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
+
+    //Update Borrower SOL Tab SnapShot so they can withdraw in the end
+    await program.methods.updateUserSnapShot(
+      solTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex
+    )
+    .accounts({ signer: borrowerWalletKeypair.publicKey })
+    .signers([borrowerWalletKeypair])
+    .rpc()
+
+    //Update Borrower USDC Tab SnapShot so they can withdraw in the end
+    await program.methods.updateUserSnapShot(
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex
+    )
+    .accounts({ signer: borrowerWalletKeypair.publicKey })
+    .signers([borrowerWalletKeypair])
+    .rpc()
+
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
+    console.log("Token Reserve Supply Interest Change Index", Number(tokenReserve.supplyInterestChangeIndex))
+    console.log("Token Reserve Borrow Interest Change Index", Number(tokenReserve.borrowInterestChangeIndex))
   })
 
   it("Repays Borrowed USDC To the Token Reserve", async () => 
   {
+    const tokenReserveUSDCATA = await deriveWalletATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
+    const tokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(tokenReserveUSDCATA)
+    assert(tokenReserveUSDCATABalance.value.uiAmount == 0)
+
     try
     {
       await program.methods.repayTokens(
@@ -875,7 +904,21 @@ describe("lending_protocol", () =>
       const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
       assert(tokenReserve.borrowedAmount.eq(bnZero))
 
-      var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
+      var borrowerLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
+      (
+        usdcMint.publicKey,
+        program.provider.publicKey,
+        testSubMarketIndex,
+        borrowerWalletKeypair.publicKey,
+        testUserAccountIndex
+      ))
+      assert(borrowerLendingUserTabAccount.borrowedAmount.eq(bnZero))
+
+      const tokenReserveUSDCATA = await deriveWalletATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
+      const tokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(tokenReserveUSDCATA)
+
+
+      var supplierLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
       (
         usdcMint.publicKey,
         program.provider.publicKey,
@@ -883,7 +926,17 @@ describe("lending_protocol", () =>
         successorWalletKeypair.publicKey,
         testUserAccountIndex
       ))
-      assert(lendingUserTabAccount.borrowedAmount.eq(bnZero))
+
+      console.log(tokenReserveUSDCATABalance.value.uiAmount)
+      console.log(Number(supplierLendingUserTabAccount.interestAccruedAmount))
+      console.log(Number(supplierLendingUserTabAccount.interestEarnedAmount))
+      console.log(Number(supplierLendingUserTabAccount.feesGeneratedAmount))
+      console.log(Number(borrowerLendingUserTabAccount.interestAccruedAmount))
+      console.log(Number(borrowerLendingUserTabAccount.interestEarnedAmount))
+      console.log(Number(borrowerLendingUserTabAccount.feesGeneratedAmount))
+
+      const interestAccruedAmount = Number(borrowerLendingUserTabAccount.interestAccruedAmount) / Math.pow(10, tokenReserveUSDCATABalance.value.decimals)
+      assert(tokenReserveUSDCATABalance.value.uiAmount == 10.000000 + interestAccruedAmount)
     }
     catch(error)
     {
@@ -970,11 +1023,12 @@ describe("lending_protocol", () =>
     assert(lendingUserMonthlyStatementAccount.statementMonth == newStatementMonth)
     assert(lendingUserMonthlyStatementAccount.statementYear == newStatementYear)
     assert(lendingUserMonthlyStatementAccount.snapShotBalanceAmount.eq(bnZero))
-    assert(lendingUserMonthlyStatementAccount.monthlyWithdrawalAmount.eq(tenUSDC))
+    const withDrawAmount = tenUSDC.add(lendingUserMonthlyStatementAccount.monthlyInterestEarnedAmount)
+    assert(lendingUserMonthlyStatementAccount.monthlyWithdrawalAmount.eq(withDrawAmount))
 
     const userATA = await deriveWalletATA(successorWalletKeypair.publicKey, usdcMint.publicKey, true)
     const UserATAAccount = await program.provider.connection.getTokenAccountBalance(userATA)
-    assert(parseInt(UserATAAccount.value.amount) == tenKUSDC)
+    assert(parseInt(UserATAAccount.value.amount) == tenKUSDC + Number(lendingUserMonthlyStatementAccount.monthlyInterestEarnedAmount))
   })
 
   function getLendingProtocolCEOAccountPDA()
@@ -1276,9 +1330,10 @@ describe("lending_protocol", () =>
     counter += 1
   }
 
-  async function timeOutFunction(timeToWait: number)
+  async function timeOutFunction(timeToWaitInSeconds: number)
   {
-    console.log("Sleeping for: " + timeToWait + " milli seconds")
-    await sleep(timeToWait)
+    const timeToWaitInMilliSeconds = timeToWaitInSeconds * 1000
+    console.log("Sleeping for: " + timeToWaitInSeconds + " seconds")
+    await sleep(timeToWaitInMilliSeconds)
   }
 })

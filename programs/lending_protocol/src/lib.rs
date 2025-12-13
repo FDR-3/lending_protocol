@@ -179,7 +179,7 @@ fn update_user_previous_interest_earned<'info>(
 ) -> Result<()>
 {
     //Skip if the user has no deposited amount
-    if lending_user_tab_account.deposited_amount == 0 || token_reserve.borrowed_amount == 0
+    if lending_user_tab_account.deposited_amount == 0
     {
         return Ok(())
     }
@@ -190,20 +190,10 @@ fn update_user_previous_interest_earned<'info>(
     let user_supply_index_fixed_point = FixedPoint::from_int(lending_user_tab_account.supply_interest_change_index as u64);
     let old_user_deposited_amount_fixed_point = FixedPoint::from_int(lending_user_tab_account.deposited_amount as u64);
 
-    /*msg!("Debugging");
-    msg!("token_reserve_supply_index_fixed_point: {}", token_reserve_supply_index_fixed_point.to_u128()?);
-    msg!("user_supply_index_fixed_point: {}", user_supply_index_fixed_point.to_u128()?);
-    msg!("old_user_deposited_amount_fixed_point: {}", old_user_deposited_amount_fixed_point.to_u128()?);*/
-
     //Perform multiplication before division to help keep more precision
     let old_user_balance_mul_token_reserve_index_fixed_point = old_user_deposited_amount_fixed_point.mul(&token_reserve_supply_index_fixed_point)?;
     let new_user_deposited_amount_before_fee_fixed_point = old_user_balance_mul_token_reserve_index_fixed_point.div(&user_supply_index_fixed_point)?;
     let new_user_interest_earned_amount_before_fee_fixed_point = new_user_deposited_amount_before_fee_fixed_point.sub(&old_user_deposited_amount_fixed_point)?;
-
-    /*msg!("Debugging");
-    msg!("old_user_balance_mul_token_reserve_index_fixed_point: {}", old_user_balance_mul_token_reserve_index_fixed_point.to_u128()?);
-    msg!("new_user_deposited_amount_before_fee_fixed_point: {}", new_user_deposited_amount_before_fee_fixed_point.to_u128()?);
-    msg!("new_user_interest_earned_amount_before_fee_fixed_point: {}", new_user_interest_earned_amount_before_fee_fixed_point.to_u128()?);*/
     
     //Apply SubMarket Fee
     let sub_market_fee_rate_fixed_point = FixedPoint::from_bps(sub_market.fee_on_interest_earned_rate as u64)?;
@@ -240,7 +230,7 @@ fn update_user_previous_interest_accrued<'info>(
 ) -> Result<()>
 {
     //Skip if the user has no borrowed amount
-    if lending_user_tab_account.borrowed_amount == 0 || token_reserve.borrowed_amount == 0
+    if lending_user_tab_account.borrowed_amount == 0
     {
         return Ok(())
     }
@@ -311,7 +301,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         require_keys_eq!(expected_pda.key(), tab_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
 
         //The lending user tab account interest earned and debt accured data (Plus Token Reserve data) must be no older than 120 seconds. The user has to run the update_user_snap_shots function if data is stale.
-        //2 minutes gives the user plenty of time to call both functions. Users shouldn't earn or accrue that much interest or debt within 2 minutes and if they do, that's what the liquidation function is for if there's an issue later :0
+        //2 minutes gives the user plenty of time to call both functions. Users shouldn't earn or accrue that much interest or debt within 2 minutes and if they do, that's what the liquidation function is for if there's an issue later :X
         let time_diff = new_lending_activity_time_stamp - tab_account.interest_change_last_updated_time_stamp;
         require!(time_diff <= 120, LendingError::StaleSnapShotData);
         
@@ -358,20 +348,20 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
             user_withdraw_or_borrow_request_value += withdraw_or_borrow_amount as i128 * current_price.price as i128;
             evaluated_price_of_withdraw_or_borrow_token = true;
 
-            //msg!("Deposited Amount: {}", tab_account.deposited_amount);
-            //msg!("Requested Amount: {}", withdraw_or_borrow_amount);
+            msg!("Deposited Amount: {}", tab_account.deposited_amount);
+            msg!("Requested Amount: {}", withdraw_or_borrow_amount);
         }
 
         user_tab_index += 1;
     }
 
-    /*msg!
+    msg!
     (
         "Value calculation test. Deposited: {}, Borrowed: {}, Requested: {}",
         user_deposited_value,
         user_borrowed_value,
         user_withdraw_or_borrow_request_value
-    );*/
+    );
 
     if activity_type == Activity::Withdraw as u8
     {
@@ -813,8 +803,7 @@ pub mod lending_protocol
 
         //After updating interest earned and accrued, set withdraw amount
         let withdraw_amount;
-        //msg!("Token Reserve Deposited Amount: {}", token_reserve.deposited_amount);
-        //msg!("Uppder Deposited Amount: {}", lending_user_tab_account.deposited_amount);
+
         if withdraw_max
         {
             withdraw_amount = lending_user_tab_account.deposited_amount as u64;
@@ -1198,7 +1187,7 @@ pub mod lending_protocol
             };
             let cpi_program = ctx.accounts.system_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            system_program::transfer(cpi_ctx, amount)?;
+            system_program::transfer(cpi_ctx, payment_amount)?;
 
             //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
             let cpi_accounts = SyncNative
@@ -1239,7 +1228,7 @@ pub mod lending_protocol
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
             //Transfer Tokens Into The Reserve
-            token::transfer(cpi_ctx, amount)?;  
+            token::transfer(cpi_ctx, payment_amount)?;  
         }
 
         //Update Values and Stat Listener
@@ -1276,7 +1265,8 @@ pub mod lending_protocol
         Ok(())
     }
 
-    //Updates the interest earned and accrued for a given user's tab account. The last calculation must be no older than 120 seconds when doing withdrawals or borrows and this function helps refresh it.
+    //Updates the interest earned and accrued for a given user's tab account. The last calculation must be no older than 120 seconds when doing withdrawals or borrows and this function helps refresh them.
+    //You have to call it on all user tab accounts to get them all updated
     pub fn update_user_snap_shot(ctx: Context<UpdateUserSnapShot>,
         token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
@@ -1329,8 +1319,11 @@ pub mod lending_protocol
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
-        //Stat Listener
+        //UpdateStat Listener
         lending_stats.snap_shots += 1;
+
+        //Update last activity on accounts
+        token_reserve.last_lending_activity_time_stamp = time_stamp;
 
         msg!("Snap Shots updated for TokenMintAddress: {}, SubMarketOwner: {}, SubMarketIndex: {}", token_reserve.token_mint_address.key(), sub_market.owner.key(), sub_market_index);
         msg!("UserAddress: {}, UserAccountIndex: {}", ctx.accounts.signer.key(), user_account_index);
