@@ -487,7 +487,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tooMuchSol)
+      await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tooMuchSol, false)
       .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -506,7 +506,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol)
+      await program.methods.withdrawTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, true)
       .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -528,7 +528,8 @@ describe("lending_protocol", () =>
       program.provider.publicKey,
       testSubMarketIndex,
       testUserAccountIndex,
-      twoSol
+      twoSol,
+      true
     )
     .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
     .remainingAccounts(remainingAccounts)
@@ -735,17 +736,37 @@ describe("lending_protocol", () =>
     .remainingAccounts(remainingAccounts)
     .signers([borrowerWalletKeypair])
     .rpc()
+
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
+    console.log(Number(tokenReserve.supplyInterestChangeIndex))
+    console.log(Number(tokenReserve.borrowInterestChangeIndex))
+    assert(tokenReserve.borrowedAmount.eq(tenUSDC))
+    assert(tokenReserve.borrowApy == 500)
+    assert(tokenReserve.supplyApy == 500)
+    assert(tokenReserve.utilizationRate == 10_000)
+
+    var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
+    (
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      borrowerWalletKeypair.publicKey,
+      testUserAccountIndex
+    ))
+    assert(lendingUserTabAccount.borrowedAmount.eq(tenUSDC))
   })
 
   it("Verifies you can't Withdraw When too many Tokens are Currently Being Borrowed.", async () => 
   {
+    await timeOutFunction(8000)
+
     var errorMessage = ""
 
     try
     {
       const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
       
-      await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
+      await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC, true)
       .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
@@ -807,6 +828,34 @@ describe("lending_protocol", () =>
     assert(errorMessage == tooManyFunds)
   })
 
+  it("Updates SnapShot", async () => 
+  {
+    await program.methods.updateUserSnapShot(
+        usdcMint.publicKey,
+        program.provider.publicKey,
+        testSubMarketIndex,
+        testUserAccountIndex
+      )
+      .accounts({ signer: borrowerWalletKeypair.publicKey })
+      .signers([borrowerWalletKeypair])
+      .rpc()
+
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
+    console.log(Number(tokenReserve.borrowedAmount))
+    console.log(Number(tokenReserve.supplyInterestChangeIndex))
+    console.log(Number(tokenReserve.borrowInterestChangeIndex))
+
+    var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
+    (
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      borrowerWalletKeypair.publicKey,
+      testUserAccountIndex
+    ))
+    console.log(Number(lendingUserTabAccount.borrowedAmount))
+  })
+
   it("Repays Borrowed USDC To the Token Reserve", async () => 
   {
     try
@@ -822,6 +871,19 @@ describe("lending_protocol", () =>
       .accounts({ mint: usdcMint.publicKey, signer: borrowerWalletKeypair.publicKey })
       .signers([borrowerWalletKeypair])
       .rpc()
+
+      const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
+      assert(tokenReserve.borrowedAmount.eq(bnZero))
+
+      var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
+      (
+        usdcMint.publicKey,
+        program.provider.publicKey,
+        testSubMarketIndex,
+        successorWalletKeypair.publicKey,
+        testUserAccountIndex
+      ))
+      assert(lendingUserTabAccount.borrowedAmount.eq(bnZero))
     }
     catch(error)
     {
@@ -837,7 +899,7 @@ describe("lending_protocol", () =>
     {
       const remainingAccounts = [usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount, successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount]
       
-      await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC)
+      await program.methods.withdrawTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, tenUSDC, true)
       .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
@@ -860,7 +922,8 @@ describe("lending_protocol", () =>
       program.provider.publicKey,
       testSubMarketIndex,
       testUserAccountIndex,
-      tenUSDC
+      tenUSDC,
+      true
     )
     .accounts({ mint: usdcMint.publicKey, signer: successorWalletKeypair.publicKey })
     .remainingAccounts(remainingAccounts)

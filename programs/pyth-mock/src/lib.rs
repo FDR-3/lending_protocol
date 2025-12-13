@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use std::io::Write;
 
-declare_id!("2D5WWR83mdkeip2mxns1YZQfBdL5LpjNXhmCD88cWdEf");
+declare_id!("XvQgJowUSzRqMZQArePpJdccAzvUTTgCteE8Ptm9G9k");
 
 #[program]
 pub mod pyth_mock 
