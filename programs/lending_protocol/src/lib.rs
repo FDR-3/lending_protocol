@@ -208,7 +208,7 @@ fn update_user_previous_interest_earned<'info>(
     sub_market.deposited_amount += new_user_interest_earned_amount_after_fee;
     sub_market.interest_earned_amount += new_user_interest_earned_amount_after_fee;
     sub_market.fees_generated_amount += new_fees_generated_amount;
-    sub_market.uncollected_fees_amount += new_user_interest_earned_amount_after_fee;
+    sub_market.uncollected_fees_amount += new_fees_generated_amount;
     lending_user_tab_account.deposited_amount += new_user_interest_earned_amount_after_fee;
     lending_user_tab_account.interest_earned_amount += new_user_interest_earned_amount_after_fee;
     lending_user_tab_account.fees_generated_amount += new_fees_generated_amount;
@@ -1380,10 +1380,11 @@ pub mod lending_protocol
         )?;
 
         //Collect Fees
-        lending_user_tab_account.deposited_amount = lending_user_tab_account.deposited_amount + sub_market.uncollected_fees_amount;
+        lending_user_tab_account.deposited_amount += sub_market.uncollected_fees_amount;
+        lending_user_tab_account.fees_collected_amount += sub_market.uncollected_fees_amount;
+        lending_user_monthly_statement_account.monthly_fees_collected_amount += sub_market.uncollected_fees_amount;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
         lending_user_monthly_statement_account.snap_shot_fees_collected_amount = lending_user_tab_account.fees_collected_amount;
-        lending_user_monthly_statement_account.monthly_fees_collected_amount = sub_market.uncollected_fees_amount;
 
         sub_market.uncollected_fees_amount = 0;
 
@@ -1395,6 +1396,9 @@ pub mod lending_protocol
 
         //Stat Listener
         lending_stats.fee_collections += 1;
+
+        //Update last activity on accounts
+        token_reserve.last_lending_activity_time_stamp = time_stamp;
 
         msg!("Fees Collected for TokenReserve: {}, SubMarketOwner: {}, SubMarketIndex: {}, FeeCollector: {}, FeeCollectorAccountIndex: {}",
         token_mint_address.key(),
