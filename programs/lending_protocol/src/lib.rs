@@ -6,9 +6,10 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 use ra_solana_math::FixedPoint;
-use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
+use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
+use hex;
 
-declare_id!("ETxhQkfMtfaP5PJP8mdi2h89WdWAFPfxePVXoaeZxJ2t");
+declare_id!("Ak8KL3BDDfPQjVmYmaFXFoydohrL9uPETYsgfipZdT7C");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -23,9 +24,15 @@ security_txt!
 
 #[cfg(feature = "dev")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
+#[cfg(feature = "dev")]
+use pyth_solana_receiver_sdk::ID as PYTH_RECEIVER_ID;
+#[cfg(feature = "dev")]
+const PYTH_PROGRAM_ID: Pubkey = PYTH_RECEIVER_ID;
 
 #[cfg(feature = "local")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+#[cfg(feature = "local")] 
+const PYTH_PROGRAM_ID: Pubkey = pubkey!("9inp4dycaG3Ktg2c3qijFHGfc3Y64Jzmsqsj79E4P5wh");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -33,6 +40,7 @@ const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So111111111111111111111111111111
 const LENDING_USER_ACCOUNT_EXTRA_SIZE: usize = 4;
 
 const MAX_ACCOUNT_NAME_LENGTH: usize = 25;
+//const PYTH_FEED_ID_LEN: usize = 32;
 
 enum Activity
 {
@@ -93,6 +101,22 @@ pub enum LendingError
     InsufficientLiquidity,
     #[msg("You can't pay back more funds than you've borrowed")]
     TooManyFunds
+}
+
+//Helper function to get the token price by the pyth ID
+fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_feed_id: [u8; 32]) -> Result<Price>
+{
+    pub const MAXIMUM_AGE: u64 = 30; //30 seconds
+
+    let current_price: Price = price_update_account
+    .get_price_no_older_than(
+        &Clock::get()?, 
+        MAXIMUM_AGE, 
+        &pyth_feed_id
+    )
+    .map_err(|_| error!(LendingError::StalePriceData))?; //Handle Option returned by pyth (None if stale or wrong feed)
+
+    Ok(current_price)
 }
 
 //Helper function to update Token Reserve Accrued Interest Index before a lending transaction (deposit, withdraw, borrow, repay, liquidate)
@@ -276,8 +300,6 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     let mut user_borrowed_value = 0;
     let mut user_withdraw_or_borrow_request_value = 0;
     let mut evaluated_price_of_withdraw_or_borrow_token = false;
-    let time_stamp = Clock::get()?.unix_timestamp;
-    const MAXIMUM_PRICE_AGE: u64 = 30; //30 seconds
 
     while let Some(tab_account_serialized) = remaining_accounts_iter.next()
     {
@@ -307,37 +329,21 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         
         //Validate Price Update Account
         let price_update_account_serialized = remaining_accounts_iter.next().unwrap(); //The Price Update Account comes after the Tab Account
-        require_keys_eq!(tab_account.pyth_price_update_key.key(), price_update_account_serialized.key(), InvalidInputError::UnexpectedPythPriceUpdateAccount);
+        require_keys_eq!(*price_update_account_serialized.owner, PYTH_PROGRAM_ID, InvalidInputError::UnexpectedPythPriceUpdateAccount);
 
         let data_ref = price_update_account_serialized.data.borrow();
         let mut data_slice: &[u8] = data_ref.deref();
 
         let price_update_account = PriceUpdateV2::try_deserialize(&mut data_slice)?;
-        
-        /*msg!
-        (
-            "Time Stamp: {}",
-            time_stamp
-        );
+        let current_price = get_token_pyth_price_by_id(price_update_account, tab_account.pyth_feed_id)?;
+
         msg!
-        (
-            "Published Time: {}",
-            price_update_account.price_message.publish_time
-        );*/
-        
-        //The published time for the Pyth Price Update Account can be no older than 30 seconds
-        let time_diff = (time_stamp - price_update_account.price_message.publish_time) as u64;
-        //require!(time_diff <= MAXIMUM_PRICE_AGE, LendingError::StalePriceData);
-
-        let current_price = price_update_account.price_message;
-
-        /*msg!
         (
             "Token Price: {} +- {} x 10^{}",
             current_price.price,
             current_price.conf,
             current_price.exponent
-        );*/
+        );
 
         user_deposited_value += tab_account.deposited_amount as i128 * current_price.price as i128;
         user_borrowed_value += tab_account.borrowed_amount as i128 * current_price.price as i128;
@@ -465,7 +471,7 @@ pub mod lending_protocol
     pub fn add_token_reserve(ctx: Context<AddTokenReserve>,
         token_mint_address: Pubkey,
         token_decimal_amount: u8,
-        pyth_price_update_key: Pubkey,
+        pyth_feed_id: [u8; 32],
         borrow_apy: u16,
         global_limit: u128) -> Result<()> 
     {
@@ -477,7 +483,7 @@ pub mod lending_protocol
         let token_reserve = &mut ctx.accounts.token_reserve;
         token_reserve.token_mint_address = token_mint_address.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
-        token_reserve.pyth_price_update_key = pyth_price_update_key.key();
+        token_reserve.pyth_feed_id = pyth_feed_id;
         token_reserve.borrow_apy = borrow_apy;
         token_reserve.global_limit = global_limit;
         token_reserve.supply_interest_change_index = 1_000_000_000_000_000_000;
@@ -486,10 +492,12 @@ pub mod lending_protocol
         token_reserve.token_reserve_protocol_index = token_reserve_stats.token_reserve_count;
         token_reserve_stats.token_reserve_count += 1;
 
+        let hex_string = hex::encode(pyth_feed_id);
+
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
         msg!("Token Mint Address: {}", token_mint_address.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
-        msg!("Pyth PriceUpdate Account: {}", pyth_price_update_key);
+        msg!("Pyth Feed ID: 0x{}", hex_string);
         msg!("Borrow APY: {}", borrow_apy);
         msg!("Global Limit: {}", global_limit);
             
@@ -619,7 +627,7 @@ pub mod lending_protocol
             lending_user_tab_account.owner = ctx.accounts.signer.key();
             lending_user_tab_account.user_account_index = user_account_index;
             lending_user_tab_account.token_mint_address = token_mint_address;
-            lending_user_tab_account.pyth_price_update_key = token_reserve.pyth_price_update_key;
+            lending_user_tab_account.pyth_feed_id = token_reserve.pyth_feed_id;
             lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
             lending_user_tab_account.sub_market_index = sub_market_index;
             lending_user_tab_account.user_tab_account_index = user_lending_account.tab_account_count;
@@ -727,6 +735,8 @@ pub mod lending_protocol
 
         //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
+        sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
@@ -916,6 +926,8 @@ pub mod lending_protocol
         
         //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
+        sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
@@ -959,10 +971,14 @@ pub mod lending_protocol
             lending_user_tab_account.owner = ctx.accounts.signer.key();
             lending_user_tab_account.user_account_index = user_account_index;
             lending_user_tab_account.token_mint_address = token_mint_address;
-            lending_user_tab_account.pyth_price_update_key = token_reserve.pyth_price_update_key;
+            lending_user_tab_account.pyth_feed_id = token_reserve.pyth_feed_id;
             lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
             lending_user_tab_account.sub_market_index = sub_market_index;
             lending_user_tab_account.user_tab_account_index = user_lending_account.tab_account_count;
+            
+            //If being newly initialized on a borrow, don't set added to true or increase tab count until after validation so it isn't included with validation/liquidation exposure checks
+            //lending_user_tab_account.user_tab_account_added = true;
+            //user_lending_account.tab_account_count += 1;
 
             msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
         }
@@ -1092,6 +1108,8 @@ pub mod lending_protocol
 
         //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
+        sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
@@ -1244,6 +1262,8 @@ pub mod lending_protocol
         
         //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
+        sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
@@ -1314,6 +1334,8 @@ pub mod lending_protocol
 
         //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
+        sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
@@ -1390,6 +1412,8 @@ pub mod lending_protocol
 
         //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
+        sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
@@ -2158,7 +2182,7 @@ pub struct TokenReserve
     pub token_reserve_protocol_index: u32,
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
-    pub pyth_price_update_key: Pubkey,
+    pub pyth_feed_id: [u8; 32],
     pub supply_apy: u16,
     pub borrow_apy: u16,
     pub utilization_rate: u16,
@@ -2186,6 +2210,8 @@ pub struct SubMarket
     pub sub_market_index: u16,
     pub fee_collector_address: Pubkey,
     pub fee_on_interest_earned_rate: u16,
+    pub supply_interest_change_index: u128, //This index is set to match the token reserve index after previously earned interest is updated. This is only used in the frontend for calculating the 7 day projection rate
+    pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated. This is only used in the frontend for calculating the 7 day projection rate
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
     pub fees_generated_amount: u128,
@@ -2206,7 +2232,7 @@ pub struct LendingUserAccount //Giving the lending account an index to allow use
     pub user_account_index: u8,
     pub account_name: String,
     pub lending_user_account_added: bool,
-    pub tab_account_count: u32,
+    pub tab_account_count: u16,
 }
 
 #[account]
@@ -2217,8 +2243,8 @@ pub struct LendingUserTabAccount
     pub sub_market_index: u16,
     pub owner: Pubkey,
     pub user_account_index: u8,
-    pub pyth_price_update_key: Pubkey,
-    pub user_tab_account_index: u32,
+    pub pyth_feed_id: [u8; 32],
+    pub user_tab_account_index: u16,
     pub user_tab_account_added: bool,
     pub supply_interest_change_index: u128, //This index is set to match the token reserve index after previously earned interest is updated
     pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated
