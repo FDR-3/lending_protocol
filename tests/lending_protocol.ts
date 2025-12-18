@@ -29,6 +29,8 @@ describe("lending_protocol", () =>
 
   const borrowWaitTimeInSeconds = 100
   const solTokenMintAddress = new PublicKey("So11111111111111111111111111111111111111112")
+  const solPythFeedIDBuffer = Buffer.from("ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", "hex")
+  const solPythFeedIDArray = Array.from(Buffer.from("ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", "hex"))
   const solTokenDecimalAmount = 9
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
   const solTestPrice = new anchor.BN(12345)
@@ -39,6 +41,8 @@ describe("lending_protocol", () =>
   var solPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   
   var usdcMint = undefined
+  const usdcPythFeedIDBuffer = Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", "hex")
+  const usdcPythFeedIDArray = Array.from(Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", "hex"))
   const usdcTokenDecimalAmount = 6
   const tenUSDC = new anchor.BN(10_000_000)
   const elevenUSDC = new anchor.BN(11_000_000)
@@ -118,6 +122,7 @@ describe("lending_protocol", () =>
     await updateMockedPriceUpdateV2Account
     (
       solPythPriceUpdateAccountKeypair,
+      solPythFeedIDBuffer,
       solTestPrice,
       solTestConf,
       solTokenDecimalAmount
@@ -138,6 +143,7 @@ describe("lending_protocol", () =>
     await updateMockedPriceUpdateV2Account
     (
       usdcPythPriceUpdateAccountKeypair,
+      usdcPythFeedIDBuffer,
       usdcTestPrice,
       usdcTestConf,
       usdcTokenDecimalAmount
@@ -238,7 +244,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
       .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -253,7 +259,7 @@ describe("lending_protocol", () =>
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({ mint: solTokenMintAddress })
     .rpc()
     
@@ -262,7 +268,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(tokenReserve.pythPriceUpdateKey.toBase58() == solPythPriceUpdateAccountKeypair.publicKey.toBase58())
+    assert(tokenReserve.pythFeedId.toString() == solPythFeedIDArray.toString())
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
   })
@@ -601,7 +607,7 @@ describe("lending_protocol", () =>
   
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythPriceUpdateAccountKeypair.publicKey, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythFeedIDArray, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({ mint: usdcMint.publicKey })
     .rpc()
     
@@ -610,6 +616,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
+    assert(tokenReserve.pythFeedId.toString() == usdcPythFeedIDArray.toString())
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
   })
@@ -778,7 +785,7 @@ describe("lending_protocol", () =>
     {
       errorMessage = error.error.errorMessage
     }
-
+    console.log(errorMessage)
     assert(errorMessage == insufficientLiquidity)
   })
 
@@ -966,8 +973,69 @@ describe("lending_protocol", () =>
     assert(errorMessage == incorrectOrderOfTabAccountsErrorMsg)
   })
 
+  async function debugPrintPythAccount(accountPubkey) {
+    const accountInfo = await program.provider.connection.getAccountInfo(accountPubkey);
+    
+    if (!accountInfo) {
+        console.log("Account not found!");
+        return;
+    }
+
+    const data = accountInfo.data;
+    
+    // Manual Parsing based on your buffer layout
+    // Offset 0-8: Discriminator
+    // Offset 40: Verification Level
+    // Offset 41-73: Feed ID
+    // Offset 73-81: Price
+    // Offset 97-105: Publish Time
+
+    const feedId = data.subarray(41, 73).toString('hex');
+    const price = data.readBigInt64LE(73);
+    const conf = data.readBigUInt64LE(81);
+    const exponent = data.readInt32LE(89);
+    const publishTime = data.readBigInt64LE(93);
+    
+    console.log("--- DEBUG PYTH ACCOUNT ---");
+    console.log("Feed ID (Hex):", feedId);
+    console.log("Price:", price.toString());
+    console.log("Exponent:", exponent);
+    console.log("Publish Time:", publishTime.toString());
+    
+    // Check against current time
+    const slot = await program.provider.connection.getSlot();
+    const currentTime = await program.provider.connection.getBlockTime(slot);
+    console.log("Current Chain Time:", currentTime);
+    console.log("Age (seconds):", currentTime - Number(publishTime));
+    console.log("--------------------------");
+}
+
   it("Withdraws USDC From the Token Reserve", async () => 
   {
+    debugPrintPythAccount(usdcPythPriceUpdateAccountKeypair.publicKey)
+
+    //Update Price timestamp again for SOL Pyth mocked account
+    await updateMockedPriceUpdateV2Account
+    (
+      solPythPriceUpdateAccountKeypair,
+      solPythFeedIDBuffer,
+      solTestPrice,
+      solTestConf,
+      solTokenDecimalAmount
+    )
+
+    //Update Price timestamp again for USDC Pyth mocked account
+    await updateMockedPriceUpdateV2Account
+    (
+      usdcPythPriceUpdateAccountKeypair,
+      usdcPythFeedIDBuffer,
+      usdcTestPrice,
+      usdcTestConf,
+      usdcTokenDecimalAmount
+    )
+
+    debugPrintPythAccount(usdcPythPriceUpdateAccountKeypair.publicKey)
+  
     const remainingAccounts = [successorSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount, usdcLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount]
 
     await program.methods.withdrawTokens(
@@ -1245,6 +1313,7 @@ describe("lending_protocol", () =>
 
   async function updateMockedPriceUpdateV2Account(
   mockedPythKeyPair: Keypair,
+  feedId: Buffer<ArrayBuffer>,
   price: anchor.BN,
   conf: anchor.BN,
   exponent: number)
@@ -1276,8 +1345,7 @@ describe("lending_protocol", () =>
     
     //PriceFeedMessage starts here (Total 92 bytes):
     //4. feedID (32 bytes)
-    const feedID = mockedPythKeyPair.publicKey; 
-    feedID.toBuffer().copy(buf, offset);
+    feedId.copy(buf, offset);
     offset += 32; // offset = 76
     
     //6. price (i64, 8 bytes)
