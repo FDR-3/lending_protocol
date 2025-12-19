@@ -244,7 +244,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, true, globalLimit1)//IDE complains about ByteArray but still works
       .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -259,7 +259,7 @@ describe("lending_protocol", () =>
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, true, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({ mint: solTokenMintAddress })
     .rpc()
     
@@ -279,7 +279,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, globalLimit1)
+      await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit1)
       .accounts({ signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -294,7 +294,7 @@ describe("lending_protocol", () =>
 
   it("Updates Token Reserve Borrow APY and Global Limit", async () => 
   {
-    await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, globalLimit2).rpc()
+    await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit2).rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
     assert(tokenReserve.borrowApy == borrowAPY7Percent)
@@ -607,7 +607,7 @@ describe("lending_protocol", () =>
   
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythFeedIDArray, borrowAPY5Percent, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythFeedIDArray, borrowAPY5Percent, true, globalLimit1)//IDE complains about ByteArray but still works
     .accounts({ mint: usdcMint.publicKey })
     .rpc()
     
@@ -1382,7 +1382,7 @@ describe("lending_protocol", () =>
 
     //Write the buffer data to the mock account
     await mockProgram.methods.setMockedPythPriceUpdateAccount(buf)
-    .accounts({ mockedPythPriceUpdatePda: mockedPythKeyPair.publicKey })
+    .accounts({ mockedPythPriceUpdateAccount: mockedPythKeyPair.publicKey })
     .signers([mockedPythKeyPair])
     .rpc()
   }

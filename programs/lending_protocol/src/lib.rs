@@ -560,15 +560,14 @@ pub mod lending_protocol
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
 
+        //If the value of the Token Reserve Borrow APY will change, calculate previous interest changes before updating it
         if token_reserve.fixed_borrow_apy != fixed_borrow_apy || token_reserve.use_fixed_borrow_apy != use_fixed_borrow_apy
         {
             let time_stamp = Clock::get()?.unix_timestamp as u64;
 
             //Calculate Token Reserve Previously Earned And Accrued Interest
             update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
-
-            //Update Token Reserve Global Utilization Rate, Borrow APY, and, Supply APY
-            update_token_reserve_rates(token_reserve)?;
+            token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
         }
 
         token_reserve.fixed_borrow_apy = fixed_borrow_apy;
@@ -576,7 +575,8 @@ pub mod lending_protocol
         token_reserve.global_limit = global_limit;
         token_reserve_stats.token_reserves_updated_count += 1;
 
-
+        //Update Token Reserve Global Utilization Rate, Borrow APY, and, Supply APY
+        update_token_reserve_rates(token_reserve)?;
 
         msg!("Token Reserve Updated");
         msg!("New Fixed Borrow APY: {}", fixed_borrow_apy);
@@ -802,7 +802,7 @@ pub mod lending_protocol
         //Update last activity on accounts
         token_reserve.last_lending_activity_amount = amount as u128;
         token_reserve.last_lending_activity_type = Activity::Deposit as u8;
-        token_reserve.last_lending_activity_time_stamp = time_stamp;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated 
         sub_market.last_lending_activity_amount = amount as u128;
         sub_market.last_lending_activity_type = Activity::Deposit as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp;
@@ -993,7 +993,7 @@ pub mod lending_protocol
         //Update last activity on accounts
         token_reserve.last_lending_activity_amount = withdraw_amount as u128;
         token_reserve.last_lending_activity_type = Activity::Withdraw as u8;
-        token_reserve.last_lending_activity_time_stamp = time_stamp;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
         sub_market.last_lending_activity_amount = withdraw_amount as u128;
         sub_market.last_lending_activity_type = Activity::Withdraw as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp; 
@@ -1175,7 +1175,7 @@ pub mod lending_protocol
         //Update last activity on accounts
         token_reserve.last_lending_activity_amount = amount as u128;
         token_reserve.last_lending_activity_type = Activity::Borrow as u8;
-        token_reserve.last_lending_activity_time_stamp = time_stamp;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
         sub_market.last_lending_activity_amount = amount as u128;
         sub_market.last_lending_activity_type = Activity::Borrow as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp; 
@@ -1329,7 +1329,7 @@ pub mod lending_protocol
         //Update last activity on accounts
         token_reserve.last_lending_activity_amount = payment_amount as u128;
         token_reserve.last_lending_activity_type = Activity::Repay as u8;
-        token_reserve.last_lending_activity_time_stamp = time_stamp;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
         sub_market.last_lending_activity_amount = payment_amount as u128;
         sub_market.last_lending_activity_type = Activity::Repay as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp;
@@ -1402,7 +1402,7 @@ pub mod lending_protocol
         lending_stats.snap_shots += 1;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_time_stamp = time_stamp;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
 
         msg!("Snap Shots updated for TokenMintAddress: {}, SubMarketOwner: {}, SubMarketIndex: {}", token_reserve.token_mint_address.key(), sub_market.owner.key(), sub_market_index);
         msg!("UserAddress: {}, UserAccountIndex: {}", ctx.accounts.signer.key(), user_account_index);
@@ -1480,7 +1480,7 @@ pub mod lending_protocol
         lending_stats.fee_collections += 1;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_time_stamp = time_stamp;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
 
         msg!("Fees Collected for TokenReserve: {}, SubMarketOwner: {}, SubMarketIndex: {}, FeeCollector: {}, FeeCollectorAccountIndex: {}",
         token_mint_address.key(),
