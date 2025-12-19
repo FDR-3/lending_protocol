@@ -123,7 +123,7 @@ fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_f
 //This function helps determine how much compounding interest a Token Reserve has earned for its token over the whole life of the Token Reserve's entire existence
 fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_reserve: &mut Account<TokenReserve>, new_lending_activity_time_stamp: u64) -> Result<()>
 {
-    //Skip if there is no borrowing in the Token Reserve
+    //Skip if there is no borrowing in the Token Reserve. There is no interest change if there is no borrowing.
     if token_reserve.borrowed_amount == 0
     {
         return Ok(())
@@ -140,7 +140,7 @@ fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_res
     let seconds_in_a_year_fixed_point = FixedPoint::from_int(31_556_952); //1 year = (365.2425 days) × (24 hours/day) × (3600 seconds/hour) = 31,556,952 seconds
     
     //Set Token Reserve Supply Interest Index = Old Supply Interest Index * (1 + Supply APY * Δt/Seconds in a Year)
-    //Multiple before dividing to help keep precision
+    //Multiply before dividing to help keep precision
     let supply_apy_mul_change_in_time_fixed_point = supply_apy_fixed_point.mul(&change_in_time_fixed_point)?;
     let interest_change_factor_fixed_point = supply_apy_mul_change_in_time_fixed_point.div(&seconds_in_a_year_fixed_point)?;
     let one_plus_interest_change_factor_fixed_point = number_one_fixed_point.add(&interest_change_factor_fixed_point)?;
@@ -149,7 +149,7 @@ fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_res
     token_reserve.supply_interest_change_index = new_supply_interest_index;
 
     //Set Token Reserve Borrow Interest Index = Old Borrow Interest Index * (1 + Borrow APY * Δt/Seconds in a Year)
-    //Multiple before dividing to help keep precision
+    //Multiply before dividing to help keep precision
     let borrow_apy_mul_change_in_time_fixed_point = borrow_apy_fixed_point.mul(&change_in_time_fixed_point)?;
     let interest_change_factor_fixed_point = borrow_apy_mul_change_in_time_fixed_point.div(&seconds_in_a_year_fixed_point)?;
     let one_plus_interest_change_factor_fixed_point = number_one_fixed_point.add(&interest_change_factor_fixed_point)?;
@@ -164,13 +164,14 @@ fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_res
     Ok(())
 }
 
-//Helper function to update Token Reserve Utilization Rate and Supply Apy after a lending transaction (deposit, withdraw, borrow, repay, liquidate)
+//Helper function to update Token Reserve Utilization Rate, Borrow APY, and Supply APY after a lending transaction (deposit, withdraw, borrow, repay, liquidate)
 fn update_token_reserve_rates<'info>(token_reserve: &mut Account<TokenReserve>) -> Result<()>
 {
     if token_reserve.borrowed_amount == 0
     {
         token_reserve.utilization_rate = 0;
         token_reserve.supply_apy = 0; //There can be no supply apy if no one is borrowing
+        token_reserve.borrow_apy = token_reserve.fixed_borrow_apy;
     }
     else
     {
@@ -181,6 +182,44 @@ fn update_token_reserve_rates<'info>(token_reserve: &mut Account<TokenReserve>) 
         let borrowed_amount_scaled = token_reserve.borrowed_amount * decimal_scaling;
         let utilization_rate = borrowed_amount_scaled / token_reserve.deposited_amount;
         token_reserve.utilization_rate = utilization_rate as u16;
+
+        //Set Borrow APY
+        if token_reserve.use_fixed_borrow_apy
+        {
+            token_reserve.borrow_apy = token_reserve.fixed_borrow_apy;
+        }
+        else
+        {
+            let optimal_utilization_rate = 7_000; //7_000 = 70.00%
+            let utilization_rate = token_reserve.utilization_rate as u128;
+            
+            //Borrow APY = Borrow APY Base + ((Utilization Rate/Optimal Utialization Rate) * Borrow APY Slope1)
+            //Setting Borrow APY Base to Borrow APY Slope1 in this case
+            if utilization_rate < optimal_utilization_rate
+            {
+                //Max Borrow Rate = token_reserve.fixed_borrow_apy + token_reserve.fixed_borrow_apy @Less Than 70% Utilization Rate
+                let borrow_apy_slope1 = token_reserve.fixed_borrow_apy as u128;
+                //Multiply before dividing to help keep precision
+                let u_rate_times_borrow_apy_slope1 = utilization_rate * borrow_apy_slope1;
+                let u_rate_times_borrow_apy_slope1_divide_optimal_u_rate = u_rate_times_borrow_apy_slope1 / optimal_utilization_rate;
+
+                token_reserve.borrow_apy = (borrow_apy_slope1 + u_rate_times_borrow_apy_slope1_divide_optimal_u_rate) as u16;
+            }
+            //Borrow APY = Borrow APY Base + Borrow APY Slope1 + ((Utilization Rate - Optimal Utialization Rate) / (100% Utilization - Optimal Utialization Rate) * Borrow APY Slope2)
+            //Not using a Borrow APY Base in this case
+            else
+            {
+                //Max Borrow Rate = 10% + 100% = 110% @100% Utilization Rate. I think having a rate more than 110% would appear too pay day loany...just seems like a bad look lol.
+                let ten_percent = 1_000; //1_000 = 10.00%
+                let u_rate_minus_optimal_u_rate = utilization_rate - optimal_utilization_rate;
+                let one_hundred_percent_minus_optimal_u_rate = decimal_scaling - optimal_utilization_rate;
+                //Multiply before dividing to help keep precision
+                let u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 = u_rate_minus_optimal_u_rate * decimal_scaling;
+                let new_high_rate_base = u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 / one_hundred_percent_minus_optimal_u_rate;
+
+                token_reserve.borrow_apy = (ten_percent + new_high_rate_base) as u16;
+            }
+        }
 
         //Set Supply APY = Borrowed APY * Utilization Rate
         let unscaled_supply_apy = token_reserve.borrow_apy as u32 * token_reserve.utilization_rate as u32;
@@ -380,7 +419,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
     if user_borrowed_value > 0
     {
-        //Multiple before dividing to help keep precision
+        //Multiply before dividing to help keep precision
         let user_deposited_value_x_70 = user_deposited_value * 70;
         let seventy_percent_of_new_deposited_value = user_deposited_value_x_70 / 100;
 
@@ -472,7 +511,8 @@ pub mod lending_protocol
         token_mint_address: Pubkey,
         token_decimal_amount: u8,
         pyth_feed_id: [u8; 32],
-        borrow_apy: u16,
+        fixed_borrow_apy: u16,
+        use_fixed_borrow_apy: bool,
         global_limit: u128) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
@@ -484,7 +524,9 @@ pub mod lending_protocol
         token_reserve.token_mint_address = token_mint_address.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
         token_reserve.pyth_feed_id = pyth_feed_id;
-        token_reserve.borrow_apy = borrow_apy;
+        token_reserve.borrow_apy = fixed_borrow_apy;
+        token_reserve.fixed_borrow_apy = fixed_borrow_apy;
+        token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
         token_reserve.supply_interest_change_index = 1_000_000_000_000_000_000;
         token_reserve.borrow_interest_change_index = 1_000_000_000_000_000_000;
@@ -498,7 +540,8 @@ pub mod lending_protocol
         msg!("Token Mint Address: {}", token_mint_address.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
         msg!("Pyth Feed ID: 0x{}", hex_string);
-        msg!("Borrow APY: {}", borrow_apy);
+        msg!("Fixed Borrow APY: {}", fixed_borrow_apy);
+        msg!("Use fixed Borrow APY: {}", use_fixed_borrow_apy);
         msg!("Global Limit: {}", global_limit);
             
         Ok(())
@@ -506,22 +549,37 @@ pub mod lending_protocol
 
     pub fn update_token_reserve(ctx: Context<UpdateTokenReserve>,
         _token_mint_address: Pubkey,
-        borrow_apy: u16,
+        fixed_borrow_apy: u16,
+        use_fixed_borrow_apy: bool,
         global_limit: u128) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);   
 
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
 
-        token_reserve.borrow_apy = borrow_apy;
+        if token_reserve.fixed_borrow_apy != fixed_borrow_apy || token_reserve.use_fixed_borrow_apy != use_fixed_borrow_apy
+        {
+            let time_stamp = Clock::get()?.unix_timestamp as u64;
+
+            //Calculate Token Reserve Previously Earned And Accrued Interest
+            update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
+
+            //Update Token Reserve Global Utilization Rate, Borrow APY, and, Supply APY
+            update_token_reserve_rates(token_reserve)?;
+        }
+
+        token_reserve.fixed_borrow_apy = fixed_borrow_apy;
+        token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
         token_reserve_stats.token_reserves_updated_count += 1;
 
+
+
         msg!("Token Reserve Updated");
-        msg!("New Borrow APY: {}",  borrow_apy);
+        msg!("New Fixed Borrow APY: {}", fixed_borrow_apy);
         msg!("New Global Limit: {}",  global_limit);
             
         Ok(())
@@ -733,7 +791,7 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.monthly_deposited_amount += amount as u128;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
 
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
         sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
@@ -924,7 +982,7 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.monthly_withdrawal_amount += withdraw_amount as u128;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
         
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
         sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
@@ -1106,7 +1164,7 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.monthly_borrowed_amount += amount as u128;
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
 
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
         sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
@@ -1260,7 +1318,7 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
         lending_user_monthly_statement_account.snap_shot_repaid_debt_amount = lending_user_tab_account.repaid_debt_amount;
         
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
         sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
@@ -1331,8 +1389,8 @@ pub mod lending_protocol
             lending_user_tab_account,
             lending_user_monthly_statement_account
         )?;
-
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
+        
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
         sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
@@ -1410,7 +1468,7 @@ pub mod lending_protocol
 
         sub_market.uncollected_fees_amount = 0;
 
-        //Update Token Reserve Supply APY and Global Utilization Rates and the User time stamp based interest indexes
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
         sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
@@ -2185,6 +2243,8 @@ pub struct TokenReserve
     pub pyth_feed_id: [u8; 32],
     pub supply_apy: u16,
     pub borrow_apy: u16,
+    pub fixed_borrow_apy: u16,
+    pub use_fixed_borrow_apy: bool,
     pub utilization_rate: u16,
     pub global_limit: u128,
     pub supply_interest_change_index: u128, //Starts at 1 (in fixed point notation) and increases as Supply User interest is earned from Borrow Users so that it can be proportionally distributed to Supply Users
