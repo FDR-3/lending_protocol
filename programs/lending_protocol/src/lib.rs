@@ -277,14 +277,14 @@ fn update_user_previous_interest_earned<'info>(
     sub_market.interest_earned_amount += new_user_interest_earned_amount_after_fee;
     sub_market.fees_generated_amount += new_fees_generated_amount;
     sub_market.uncollected_fees_amount += new_fees_generated_amount;
-    lending_user_tab_account.deposited_amount += new_user_interest_earned_amount_after_fee;
-    lending_user_tab_account.interest_earned_amount += new_user_interest_earned_amount_after_fee;
-    lending_user_tab_account.fees_generated_amount += new_fees_generated_amount;
+    lending_user_tab_account.deposited_amount += new_user_interest_earned_amount_after_fee as u64;
+    lending_user_tab_account.interest_earned_amount += new_user_interest_earned_amount_after_fee as u64;
+    lending_user_tab_account.fees_generated_amount += new_fees_generated_amount as u64;
     lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
     lending_user_monthly_statement_account.snap_shot_interest_earned_amount = lending_user_tab_account.interest_earned_amount;
     lending_user_monthly_statement_account.snap_shot_fees_generated_amount = lending_user_tab_account.fees_generated_amount;
-    lending_user_monthly_statement_account.monthly_interest_earned_amount += new_user_interest_earned_amount_after_fee;
-    lending_user_monthly_statement_account.monthly_fees_generated_amount += new_fees_generated_amount;
+    lending_user_monthly_statement_account.monthly_interest_earned_amount += new_user_interest_earned_amount_after_fee as u64;
+    lending_user_monthly_statement_account.monthly_fees_generated_amount += new_fees_generated_amount as u64;
 
     Ok(())
 }
@@ -319,11 +319,11 @@ fn update_user_previous_interest_accrued<'info>(
     token_reserve.interest_accrued_amount += new_user_interest_accrued_amount;
     sub_market.borrowed_amount += new_user_interest_accrued_amount;
     sub_market.interest_accrued_amount += new_user_interest_accrued_amount;
-    lending_user_tab_account.borrowed_amount += new_user_interest_accrued_amount;
-    lending_user_tab_account.interest_accrued_amount += new_user_interest_accrued_amount;
+    lending_user_tab_account.borrowed_amount += new_user_interest_accrued_amount as u64;
+    lending_user_tab_account.interest_accrued_amount += new_user_interest_accrued_amount as u64;
     lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
     lending_user_monthly_statement_account.snap_shot_interest_accrued_amount = lending_user_tab_account.interest_accrued_amount;
-    lending_user_monthly_statement_account.monthly_interest_accrued_amount += new_user_interest_accrued_amount;
+    lending_user_monthly_statement_account.monthly_interest_accrued_amount += new_user_interest_accrued_amount as u64;
 
     Ok(())
 }
@@ -803,8 +803,8 @@ pub mod lending_protocol
         lending_stats.deposits += 1;
         sub_market.deposited_amount += amount as u128;
         token_reserve.deposited_amount += amount as u128;
-        lending_user_tab_account.deposited_amount += amount as u128;
-        lending_user_monthly_statement_account.monthly_deposited_amount += amount as u128;
+        lending_user_tab_account.deposited_amount += amount;
+        lending_user_monthly_statement_account.monthly_deposited_amount += amount;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
@@ -816,13 +816,13 @@ pub mod lending_protocol
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_amount = amount as u128;
+        token_reserve.last_lending_activity_amount = amount;
         token_reserve.last_lending_activity_type = Activity::Deposit as u8;
         token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated 
-        sub_market.last_lending_activity_amount = amount as u128;
+        sub_market.last_lending_activity_amount = amount;
         sub_market.last_lending_activity_type = Activity::Deposit as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp;
-        lending_user_monthly_statement_account.last_lending_activity_amount = amount as u128;
+        lending_user_monthly_statement_account.last_lending_activity_amount = amount;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Deposit as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
 
@@ -889,7 +889,7 @@ pub mod lending_protocol
 
         if withdraw_max
         {
-            withdraw_amount = lending_user_tab_account.deposited_amount as u64;
+            withdraw_amount = lending_user_tab_account.deposited_amount;
         }
         else
         {
@@ -897,7 +897,7 @@ pub mod lending_protocol
         }
 
         //You can't withdraw more funds than you've deposited
-        require!(lending_user_tab_account.deposited_amount >= withdraw_amount as u128, LendingError::InsufficientFunds);
+        require!(lending_user_tab_account.deposited_amount >= withdraw_amount, LendingError::InsufficientFunds);
 
         //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
         let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
@@ -994,8 +994,8 @@ pub mod lending_protocol
         lending_stats.withdrawals += 1;
         sub_market.deposited_amount -= withdraw_amount as u128;
         token_reserve.deposited_amount -= withdraw_amount as u128;
-        lending_user_tab_account.deposited_amount -= withdraw_amount as u128;
-        lending_user_monthly_statement_account.monthly_withdrawal_amount += withdraw_amount as u128;
+        lending_user_tab_account.deposited_amount -= withdraw_amount;
+        lending_user_monthly_statement_account.monthly_withdrawal_amount += withdraw_amount;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
         
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
@@ -1007,13 +1007,13 @@ pub mod lending_protocol
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_amount = withdraw_amount as u128;
+        token_reserve.last_lending_activity_amount = withdraw_amount;
         token_reserve.last_lending_activity_type = Activity::Withdraw as u8;
         token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        sub_market.last_lending_activity_amount = withdraw_amount as u128;
+        sub_market.last_lending_activity_amount = withdraw_amount;
         sub_market.last_lending_activity_type = Activity::Withdraw as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp; 
-        lending_user_monthly_statement_account.last_lending_activity_amount = withdraw_amount as u128;
+        lending_user_monthly_statement_account.last_lending_activity_amount = withdraw_amount;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Withdraw as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
         
@@ -1176,8 +1176,8 @@ pub mod lending_protocol
         lending_stats.borrows += 1;
         sub_market.borrowed_amount += amount as u128;
         token_reserve.borrowed_amount += amount as u128;
-        lending_user_tab_account.borrowed_amount += amount as u128;
-        lending_user_monthly_statement_account.monthly_borrowed_amount += amount as u128;
+        lending_user_tab_account.borrowed_amount += amount;
+        lending_user_monthly_statement_account.monthly_borrowed_amount += amount;
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
@@ -1189,13 +1189,13 @@ pub mod lending_protocol
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_amount = amount as u128;
+        token_reserve.last_lending_activity_amount = amount;
         token_reserve.last_lending_activity_type = Activity::Borrow as u8;
         token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        sub_market.last_lending_activity_amount = amount as u128;
+        sub_market.last_lending_activity_amount = amount;
         sub_market.last_lending_activity_type = Activity::Borrow as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp; 
-        lending_user_monthly_statement_account.last_lending_activity_amount = amount as u128;
+        lending_user_monthly_statement_account.last_lending_activity_amount = amount;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Borrow as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
         
@@ -1257,7 +1257,7 @@ pub mod lending_protocol
 
         if pay_off_loan
         {
-            payment_amount = lending_user_tab_account.borrowed_amount as u64;
+            payment_amount = lending_user_tab_account.borrowed_amount;
         }
         else
         {
@@ -1265,7 +1265,7 @@ pub mod lending_protocol
         }
 
         //You can't repay an amount that is greater than your borrowed amount.
-        require!(lending_user_tab_account.borrowed_amount >= payment_amount as u128, LendingError::TooManyFunds);
+        require!(lending_user_tab_account.borrowed_amount >= payment_amount, LendingError::TooManyFunds);
 
         //Handle native SOL transactions
         if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
@@ -1328,9 +1328,9 @@ pub mod lending_protocol
         sub_market.repaid_debt_amount += payment_amount as u128;
         token_reserve.borrowed_amount -= payment_amount as u128;
         token_reserve.repaid_debt_amount += payment_amount as u128;
-        lending_user_tab_account.borrowed_amount -= payment_amount as u128;
-        lending_user_tab_account.repaid_debt_amount += payment_amount as u128;
-        lending_user_monthly_statement_account.monthly_repaid_debt_amount += payment_amount as u128;
+        lending_user_tab_account.borrowed_amount -= payment_amount;
+        lending_user_tab_account.repaid_debt_amount += payment_amount;
+        lending_user_monthly_statement_account.monthly_repaid_debt_amount += payment_amount;
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
         lending_user_monthly_statement_account.snap_shot_repaid_debt_amount = lending_user_tab_account.repaid_debt_amount;
         
@@ -1343,13 +1343,13 @@ pub mod lending_protocol
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_amount = payment_amount as u128;
+        token_reserve.last_lending_activity_amount = payment_amount;
         token_reserve.last_lending_activity_type = Activity::Repay as u8;
         token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        sub_market.last_lending_activity_amount = payment_amount as u128;
+        sub_market.last_lending_activity_amount = payment_amount;
         sub_market.last_lending_activity_type = Activity::Repay as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp;
-        lending_user_monthly_statement_account.last_lending_activity_amount = payment_amount as u128;
+        lending_user_monthly_statement_account.last_lending_activity_amount = payment_amount;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
   
@@ -1478,9 +1478,9 @@ pub mod lending_protocol
         )?;
 
         //Collect Fees
-        lending_user_tab_account.deposited_amount += sub_market.uncollected_fees_amount;
-        lending_user_tab_account.fees_collected_amount += sub_market.uncollected_fees_amount;
-        lending_user_monthly_statement_account.monthly_fees_collected_amount += sub_market.uncollected_fees_amount;
+        lending_user_tab_account.deposited_amount += sub_market.uncollected_fees_amount as u64;
+        lending_user_tab_account.fees_collected_amount += sub_market.uncollected_fees_amount as u64;
+        lending_user_monthly_statement_account.monthly_fees_collected_amount += sub_market.uncollected_fees_amount as u64;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
         lending_user_monthly_statement_account.snap_shot_fees_collected_amount = lending_user_tab_account.fees_collected_amount;
 
@@ -1544,7 +1544,7 @@ pub mod lending_protocol
         let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
 
         //You can't repay more than 50% of a liquidati's debt position
-        require!(repayment_amount as u128 <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
+        require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
 
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
         require!((liquidati_lending_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
@@ -1676,9 +1676,9 @@ pub mod lending_protocol
         repayment_sub_market.repaid_debt_amount += repayment_amount as u128;
         repayment_token_reserve.borrowed_amount -= repayment_amount as u128;
         repayment_token_reserve.repaid_debt_amount += repayment_amount as u128;
-        liquidati_repayment_tab_account.borrowed_amount -= repayment_amount as u128;
-        liquidati_repayment_tab_account.repaid_debt_amount += repayment_amount as u128;
-        liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount as u128;
+        liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
+        liquidati_repayment_tab_account.repaid_debt_amount += repayment_amount;
+        liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
         liquidati_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidati_repayment_tab_account.repaid_debt_amount;
 
@@ -1690,14 +1690,14 @@ pub mod lending_protocol
         //Update Liquidation Values
         liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
         liquidation_token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
-        liquidati_liquidation_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus as u128;
-        liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
-        liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus as u128;
-        //liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus as u128;
-        liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
+        liquidati_liquidation_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_monthly_statement_account.snap_shot_liquidated_amount = liquidati_liquidation_tab_account.liquidated_amount;
-        //liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus as u128;
-        //liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
+        liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
         
         //Update Stat Listener
         lending_stats.liquidations += 1;
@@ -1711,25 +1711,25 @@ pub mod lending_protocol
         deposit_lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;*/
 
         //Update last activity on accounts
-        repayment_token_reserve.last_lending_activity_amount = repayment_amount as u128;
+        repayment_token_reserve.last_lending_activity_amount = repayment_amount;
         repayment_token_reserve.last_lending_activity_type = Activity::Repay as u8;
         repayment_token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        liquidation_token_reserve.last_lending_activity_amount = repayment_amount as u128;
+        liquidation_token_reserve.last_lending_activity_amount = repayment_amount;
         liquidation_token_reserve.last_lending_activity_type = Activity::Liquidate as u8;
         liquidation_token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        repayment_sub_market.last_lending_activity_amount = repayment_amount as u128;
+        repayment_sub_market.last_lending_activity_amount = repayment_amount;
         repayment_sub_market.last_lending_activity_type = Activity::Repay as u8;
         repayment_sub_market.last_lending_activity_time_stamp = time_stamp;
-        liquidation_sub_market.last_lending_activity_amount = repayment_amount as u128;
+        liquidation_sub_market.last_lending_activity_amount = repayment_amount;
         liquidation_sub_market.last_lending_activity_type = Activity::Liquidate as u8;
         liquidation_sub_market.last_lending_activity_time_stamp = time_stamp;
-        liquidati_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount as u128;
+        liquidati_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
         liquidati_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         liquidati_repayment_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
-        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount as u128;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
-        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount as u128;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
         
@@ -1952,13 +1952,13 @@ pub struct DepositTokens<'info>
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
+    pub lending_protocol: Account<'info, LendingProtocol>,
 
     #[account(
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Box<Account<'info, LendingStats>>,
+    pub lending_stats: Account<'info, LendingStats>,
 
     #[account(
         mut,
@@ -2021,7 +2021,7 @@ pub struct DepositTokens<'info>
         associated_token::mint = token_mint_address,
         associated_token::authority = token_reserve
     )]
-    pub token_reserve_ata: Box<Account<'info, TokenAccount>>,
+    pub token_reserve_ata: Account<'info, TokenAccount>,
 
     pub mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
@@ -2096,7 +2096,7 @@ pub struct WithdrawTokens<'info>
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_tab_account: Box<Account<'info, LendingUserTabAccount>>,
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
 
     #[account(
         init_if_needed,
@@ -2150,7 +2150,7 @@ pub struct BorrowTokens<'info>
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Box<Account<'info, LendingStats>>,
+    pub lending_stats: Account<'info, LendingStats>,
 
     #[account(
         mut,
@@ -2247,7 +2247,7 @@ pub struct RepayTokens<'info>
         mut,
         seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
-    pub sub_market: Box<Account<'info, SubMarket>>,
+    pub sub_market: Account<'info, SubMarket>,
 
     #[account(
         mut,
@@ -2288,7 +2288,7 @@ pub struct RepayTokens<'info>
         associated_token::mint = token_mint_address,
         associated_token::authority = token_reserve
     )]
-    pub token_reserve_ata: Box<Account<'info, TokenAccount>>,
+    pub token_reserve_ata: Account<'info, TokenAccount>,
 
     pub mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
@@ -2376,7 +2376,7 @@ pub struct ClaimSubMarketFees<'info>
         mut,
         seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
         bump)]
-    pub token_reserve: Box<Account<'info, TokenReserve>>,
+    pub token_reserve: Account<'info, TokenReserve>,
 
     #[account(
         mut,
@@ -2558,12 +2558,12 @@ pub struct LiquidateAccount<'info>
         liquidator_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
-    pub liquidator_liquidation_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+    pub liquidator_liquidation_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
         init_if_needed, //SOL has to be withdrawn as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
         payer = signer,
-        associated_token::mint = mint,
+        associated_token::mint = repayment_mint,
         associated_token::authority = signer
     )]
     pub liquidator_repayment_ata: Box<Account<'info, TokenAccount>>,
@@ -2575,7 +2575,7 @@ pub struct LiquidateAccount<'info>
     )]
     pub repayment_token_reserve_ata: Box<Account<'info, TokenAccount>>,
 
-    pub mint: Box<Account<'info, Mint>>,
+    pub repayment_mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -2653,7 +2653,7 @@ pub struct TokenReserve
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
     pub liquidated_amount: u128,
-    pub last_lending_activity_amount: u128,
+    pub last_lending_activity_amount: u64,
     pub last_lending_activity_type: u8,
     pub last_lending_activity_time_stamp: u64
 }
@@ -2677,7 +2677,7 @@ pub struct SubMarket
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
     pub liquidated_amount: u128,
-    pub last_lending_activity_amount: u128,
+    pub last_lending_activity_amount: u64,
     pub last_lending_activity_type: u8,
     pub last_lending_activity_time_stamp: u64
 }
@@ -2705,15 +2705,15 @@ pub struct LendingUserTabAccount
     pub user_tab_account_added: bool,
     pub supply_interest_change_index: u128, //This index is set to match the token reserve index after previously earned interest is updated
     pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated
-    pub deposited_amount: u128,
-    pub interest_earned_amount: u128,
-    pub fees_generated_amount: u128,
-    pub fees_collected_amount: u128,
-    pub borrowed_amount: u128,
-    pub interest_accrued_amount: u128,
-    pub repaid_debt_amount: u128,
-    pub liquidated_amount: u128,
-    //pub liquidator_amount: u128,
+    pub deposited_amount: u64,
+    pub interest_earned_amount: u64,
+    pub fees_generated_amount: u64,
+    pub fees_collected_amount: u64,
+    pub borrowed_amount: u64,
+    pub interest_accrued_amount: u64,
+    pub repaid_debt_amount: u64,
+    pub liquidated_amount: u64,
+    pub liquidator_amount: u64,
     pub interest_change_last_updated_time_stamp: u64
 }
 
@@ -2728,26 +2728,26 @@ pub struct LendingUserMonthlyStatementAccount
     pub statement_month: u8,
     pub statement_year: u32,
     pub monthly_statement_account_added: bool,
-    pub snap_shot_balance_amount: u128,//The snap_shot properties give a snapshot of the value of the Tab Account over its whole life time at the time it is updated
-    pub snap_shot_interest_earned_amount: u128,
-    pub snap_shot_fees_generated_amount: u128,
-    pub snap_shot_fees_collected_amount: u128,
-    pub snap_shot_debt_amount: u128,
-    pub snap_shot_interest_accrued_amount: u128,
-    pub snap_shot_repaid_debt_amount: u128,
-    pub snap_shot_liquidated_amount: u128,
-    //pub snap_shot_liquidator_amount: u128,
-    pub monthly_deposited_amount: u128,//The monthly properties give the specific value changes for that specific month
-    pub monthly_interest_earned_amount: u128,
-    pub monthly_fees_generated_amount: u128,
-    pub monthly_fees_collected_amount: u128,
-    pub monthly_withdrawal_amount: u128,
-    pub monthly_borrowed_amount: u128,
-    pub monthly_interest_accrued_amount: u128,
-    pub monthly_repaid_debt_amount: u128,
-    pub monthly_liquidated_amount: u128,
-    //pub monthly_liquidator_amount: u128,
-    pub last_lending_activity_amount: u128,
+    pub snap_shot_balance_amount: u64,//The snap_shot properties give a snapshot of the value of the Tab Account over its whole life time at the time it is updated
+    pub snap_shot_interest_earned_amount: u64,
+    pub snap_shot_fees_generated_amount: u64,
+    pub snap_shot_fees_collected_amount: u64,
+    pub snap_shot_debt_amount: u64,
+    pub snap_shot_interest_accrued_amount: u64,
+    pub snap_shot_repaid_debt_amount: u64,
+    pub snap_shot_liquidated_amount: u64,
+    pub snap_shot_liquidator_amount: u64,
+    pub monthly_deposited_amount: u64,//The monthly properties give the specific value changes for that specific month
+    pub monthly_interest_earned_amount: u64,
+    pub monthly_fees_generated_amount: u64,
+    pub monthly_fees_collected_amount: u64,
+    pub monthly_withdrawal_amount: u64,
+    pub monthly_borrowed_amount: u64,
+    pub monthly_interest_accrued_amount: u64,
+    pub monthly_repaid_debt_amount: u64,
+    pub monthly_liquidated_amount: u64,
+    pub monthly_liquidator_amount: u64,
+    pub last_lending_activity_amount: u64,
     pub last_lending_activity_type: u8,
     pub last_lending_activity_time_stamp: u64 
 }
