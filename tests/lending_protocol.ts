@@ -973,15 +973,17 @@ describe("lending_protocol", () =>
     assert(errorMessage == incorrectOrderOfTabAccountsErrorMsg)
   })
 
-  async function debugPrintPythAccount(accountPubkey) {
-    const accountInfo = await program.provider.connection.getAccountInfo(accountPubkey);
+  async function debugPrintPythAccount(accountPubkey: PublicKey)
+  {
+    const accountInfo = await program.provider.connection.getAccountInfo(accountPubkey)
     
-    if (!accountInfo) {
-        console.log("Account not found!");
-        return;
+    if (!accountInfo)
+    {
+      console.log("Account not found!")
+      return
     }
 
-    const data = accountInfo.data;
+    const data = accountInfo.data
     
     // Manual Parsing based on your buffer layout
     // Offset 0-8: Discriminator
@@ -990,25 +992,25 @@ describe("lending_protocol", () =>
     // Offset 73-81: Price
     // Offset 97-105: Publish Time
 
-    const feedId = data.subarray(41, 73).toString('hex');
-    const price = data.readBigInt64LE(73);
-    const conf = data.readBigUInt64LE(81);
-    const exponent = data.readInt32LE(89);
-    const publishTime = data.readBigInt64LE(93);
+    const feedId = data.subarray(41, 73).toString('hex')
+    const price = data.readBigInt64LE(73)
+    const conf = data.readBigUInt64LE(81)
+    const exponent = data.readInt32LE(89)
+    const publishTime = data.readBigInt64LE(93)
     
-    console.log("--- DEBUG PYTH ACCOUNT ---");
-    console.log("Feed ID (Hex):", feedId);
-    console.log("Price:", price.toString());
-    console.log("Exponent:", exponent);
-    console.log("Publish Time:", publishTime.toString());
+    console.log("--- DEBUG PYTH ACCOUNT ---")
+    console.log("Feed ID (Hex):", feedId)
+    console.log("Price:", price.toString())
+    console.log("Exponent:", exponent)
+    console.log("Publish Time:", publishTime.toString())
     
     // Check against current time
-    const slot = await program.provider.connection.getSlot();
-    const currentTime = await program.provider.connection.getBlockTime(slot);
-    console.log("Current Chain Time:", currentTime);
-    console.log("Age (seconds):", currentTime - Number(publishTime));
-    console.log("--------------------------");
-}
+    const slot = await program.provider.connection.getSlot()
+    const currentTime = await program.provider.connection.getBlockTime(slot)
+    console.log("Current Chain Time:", currentTime)
+    console.log("Age (seconds):", currentTime - Number(publishTime))
+    console.log("--------------------------")
+  }
 
   it("Withdraws USDC From the Token Reserve", async () => 
   {
