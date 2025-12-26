@@ -24,6 +24,8 @@ security_txt!
 
 #[cfg(feature = "dev")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
+#[cfg(feature = "dev")] 
+const INITIAL_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6zgxNa8F4nY3kfDpdRJsT8HdPU");
 #[cfg(feature = "dev")]
 use pyth_solana_receiver_sdk::ID as PYTH_RECEIVER_ID;
 #[cfg(feature = "dev")]
@@ -32,7 +34,9 @@ const PYTH_PROGRAM_ID: Pubkey = PYTH_RECEIVER_ID;
 #[cfg(feature = "local")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
-const PYTH_PROGRAM_ID: Pubkey = pubkey!("9inp4dycaG3Ktg2c3qijFHGfc3Y64Jzmsqsj79E4P5wh");
+const INITIAL_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+#[cfg(feature = "local")] 
+const PYTH_PROGRAM_ID: Pubkey = pubkey!("EoRKL64KbTVsg5FQke7AAHcuMiNWVTcyC4JdkLeChSWc");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -56,7 +60,9 @@ pub enum AuthorizationError
 {
     #[msg("Only the CEO can call this function")]
     NotCEO,
-    #[msg("Only the fee Collector can claim the fees")]
+    #[msg("Only the Treasurer can call this function")]
+    NotTreasurer,
+    #[msg("Only the Fee Collector can claim the fees")]
     NotFeeCollector
 }
 
@@ -105,7 +111,9 @@ pub enum LendingError
     #[msg("You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral")]
     NotLiquidatable,
     #[msg("You can't repay more than 50% of a liquidati's debt position")]
-    OverLiquidation
+    OverLiquidation,
+    #[msg("Duplicate SubMarket Detected")]
+    DuplicateSubMarket
 }
 
 //Helper function to get the token price by the pyth ID
@@ -263,28 +271,42 @@ fn update_user_previous_interest_earned<'info>(
     let new_user_deposited_amount_before_fee_fixed_point = old_user_balance_mul_token_reserve_index_fixed_point.div(&user_supply_index_fixed_point)?;
     let new_user_interest_earned_amount_before_fee_fixed_point = new_user_deposited_amount_before_fee_fixed_point.sub(&old_user_deposited_amount_fixed_point)?;
     
-    //Apply SubMarket Fee
+    //Calculate SubMarket Fee
     let sub_market_fee_rate_fixed_point = FixedPoint::from_bps(sub_market.fee_on_interest_earned_rate as u64)?;
-    let new_fees_generated_amount_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.mul(&sub_market_fee_rate_fixed_point)?;
-    let new_fees_generated_amount = new_fees_generated_amount_fixed_point.to_u128()?;
-    let new_user_interest_earned_amount_after_fee_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.sub(&new_fees_generated_amount_fixed_point)?;
-    let new_user_interest_earned_amount_after_fee = new_user_interest_earned_amount_after_fee_fixed_point.to_u128()?;
+    let new_sub_market_fees_generated_amount_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.mul(&sub_market_fee_rate_fixed_point)?;
+    let new_sub_market_fees_generated_amount = new_sub_market_fees_generated_amount_fixed_point.to_u128()?;
 
-    token_reserve.deposited_amount += new_user_interest_earned_amount_after_fee;
-    token_reserve.interest_earned_amount += new_user_interest_earned_amount_after_fee;
-    token_reserve.fees_generated_amount += new_fees_generated_amount;
-    sub_market.deposited_amount += new_user_interest_earned_amount_after_fee;
-    sub_market.interest_earned_amount += new_user_interest_earned_amount_after_fee;
-    sub_market.fees_generated_amount += new_fees_generated_amount;
-    sub_market.uncollected_fees_amount += new_fees_generated_amount;
-    lending_user_tab_account.deposited_amount += new_user_interest_earned_amount_after_fee as u64;
-    lending_user_tab_account.interest_earned_amount += new_user_interest_earned_amount_after_fee as u64;
-    lending_user_tab_account.fees_generated_amount += new_fees_generated_amount as u64;
+    //Calculate Solvency Insurance Fee
+    let solvency_insurance_fee_rate_fixed_point = FixedPoint::from_bps(token_reserve.solvency_insurance_fee_rate as u64)?;
+    let new_solvency_insurance_fees_generated_amount_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.mul(&solvency_insurance_fee_rate_fixed_point)?;
+    let new_solvency_insurance_fees_generated_amount = new_solvency_insurance_fees_generated_amount_fixed_point.to_u128()?;
+
+    //Apply Fees to Interest Earned
+    let new_user_interest_earned_amount_after_sb_fee_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.sub(&new_sub_market_fees_generated_amount_fixed_point)?;
+    let new_user_interest_earned_amount_after_fee_fixed_point = new_user_interest_earned_amount_after_sb_fee_fixed_point.sub(&new_solvency_insurance_fees_generated_amount_fixed_point)?;
+    let new_user_interest_earned_amount_after_fees = new_user_interest_earned_amount_after_fee_fixed_point.to_u128()?;
+    
+    token_reserve.deposited_amount += new_user_interest_earned_amount_after_fees;
+    token_reserve.interest_earned_amount += new_user_interest_earned_amount_after_fees;
+    token_reserve.sub_market_fees_generated_amount += new_sub_market_fees_generated_amount;
+    token_reserve.solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount;
+    token_reserve.uncollected_solvency_insurance_fees_amount += new_solvency_insurance_fees_generated_amount;
+    sub_market.deposited_amount += new_user_interest_earned_amount_after_fees;
+    sub_market.interest_earned_amount += new_user_interest_earned_amount_after_fees;
+    sub_market.sub_market_fees_generated_amount += new_sub_market_fees_generated_amount;
+    sub_market.uncollected_sub_market_fees_amount += new_sub_market_fees_generated_amount;
+    sub_market.solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount;
+    lending_user_tab_account.deposited_amount += new_user_interest_earned_amount_after_fees as u64;
+    lending_user_tab_account.interest_earned_amount += new_user_interest_earned_amount_after_fees as u64;
+    lending_user_tab_account.sub_market_fees_generated_amount += new_sub_market_fees_generated_amount as u64;
+    lending_user_tab_account.solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
     lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
     lending_user_monthly_statement_account.snap_shot_interest_earned_amount = lending_user_tab_account.interest_earned_amount;
-    lending_user_monthly_statement_account.snap_shot_fees_generated_amount = lending_user_tab_account.fees_generated_amount;
-    lending_user_monthly_statement_account.monthly_interest_earned_amount += new_user_interest_earned_amount_after_fee as u64;
-    lending_user_monthly_statement_account.monthly_fees_generated_amount += new_fees_generated_amount as u64;
+    lending_user_monthly_statement_account.snap_shot_sub_market_fees_generated_amount = lending_user_tab_account.sub_market_fees_generated_amount;
+    lending_user_monthly_statement_account.snap_shot_solvency_insurance_fees_generated_amount = lending_user_tab_account.solvency_insurance_fees_generated_amount;
+    lending_user_monthly_statement_account.monthly_interest_earned_amount += new_user_interest_earned_amount_after_fees as u64;
+    lending_user_monthly_statement_account.monthly_sub_market_fees_generated_amount += new_sub_market_fees_generated_amount as u64;
+    lending_user_monthly_statement_account.monthly_solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
 
     Ok(())
 }
@@ -334,16 +356,20 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     user_account_index: u8,
     program_id: Pubkey,
     token_mint_address: Pubkey,
-    withdraw_or_borrow_amount: u64,
+    withdraw_borrow_or_repay_amount: u64,
     activity_type: u8,
-    new_lending_activity_time_stamp: u64
-) -> Result<()>
+    new_lending_activity_time_stamp: u64,
+    liquidation_token_mint_address: Option<Pubkey>
+) -> Result<u64>
 {
     let mut user_tab_index = 0;
     let mut user_deposited_value = 0;
     let mut user_borrowed_value = 0;
     let mut user_withdraw_or_borrow_request_value = 0;
     let mut evaluated_price_of_withdraw_or_borrow_token = false;
+
+    let mut liquidation_repay_token_value = 0;
+    let mut liquidation_liquidate_token_value = 0;
 
     while let Some(tab_account_serialized) = remaining_accounts_iter.next()
     {
@@ -392,12 +418,25 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         user_deposited_value += tab_account.deposited_amount as i128 * current_price.price as i128;
         user_borrowed_value += tab_account.borrowed_amount as i128 * current_price.price as i128;
 
-        //Only add the value of the token being withdrawn or borrowed once since there might be multiple SubMarkets
+        //Only add to the value of the token being withdrawn or borrowed once since there might be multiple SubMarkets
         if token_mint_address.key() == tab_account.token_mint_address.key() && evaluated_price_of_withdraw_or_borrow_token == false &&
         (activity_type == Activity::Withdraw as u8 || activity_type == Activity::Borrow as u8)
         {
-            user_withdraw_or_borrow_request_value += withdraw_or_borrow_amount as i128 * current_price.price as i128;
+            user_withdraw_or_borrow_request_value += withdraw_borrow_or_repay_amount as i128 * current_price.price as i128;
             evaluated_price_of_withdraw_or_borrow_token = true;
+        }
+
+        if activity_type == Activity::Liquidate as u8
+        {
+            if token_mint_address.key() == tab_account.token_mint_address.key()
+            {
+                liquidation_repay_token_value = withdraw_borrow_or_repay_amount as i128 * current_price.price as i128;
+            }
+
+            if liquidation_token_mint_address.unwrap().key() == tab_account.token_mint_address.key()
+            {
+                liquidation_liquidate_token_value = current_price.price as i128;
+            }
         }
 
         user_tab_index += 1;
@@ -418,9 +457,13 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         let eighty_percent_of_deposited_value = user_deposited_value_x_80 / 100;
 
         //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
-        require!(user_borrowed_value >= eighty_percent_of_deposited_value, LendingError::NotLiquidatable); 
+        require!(user_borrowed_value >= eighty_percent_of_deposited_value, LendingError::NotLiquidatable);
+
+        let liquidation_amount = (liquidation_repay_token_value / liquidation_liquidate_token_value) as u64;
+
+        return Ok(liquidation_amount)
     }
-    else if user_borrowed_value > 0//&& (activity_type == Activity::Withdraw as u8 || activity_type == Activity::Borrow as u8)
+    else if user_borrowed_value > 0
     {
         if activity_type == Activity::Withdraw as u8
         {
@@ -439,10 +482,61 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         require!(seventy_percent_of_new_deposited_value >= user_borrowed_value, LendingError::LiquidationExposure);
     }
 
+    Ok(0)
+}
+
+//Helper function to initialize Lending User Account
+fn initialize_lending_user_account<'info>(lending_user_account: &mut Account<LendingUserAccount>,
+    user_account_owner: Pubkey,
+    user_account_index: u8,
+    account_name: String //Optional variable. Use null/undefined on front end when not needed
+) -> Result<()>
+{
+    //Account Name string must not be longer than 25 characters
+    require!(account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
+
+    lending_user_account.owner = user_account_owner;
+    lending_user_account.user_account_index = user_account_index;
+    lending_user_account.account_name = account_name.clone();
+    lending_user_account.lending_user_account_added = true;
+
+    msg!("Created Lending User Account Named: {}", account_name);
+
     Ok(())
 }
 
-//Helper function to initialize Monthly Statement Accounts
+//Helper function to initialize Lending User Tab Account
+fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut Account<LendingUserAccount>,
+    lending_user_tab_account: &mut Account<LendingUserTabAccount>,
+    token_mint_address: Pubkey,
+    pyth_feed_id: [u8; 32],
+    sub_market_owner_address: Pubkey,
+    sub_market_index: u16,
+    user_account_owner: Pubkey,
+    user_account_index: u8,
+    set_added_to_true: bool //False is only used here when being newly initialized with the borrow function so the tab account isn't included with validation. We wouldn't want to include the newly initialized account in the debt calculation.
+) -> Result<()>
+{
+    lending_user_tab_account.token_mint_address = token_mint_address;
+    lending_user_tab_account.pyth_feed_id = pyth_feed_id;
+    lending_user_tab_account.sub_market_owner_address = sub_market_owner_address;
+    lending_user_tab_account.sub_market_index = sub_market_index;
+    lending_user_tab_account.user_tab_account_index = lending_user_account.tab_account_count;
+    lending_user_tab_account.owner = user_account_owner;
+    lending_user_tab_account.user_account_index = user_account_index;
+    lending_user_tab_account.user_tab_account_added = set_added_to_true;
+
+    if lending_user_tab_account.user_tab_account_added
+    {
+        lending_user_account.tab_account_count += 1;
+    }
+
+    msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
+
+    Ok(())
+}
+
+//Helper function to initialize Monthly Statement Account
 fn initialize_lending_user_monthly_statement_account<'info>(lending_user_monthly_statement_account: &mut Account<LendingUserMonthlyStatementAccount>,
     lending_protocol: &Account<LendingProtocol>,
     token_mint_address: Pubkey,
@@ -479,6 +573,9 @@ pub mod lending_protocol
         let ceo = &mut ctx.accounts.ceo;
         ceo.address = INITIAL_CEO_ADDRESS;
 
+        let treasurer = &mut ctx.accounts.treasurer;
+        treasurer.address = INITIAL_TREASURER_ADDRESS;
+
         let lending_protocol = &mut ctx.accounts.lending_protocol;
         lending_protocol.current_statement_month = statement_month;
         lending_protocol.current_statement_year = statement_year;
@@ -504,6 +601,20 @@ pub mod lending_protocol
         Ok(())
     }
 
+    pub fn pass_on_lending_protocol_treasurer(ctx: Context<PassOnLendingProtocolTreasurer>, new_treasurer_address: Pubkey) -> Result<()> 
+    {
+        let treasurer = &mut ctx.accounts.treasurer;
+        //Only the Treasurer can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), treasurer.address.key(), AuthorizationError::NotTreasurer);
+
+        msg!("The Lending Protocol Treasurer has passed on the title to a new Treasurer");
+        msg!("New Treasurer: {}", new_treasurer_address.key());
+
+        treasurer.address = new_treasurer_address.key();
+
+        Ok(())
+    }
+
     pub fn update_current_statement_month_and_year(ctx: Context<UpdateCurrentStatementMonthAndYear>, statement_month: u8, statement_year: u32) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
@@ -525,7 +636,8 @@ pub mod lending_protocol
         pyth_feed_id: [u8; 32],
         fixed_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
-        global_limit: u128) -> Result<()> 
+        global_limit: u128,
+        solvency_insurance_fee_rate: u16) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
@@ -540,6 +652,7 @@ pub mod lending_protocol
         token_reserve.fixed_borrow_apy = fixed_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
+        token_reserve.solvency_insurance_fee_rate = solvency_insurance_fee_rate;
         token_reserve.supply_interest_change_index = 1_000_000_000_000_000_000;
         token_reserve.borrow_interest_change_index = 1_000_000_000_000_000_000;
 
@@ -563,7 +676,8 @@ pub mod lending_protocol
         _token_mint_address: Pubkey,
         fixed_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
-        global_limit: u128) -> Result<()> 
+        global_limit: u128,
+        solvency_insurance_fee_rate: u16) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
@@ -585,6 +699,7 @@ pub mod lending_protocol
         token_reserve.fixed_borrow_apy = fixed_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
+        token_reserve.solvency_insurance_fee_rate = solvency_insurance_fee_rate;
         token_reserve_stats.token_reserves_updated_count += 1;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, and, Supply APY
@@ -623,7 +738,7 @@ pub mod lending_protocol
         msg!("SubMarket Index: {}", sub_market.sub_market_index);
         msg!("Owner: {}", ctx.accounts.signer.key());
         msg!("Fee Collector Address: {}", fee_collector_address.key());
-        msg!("Fee On Interest Earned Rate: {:.2}%", fee_on_interest_earned_rate/100); //convert out of % fixed point notation with 4 decimal places back to decimal for logging
+        msg!("Fee On Interest Earned Rate: {:.2}%", fee_on_interest_earned_rate as f64 / 100.0); //convert out of % fixed point notation with 4 decimal places back to decimal for logging
         
         Ok(())
     }
@@ -650,7 +765,7 @@ pub mod lending_protocol
         msg!("SubMarket Index: {}", sub_market_index);
         msg!("Owner: {}", ctx.accounts.signer.key());
         msg!("Fee Collector Address: {}", fee_collector_address.key());
-        msg!("Fee On Interest Earned Rate: {:.2}%", fee_on_interest_earned_rate/100); //convert out of fixed point notation with 4 decimal places back to percent for logging. So / 10^4 for decimal then * 10^2 for percent
+        msg!("Fee On Interest Earned Rate: {:.2}%", fee_on_interest_earned_rate as f64 / 100.0); //convert out of fixed point notation with 4 decimal places back to percent for logging. So / 10^4 for decimal then * 10^2 for percent
             
         Ok(())
     }
@@ -667,7 +782,7 @@ pub mod lending_protocol
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_stats = &mut ctx.accounts.lending_stats;
-        let user_lending_account = &mut ctx.accounts.user_lending_account;
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
         let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
@@ -677,39 +792,39 @@ pub mod lending_protocol
         require!(new_token_reserve_deposited_amount <= token_reserve.global_limit, InvalidInputError::GlobalLimitExceeded);
 
         //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
-        if user_lending_account.lending_user_account_added == false
+        if lending_user_account.lending_user_account_added == false
         {
-            user_lending_account.owner = ctx.accounts.signer.key();
-            user_lending_account.user_account_index = user_account_index;
-
+            let mut new_account_name_to_use: String = String::from("Generic Depositer");
             if let Some(new_account_name) = account_name
             {
-                //Account Name string must not be longer than 25 characters
-                require!(new_account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
-
-                user_lending_account.account_name = new_account_name.clone();
-
-                msg!("Created Lending User Account Named: {}", new_account_name);
+                if !new_account_name.is_empty()
+                {
+                    new_account_name_to_use = new_account_name;
+                }
             }
 
-            user_lending_account.lending_user_account_added = true;
+            initialize_lending_user_account(
+                lending_user_account,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                new_account_name_to_use
+            )?;
         }
         
         //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
-            lending_user_tab_account.owner = ctx.accounts.signer.key();
-            lending_user_tab_account.user_account_index = user_account_index;
-            lending_user_tab_account.token_mint_address = token_mint_address;
-            lending_user_tab_account.pyth_feed_id = token_reserve.pyth_feed_id;
-            lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
-            lending_user_tab_account.sub_market_index = sub_market_index;
-            lending_user_tab_account.user_tab_account_index = user_lending_account.tab_account_count;
-            lending_user_tab_account.user_tab_account_added = true;
-
-            user_lending_account.tab_account_count += 1;
-
-            msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
+            initialize_lending_user_tab_account(
+                lending_user_account,
+                lending_user_tab_account,
+                token_mint_address.key(),
+                token_reserve.pyth_feed_id,
+                sub_market_owner_address.key(),
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                true
+            )?;
         }
 
         //Initialize monthly statement account if the statement month/year has changed or brand new sub user account.
@@ -826,7 +941,11 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Deposit as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
 
-        msg!("{} deposited at token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);   
+        msg!("{} deposited at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
+        token_mint_address.key(),
+        sub_market_owner_address.key(),
+        sub_market_index);
 
         Ok(())
     }
@@ -839,8 +958,8 @@ pub mod lending_protocol
         //Account Name string must not be longer than 25 characters
         require!(account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
 
-        let user_lending_account = &mut ctx.accounts.user_lending_account;
-        user_lending_account.account_name = account_name.clone();
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
+        lending_user_account.account_name = account_name.clone();
 
         let lending_user_stats = &mut ctx.accounts.lending_user_stats;
         lending_user_stats.name_change_count += 1;
@@ -862,7 +981,7 @@ pub mod lending_protocol
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
-        let user_lending_account = &mut ctx.accounts.user_lending_account;
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
         let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
@@ -904,7 +1023,7 @@ pub mod lending_protocol
         require!(available_token_amount >= withdraw_amount as u128, LendingError::InsufficientLiquidity);
 
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
-        require!((user_lending_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
+        require!((lending_user_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
 
         //Initialize monthly statement account if the statement month/year has changed.
         if lending_user_monthly_statement_account.monthly_statement_account_added == false
@@ -931,11 +1050,12 @@ pub mod lending_protocol
             token_mint_address,
             withdraw_amount,
             Activity::Withdraw as u8,
-            time_stamp
+            time_stamp,
+            None
         )?;
 
         //Transfer Tokens Back To User ATA
-        let token_mint_key = token_mint_address.key();
+        let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
         let (_expected_pda, bump) = Pubkey::find_program_address
         (
             &[b"tokenReserve",
@@ -1017,7 +1137,11 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Withdraw as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
         
-        msg!("{} withdrew at token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
+        msg!("{} withdrew at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
+        token_mint_address.key(),
+        sub_market_owner_address.key(),
+        sub_market_index);
 
         Ok(())
     }
@@ -1033,28 +1157,26 @@ pub mod lending_protocol
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
         let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
-        let user_lending_account = &mut ctx.accounts.user_lending_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
 
         //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
         //This is for when a user is borrowing a token they have never interacted with before
         if lending_user_tab_account.user_tab_account_added == false
         {
-            lending_user_tab_account.owner = ctx.accounts.signer.key();
-            lending_user_tab_account.user_account_index = user_account_index;
-            lending_user_tab_account.token_mint_address = token_mint_address;
-            lending_user_tab_account.pyth_feed_id = token_reserve.pyth_feed_id;
-            lending_user_tab_account.sub_market_owner_address = sub_market_owner_address.key();
-            lending_user_tab_account.sub_market_index = sub_market_index;
-            lending_user_tab_account.user_tab_account_index = user_lending_account.tab_account_count;
-            
-            //If being newly initialized on a borrow, don't set added to true or increase tab count until after validation so it isn't included with validation/liquidation exposure checks
-            //lending_user_tab_account.user_tab_account_added = true;
-            //user_lending_account.tab_account_count += 1;
-
-            msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
+            initialize_lending_user_tab_account(
+                lending_user_account,
+                lending_user_tab_account,
+                token_mint_address.key(),
+                token_reserve.pyth_feed_id,
+                sub_market_owner_address.key(),
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                false //If being newly initialized on a borrow, don't set added to true or increase tab count until after validation so it isn't included with validation/liquidation exposure checks
+            )?;
         }
 
         //Initialize monthly statement account if the statement month/year has changed.
@@ -1094,7 +1216,7 @@ pub mod lending_protocol
         require!(available_token_amount >= amount as u128, LendingError::InsufficientLiquidity);
 
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
-        require!((user_lending_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
+        require!((lending_user_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
 
         //Validate Passed in User Tab Accounts and Pyth Price Update Accounts and Check Liquidation Exposure
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
@@ -1106,18 +1228,19 @@ pub mod lending_protocol
             token_mint_address,
             amount,
             Activity::Borrow as u8,
-            time_stamp
+            time_stamp,
+            None
         )?;
 
         //If lending user tab account was just initialized, set added to true and increase tab account after validation so it isn't included with the validation/liquidation calculations.
         if lending_user_tab_account.user_tab_account_added == false
         {
             lending_user_tab_account.user_tab_account_added = true;
-            user_lending_account.tab_account_count += 1;
+            lending_user_account.tab_account_count += 1;
         }
 
         //Transfer Tokens Back To User ATA
-        let token_mint_key = token_mint_address.key();
+        let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
         let (_expected_pda, bump) = Pubkey::find_program_address
         (
             &[b"tokenReserve",
@@ -1199,7 +1322,11 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Borrow as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
         
-        msg!("{} borrowed at token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
+        msg!("{} borrowed at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
+        token_mint_address.key(),
+        sub_market_owner_address.key(),
+        sub_market_index);
 
         Ok(())
     }
@@ -1353,13 +1480,321 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
   
-        msg!("{} repaid debt for token mint address: {}", ctx.accounts.signer.key(), token_reserve.token_mint_address);
+        msg!("{} repaid debt at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
+        token_mint_address.key(),
+        sub_market_owner_address.key(),
+        sub_market_index);
+        
+        Ok(())
+    }
+
+    pub fn liquidate_account(ctx: Context<LiquidateAccount>,
+        repayment_token_mint_address: Pubkey,
+        liquidation_token_mint_address: Pubkey,
+        repayment_sub_market_owner_address: Pubkey,
+        repayment_sub_market_index: u16,
+        liquidation_sub_market_owner_address: Pubkey,
+        liquidation_sub_market_index: u16,
+        liquidati_account_owner_address: Pubkey,
+        liquidati_account_index: u8,
+        liquidator_account_index: u8,
+        repayment_amount: u64,
+        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
+    ) -> Result<()>
+    {
+        let lending_stats = &mut ctx.accounts.lending_stats;
+        let repayment_token_reserve = &mut ctx.accounts.repayment_token_reserve;
+        let liquidation_token_reserve = &mut ctx.accounts.liquidation_token_reserve;
+        let repayment_sub_market = &mut ctx.accounts.repayment_sub_market;
+        let liquidation_sub_market = &mut ctx.accounts.liquidation_sub_market;
+        let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
+        let liquidati_repayment_tab_account = &mut ctx.accounts.liquidati_repayment_tab_account;
+        let liquidati_liquidation_tab_account = &mut ctx.accounts.liquidati_liquidation_tab_account;
+        let liquidati_repayment_monthly_statement_account = &mut ctx.accounts.liquidati_repayment_monthly_statement_account;
+        let liquidati_liquidation_monthly_statement_account = &mut ctx.accounts.liquidati_liquidation_monthly_statement_account;
+        let liquidator_lending_account = &mut ctx.accounts.liquidator_lending_account;
+        let liquidator_liquidation_tab_account = &mut ctx.accounts.liquidator_liquidation_tab_account;
+        let liquidator_liquidation_monthly_statement_account = &mut ctx.accounts.liquidator_liquidation_monthly_statement_account;
+        
+        let time_stamp = Clock::get()?.unix_timestamp as u64;
+
+        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
+        if liquidator_lending_account.lending_user_account_added == false
+        {
+            let mut new_account_name_to_use: String = String::from("Generic Liquidator");
+            if let Some(new_account_name) = account_name
+            {
+                if !new_account_name.is_empty()
+                {
+                    new_account_name_to_use = new_account_name;
+                }
+            }
+
+            initialize_lending_user_account(
+                liquidator_lending_account,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+                new_account_name_to_use
+            )?;
+        }
+
+        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        if liquidator_liquidation_tab_account.user_tab_account_added == false
+        {
+            initialize_lending_user_tab_account(
+                liquidator_lending_account,
+                liquidator_liquidation_tab_account,
+                liquidation_token_mint_address.key(),
+                liquidation_token_reserve.pyth_feed_id,
+                liquidation_sub_market_owner_address.key(),
+                liquidation_sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+                true
+            )?;
+        }
+
+        //Initialize monthly statement account if the statement month/year has changed or brand new sub user account.
+        if liquidator_liquidation_monthly_statement_account.monthly_statement_account_added == false
+        {
+            let lending_protocol = &ctx.accounts.lending_protocol;
+            initialize_lending_user_monthly_statement_account(
+                liquidator_liquidation_monthly_statement_account,
+                lending_protocol,
+                liquidation_token_mint_address.key(),
+                liquidation_sub_market_owner_address,
+                liquidation_sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+            )?;
+        }
+
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(repayment_token_reserve, time_stamp)?;
+        update_user_previous_interest_earned(
+            repayment_token_reserve,
+            repayment_sub_market,
+            liquidati_repayment_tab_account,
+            liquidati_repayment_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            repayment_token_reserve,
+            repayment_sub_market,
+            liquidati_repayment_tab_account,
+            liquidati_repayment_monthly_statement_account
+        )?;
+
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(liquidation_token_reserve, time_stamp)?;
+        update_user_previous_interest_earned(
+            liquidation_token_reserve,
+            liquidation_sub_market,
+            liquidati_liquidation_tab_account,
+            liquidati_liquidation_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            liquidation_token_reserve,
+            liquidation_sub_market,
+            liquidati_liquidation_tab_account,
+            liquidati_liquidation_monthly_statement_account
+        )?;
+        update_user_previous_interest_earned(
+            liquidation_token_reserve,
+            liquidation_sub_market,
+            liquidator_liquidation_tab_account,
+            liquidator_liquidation_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            liquidation_token_reserve,
+            liquidation_sub_market,
+            liquidator_liquidation_tab_account,
+            liquidator_liquidation_monthly_statement_account
+        )?;
+
+        //Multiply before dividing to help keep precision
+        let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
+        let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
+
+        //You can't repay more than 50% of a liquidati's debt position
+        require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
+
+        //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
+        require!((liquidati_lending_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
+
+        //Validate Passed in User Tab Accounts and Pyth Price Update Accounts and Check Liquidation Exposure
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+        let amount_to_be_liquidated = validate_tab_and_price_update_accounts_and_check_liquidation_exposure(
+            &mut remaining_accounts_iter,
+            liquidati_account_owner_address.key(),
+            liquidati_account_index,
+            ctx.program_id.key(),
+            repayment_token_mint_address,
+            repayment_amount,
+            Activity::Liquidate as u8,
+            time_stamp,
+            Some(liquidation_token_mint_address)
+        )?;
+ 
+        //Repay Liquidati's Debt
+        //Handle native SOL transactions
+        if liquidation_token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
+        {
+            //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
+            let cpi_accounts = system_program::Transfer
+            {
+                from: ctx.accounts.signer.to_account_info(),
+                to: ctx.accounts.repayment_token_reserve_ata.to_account_info()
+            };
+            let cpi_program = ctx.accounts.system_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            system_program::transfer(cpi_ctx, repayment_amount)?;
+
+            //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
+            let cpi_accounts = SyncNative
+            {
+                account: ctx.accounts.repayment_token_reserve_ata.to_account_info(),
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            token::sync_native(cpi_ctx)?;
+
+            //Close temporary wSOL ATA if its balance is zero
+            let user_balance_after_transfer = ctx.accounts.liquidator_repayment_ata.amount;
+            if user_balance_after_transfer == 0
+            {
+                //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
+                let cpi_accounts = CloseAccount
+                {
+                    account: ctx.accounts.liquidator_repayment_ata.to_account_info(),
+                    destination: ctx.accounts.signer.to_account_info(),
+                    authority: ctx.accounts.signer.to_account_info(),
+                };
+                let cpi_program = ctx.accounts.token_program.to_account_info();
+                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+                token::close_account(cpi_ctx)?; 
+            }
+        }
+        //Handle all other tokens
+        else
+        {
+            //Cross Program Invocation for Token Transfer
+            let cpi_accounts = Transfer
+            {
+                from: ctx.accounts.liquidator_repayment_ata.to_account_info(),
+                to: ctx.accounts.repayment_token_reserve_ata.to_account_info(),
+                authority: ctx.accounts.signer.to_account_info()
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+
+            //Transfer Tokens Into The Reserve
+            token::transfer(cpi_ctx, repayment_amount)?;  
+        }
+
+        //Update Repayment Values
+        repayment_sub_market.borrowed_amount -= repayment_amount as u128;
+        repayment_sub_market.repaid_debt_amount += repayment_amount as u128;
+        repayment_token_reserve.borrowed_amount -= repayment_amount as u128;
+        repayment_token_reserve.repaid_debt_amount += repayment_amount as u128;
+        liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
+        liquidati_repayment_tab_account.repaid_debt_amount += repayment_amount;
+        liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
+        liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
+        liquidati_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidati_repayment_tab_account.repaid_debt_amount;
+
+        //Liquidate part of the Liquidati's Collateral and Transfer it plus the 7% bonus to the Liquidator and Solvency Insurance to Token Reserve
+        //Multiply before dividing to help keep precision
+        let amount_to_be_liquidated_x_107 = amount_to_be_liquidated * 107;
+        let liquidation_amount_with_7_percent_bonus = amount_to_be_liquidated_x_107 / 100;
+
+        let decimal_scaling = 10_000; //10_000 = 100.00%
+        let amount_to_be_liquidated_x_insurance_rate = amount_to_be_liquidated * liquidation_token_reserve.solvency_insurance_fee_rate as u64;
+        let solvency_insurance_fee_amount = amount_to_be_liquidated_x_insurance_rate / decimal_scaling;
+
+        //Update Liquidation and Solvency Insurance Values
+        liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
+        liquidation_sub_market.liquidated_amount += solvency_insurance_fee_amount as u128;
+        liquidation_token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
+        liquidation_token_reserve.liquidated_amount += solvency_insurance_fee_amount as u128;
+        liquidati_liquidation_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_tab_account.deposited_amount -= solvency_insurance_fee_amount;
+        liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_tab_account.liquidated_amount += solvency_insurance_fee_amount;
+        liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_tab_account.solvency_insurance_fees_generated_amount += solvency_insurance_fee_amount;
+        liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_monthly_statement_account.snap_shot_liquidated_amount = liquidati_liquidation_tab_account.liquidated_amount;
+        liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
+        liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_monthly_statement_account.monthly_solvency_insurance_fees_generated_amount += solvency_insurance_fee_amount;
+        liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
+        liquidator_liquidation_monthly_statement_account.snap_shot_solvency_insurance_fees_generated_amount = liquidator_liquidation_tab_account.solvency_insurance_fees_generated_amount;
+        liquidator_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidator_liquidation_tab_account.deposited_amount;
+        
+        //Update Stat Listener
+        lending_stats.liquidations += 1;
+        
+        //Update Repayment Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
+        update_token_reserve_rates(repayment_token_reserve)?;
+        repayment_sub_market.supply_interest_change_index = repayment_token_reserve.supply_interest_change_index;
+        repayment_sub_market.borrow_interest_change_index = repayment_token_reserve.borrow_interest_change_index;
+        liquidati_repayment_tab_account.supply_interest_change_index = repayment_token_reserve.supply_interest_change_index;
+        liquidati_repayment_tab_account.borrow_interest_change_index = repayment_token_reserve.borrow_interest_change_index;
+        liquidati_repayment_tab_account.interest_change_last_updated_time_stamp = time_stamp;
+
+        //Update Liquidation Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
+        update_token_reserve_rates(liquidation_token_reserve)?;
+        liquidation_sub_market.supply_interest_change_index = liquidation_token_reserve.supply_interest_change_index;
+        liquidation_sub_market.borrow_interest_change_index = liquidation_token_reserve.borrow_interest_change_index;
+        liquidati_liquidation_tab_account.supply_interest_change_index = liquidation_token_reserve.supply_interest_change_index;
+        liquidati_liquidation_tab_account.borrow_interest_change_index = liquidation_token_reserve.borrow_interest_change_index;
+        liquidati_liquidation_tab_account.interest_change_last_updated_time_stamp = time_stamp;
+        liquidator_liquidation_tab_account.supply_interest_change_index = liquidation_token_reserve.supply_interest_change_index;
+        liquidator_liquidation_tab_account.borrow_interest_change_index = liquidation_token_reserve.borrow_interest_change_index;
+        liquidator_liquidation_tab_account.interest_change_last_updated_time_stamp = time_stamp;
+
+        //Update last activity on accounts
+        repayment_token_reserve.last_lending_activity_amount = repayment_amount;
+        repayment_token_reserve.last_lending_activity_type = Activity::Repay as u8;
+        repayment_token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
+        liquidation_token_reserve.last_lending_activity_amount = repayment_amount;
+        liquidation_token_reserve.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidation_token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
+        repayment_sub_market.last_lending_activity_amount = repayment_amount;
+        repayment_sub_market.last_lending_activity_type = Activity::Repay as u8;
+        repayment_sub_market.last_lending_activity_time_stamp = time_stamp;
+        liquidation_sub_market.last_lending_activity_amount = repayment_amount;
+        liquidation_sub_market.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidation_sub_market.last_lending_activity_time_stamp = time_stamp;
+        liquidati_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidati_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
+        liquidati_repayment_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+        
+        msg!("{} liquidated {}", ctx.accounts.signer.key(), liquidati_account_owner_address.key());
+
+        msg!("Repaid debt at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        repayment_token_mint_address.key(),
+        repayment_sub_market_owner_address.key(),
+        repayment_sub_market_index);
+
+        msg!("Liquidated collateral at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        liquidation_token_mint_address.key(),
+        liquidation_sub_market_owner_address.key(),
+        liquidation_sub_market_index);
 
         Ok(())
     }
 
     //Updates the interest earned and accrued for a given user's tab account. The last calculation must be no older than 120 seconds when doing withdrawals or borrows and this function helps refresh them.
-    //You have to call it on all user tab accounts to get them all updated
+    //You have to call it on all user tab accounts to get them all updated for validation to pass in the withdraw, borrow, or liquidate functions.
     pub fn update_user_snap_shot(ctx: Context<UpdateUserSnapShot>,
         token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
@@ -1421,9 +1856,13 @@ pub mod lending_protocol
         //Update last activity on accounts
         token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
 
-        msg!("Snap Shots updated for TokenMintAddress: {}, SubMarketOwner: {}, SubMarketIndex: {}", token_reserve.token_mint_address.key(), sub_market.owner.key(), sub_market_index);
-        msg!("UserAddress: {}, UserAccountIndex: {}", user_account_owner_address, user_account_index);
-        msg!("Function Caller: {}", ctx.accounts.signer.key());
+        msg!("{} updated SnapShots at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
+        token_mint_address.key(),
+        sub_market_owner_address.key(),
+        sub_market_index);
+
+        msg!("UpdatedUserAddress: {}, UpdatedUserAccountIndex: {}", user_account_owner_address, user_account_index);
 
         Ok(())
     }
@@ -1432,7 +1871,8 @@ pub mod lending_protocol
         token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
-        user_account_index: u8
+        user_account_index: u8,
+        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
     ) -> Result<()> 
     {
         let sub_market = &mut ctx.accounts.sub_market;
@@ -1441,9 +1881,46 @@ pub mod lending_protocol
 
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
         let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
+
+        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
+        if lending_user_account.lending_user_account_added == false
+        {
+            let mut new_account_name_to_use: String = String::from("Generic Sub Fee Claimer");
+            if let Some(new_account_name) = account_name
+            {
+                if !new_account_name.is_empty()
+                {
+                    new_account_name_to_use = new_account_name;
+                }
+            }
+
+            initialize_lending_user_account(
+                lending_user_account,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                new_account_name_to_use
+            )?;
+        }
+
+        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        if lending_user_tab_account.user_tab_account_added == false
+        {
+            initialize_lending_user_tab_account(
+                lending_user_account,
+                lending_user_tab_account,
+                token_mint_address.key(),
+                token_reserve.pyth_feed_id,
+                sub_market_owner_address.key(),
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                true
+            )?;
+        }
 
         //Initialize monthly statement account if the statement month/year has changed.
         if lending_user_monthly_statement_account.monthly_statement_account_added == false
@@ -1478,13 +1955,15 @@ pub mod lending_protocol
         )?;
 
         //Collect Fees
-        lending_user_tab_account.deposited_amount += sub_market.uncollected_fees_amount as u64;
-        lending_user_tab_account.fees_collected_amount += sub_market.uncollected_fees_amount as u64;
-        lending_user_monthly_statement_account.monthly_fees_collected_amount += sub_market.uncollected_fees_amount as u64;
+        token_reserve.deposited_amount += sub_market.uncollected_sub_market_fees_amount;
+        sub_market.deposited_amount += sub_market.uncollected_sub_market_fees_amount;
+        lending_user_tab_account.deposited_amount += sub_market.uncollected_sub_market_fees_amount as u64;
+        lending_user_tab_account.sub_market_fees_collected_amount += sub_market.uncollected_sub_market_fees_amount as u64;
+        lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += sub_market.uncollected_sub_market_fees_amount as u64;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
-        lending_user_monthly_statement_account.snap_shot_fees_collected_amount = lending_user_tab_account.fees_collected_amount;
+        lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = lending_user_tab_account.sub_market_fees_collected_amount;
 
-        sub_market.uncollected_fees_amount = 0;
+        sub_market.uncollected_sub_market_fees_amount = 0;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
@@ -1495,157 +1974,303 @@ pub mod lending_protocol
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Stat Listener
-        lending_stats.fee_collections += 1;
+        lending_stats.sub_market_fee_collections += 1;
 
         //Update last activity on accounts
         token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
 
-        msg!("Fees Collected for TokenReserve: {}, SubMarketOwner: {}, SubMarketIndex: {}, FeeCollector: {}, FeeCollectorAccountIndex: {}",
+        msg!("{} Collected SubMarket Fees at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
         token_mint_address.key(),
         sub_market_owner_address.key(),
-        sub_market_index,
-        ctx.accounts.signer.key(),
-        user_account_index);
+        sub_market_index);
+
+        msg!("FeeCollectorAccountIndex: {}", user_account_index);
 
         Ok(())
     }
 
-    pub fn liquidate_account(ctx: Context<LiquidateAccount>,
-        _repayment_token_mint_address: Pubkey,
-        liquidation_token_mint_address: Pubkey,
-        _repayment_sub_market_owner_address: Pubkey,
-        _repayment_sub_market_index: u16,
-        liquidation_sub_market_owner_address: Pubkey,
-        liquidation_sub_market_index: u16,
-        liquidati_account_owner_address: Pubkey,
-        liquidati_account_index: u8,
-        liquidator_account_index: u8,
-        repayment_amount: u64,
+    pub fn claim_sub_market_fees_and_deposit_in_different_sub_market(ctx: Context<ClaimSubMarketFeesAndDepositInDifferentSubMarket>,
+        token_mint_address: Pubkey,
+        initial_sub_market_owner_address: Pubkey,
+        initial_sub_market_index: u16,
+        destination_sub_market_owner_address: Pubkey,
+        destination_sub_market_index: u16,
+        user_account_index: u8,
         account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
-    ) -> Result<()>
+    ) -> Result<()> 
     {
+        let initial_sub_market = &mut ctx.accounts.initial_sub_market;
+        //Only the Fee Collector can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), initial_sub_market.fee_collector_address.key(), AuthorizationError::NotFeeCollector);
+                
+        //Duplicate SubMarket Detected
+        //When accounts are the exact same, it can lead to unexpected behavior where only one of them gets updated and would require extra steps
+        require!(initial_sub_market_owner_address.key() != destination_sub_market_owner_address.key() ||
+        initial_sub_market_index != destination_sub_market_index, LendingError::DuplicateSubMarket);
+
         let lending_stats = &mut ctx.accounts.lending_stats;
-        let repayment_token_reserve = &mut ctx.accounts.repayment_token_reserve;
-        let liquidation_token_reserve = &mut ctx.accounts.liquidation_token_reserve;
-        let repayment_sub_market = &mut ctx.accounts.repayment_sub_market;
-        let liquidation_sub_market = &mut ctx.accounts.liquidation_sub_market;
-        let liquidati_repayment_tab_account = &mut ctx.accounts.liquidati_repayment_tab_account;
-        let liquidati_liquidation_tab_account = &mut ctx.accounts.liquidati_liquidation_tab_account;
-        let liquidati_repayment_monthly_statement_account = &mut ctx.accounts.liquidati_repayment_monthly_statement_account;
-        let liquidati_liquidation_monthly_statement_account = &mut ctx.accounts.liquidati_liquidation_monthly_statement_account;
-        let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
-        let liquidator_liquidation_tab_account = &mut ctx.accounts.liquidator_liquidation_tab_account;
-        let liquidator_liquidation_monthly_statement_account = &mut ctx.accounts.liquidator_liquidation_monthly_statement_account;
-        let liquidator_lending_account = &mut ctx.accounts.liquidator_lending_account;
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        let destination_sub_market = &mut ctx.accounts.destination_sub_market;
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
+        let initial_lending_user_tab_account = &mut ctx.accounts.initial_lending_user_tab_account;
+        let destination_lending_user_tab_account = &mut ctx.accounts.destination_lending_user_tab_account;
+        let initial_lending_user_monthly_statement_account = &mut ctx.accounts.initial_lending_user_monthly_statement_account;
+        let destination_lending_user_monthly_statement_account = &mut ctx.accounts.destination_lending_user_monthly_statement_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
 
-        //Multiply before dividing to help keep precision
-        let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
-        let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
-
-        //You can't repay more than 50% of a liquidati's debt position
-        require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
-
-        //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
-        require!((liquidati_lending_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
-
-        //Validate Passed in User Tab Accounts and Pyth Price Update Accounts and Check Liquidation Exposure
-        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
-        validate_tab_and_price_update_accounts_and_check_liquidation_exposure(
-            &mut remaining_accounts_iter,
-            liquidati_account_owner_address.key(),
-            liquidati_account_index,
-            ctx.program_id.key(),
-            liquidation_token_mint_address,
-            repayment_amount,
-            Activity::Liquidate as u8,
-            time_stamp
-        )?;
-
-        let test_amount_to_be_liquidated: u64 = 64;
-
         //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
-        if liquidator_lending_account.lending_user_account_added == false
+        if lending_user_account.lending_user_account_added == false
         {
-            liquidator_lending_account.owner = ctx.accounts.signer.key();
-            liquidator_lending_account.user_account_index = liquidator_account_index;
-
+            let mut new_account_name_to_use: String = String::from("Generic Fee Claimer");
             if let Some(new_account_name) = account_name
             {
-                //Account Name string must not be longer than 25 characters
-                require!(new_account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
-
-                liquidator_lending_account.account_name = new_account_name.clone();
-
-                msg!("Created Lending User Account Named: {}", new_account_name);
+                if !new_account_name.is_empty()
+                {
+                    new_account_name_to_use = new_account_name;
+                }
             }
 
-            liquidator_lending_account.lending_user_account_added = true;
+            initialize_lending_user_account(
+                lending_user_account,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                new_account_name_to_use
+            )?;
         }
 
         //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
-        if liquidator_liquidation_tab_account.user_tab_account_added == false
+        if initial_lending_user_tab_account.user_tab_account_added == false
         {
-            liquidator_liquidation_tab_account.owner = ctx.accounts.signer.key();
-            liquidator_liquidation_tab_account.user_account_index = liquidator_account_index;
-            liquidator_liquidation_tab_account.token_mint_address = liquidation_token_mint_address;
-            liquidator_liquidation_tab_account.pyth_feed_id = liquidation_token_reserve.pyth_feed_id;
-            liquidator_liquidation_tab_account.sub_market_owner_address = liquidation_sub_market_owner_address.key();
-            liquidator_liquidation_tab_account.sub_market_index = liquidation_sub_market_index;
-            liquidator_liquidation_tab_account.user_tab_account_index = liquidator_lending_account.tab_account_count;
-            liquidator_liquidation_tab_account.user_tab_account_added = true;
-
-            liquidator_lending_account.tab_account_count += 1;
-
-            msg!("Created Lending User Tab Account Indexed At: {}", liquidator_liquidation_tab_account.user_tab_account_index);
+            initialize_lending_user_tab_account(
+                lending_user_account,
+                initial_lending_user_tab_account,
+                token_mint_address.key(),
+                token_reserve.pyth_feed_id,
+                initial_sub_market_owner_address,
+                initial_sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                true
+            )?;
+        }
+        if destination_lending_user_tab_account.user_tab_account_added == false
+        {
+            initialize_lending_user_tab_account(
+                lending_user_account,
+                destination_lending_user_tab_account,
+                token_mint_address.key(),
+                token_reserve.pyth_feed_id,
+                destination_sub_market_owner_address,
+                destination_sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                true
+            )?;
         }
 
-        //Initialize monthly statement account if the statement month/year has changed or brand new sub user account.
-        if liquidator_liquidation_monthly_statement_account.monthly_statement_account_added == false
+        //Initialize monthly statement account if the statement month/year has changed.
+        if initial_lending_user_monthly_statement_account.monthly_statement_account_added == false
         {
             let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_monthly_statement_account(
-                liquidator_liquidation_monthly_statement_account,
+                initial_lending_user_monthly_statement_account,
                 lending_protocol,
-                liquidation_token_mint_address.key(),
-                liquidation_sub_market_owner_address.key(),
-                liquidation_sub_market_index,
+                token_mint_address.key(),
+                initial_sub_market_owner_address,
+                initial_sub_market_index,
                 ctx.accounts.signer.key(),
-                liquidator_account_index,
+                user_account_index,
             )?;
         }
- 
-        //Repay Liquidati's Debt
-        //Handle native SOL transactions
-        if liquidation_token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
+        if destination_lending_user_monthly_statement_account.monthly_statement_account_added == false
         {
-            //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
-            let cpi_accounts = system_program::Transfer
-            {
-                from: ctx.accounts.signer.to_account_info(),
-                to: ctx.accounts.repayment_token_reserve_ata.to_account_info()
-            };
-            let cpi_program = ctx.accounts.system_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            system_program::transfer(cpi_ctx, repayment_amount)?;
+            let lending_protocol = &ctx.accounts.lending_protocol;
+            initialize_lending_user_monthly_statement_account(
+                destination_lending_user_monthly_statement_account,
+                lending_protocol,
+                token_mint_address.key(),
+                destination_sub_market_owner_address,
+                destination_sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+            )?;
+        }
 
-            //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
-            let cpi_accounts = SyncNative
-            {
-                account: ctx.accounts.repayment_token_reserve_ata.to_account_info(),
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token::sync_native(cpi_ctx)?;
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp)?;
 
-            //Close temporary wSOL ATA if its balance is zero
-            let user_balance_after_transfer = ctx.accounts.liquidator_repayment_ata.amount;
-            if user_balance_after_transfer == 0
+        update_user_previous_interest_earned(
+            token_reserve,
+            destination_sub_market,
+            destination_lending_user_tab_account,
+            destination_lending_user_monthly_statement_account
+        )?;
+
+        update_user_previous_interest_accrued(
+            token_reserve,
+            destination_sub_market,
+            destination_lending_user_tab_account,
+            destination_lending_user_monthly_statement_account
+        )?;
+
+        //Collect Fees
+        token_reserve.deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount;
+        destination_sub_market.deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount;
+        destination_lending_user_tab_account.deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        initial_lending_user_tab_account.sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        initial_lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        initial_lending_user_monthly_statement_account.monthly_withdrawal_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a withdrawal from initial submarket. The fee collection and withdrawal cancel each other out, so no need to update snap shot balance for initial submarket
+        initial_lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = initial_lending_user_tab_account.sub_market_fees_collected_amount;
+        destination_lending_user_monthly_statement_account.monthly_deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a deposit into destination submarket.
+        destination_lending_user_monthly_statement_account.snap_shot_balance_amount = destination_lending_user_tab_account.deposited_amount;
+        
+        initial_sub_market.uncollected_sub_market_fees_amount = 0;
+
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
+        update_token_reserve_rates(token_reserve)?;
+        destination_sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        destination_sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        destination_lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        destination_lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        destination_lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
+
+        //Stat Listener
+        lending_stats.sub_market_fee_collections += 1;
+
+        //Update last activity on accounts
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
+
+        msg!("{} Collected SubMarket Fees at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
+        token_mint_address.key(),
+        initial_sub_market_owner_address.key(),
+        initial_sub_market_index);
+
+        msg!("FeeCollectorAccountIndex: {}", user_account_index);
+
+        msg!("Fees Moved to DestinationSubMarketOwner: {}, DestinationSubMarketIndex: {}", destination_sub_market_owner_address.key(), destination_sub_market_index);
+
+        Ok(())
+    }
+
+    pub fn claim_solvency_insurance_fees(ctx: Context<ClaimSolvencyInsuranceFees>,
+        token_mint_address: Pubkey,
+        sub_market_owner_address: Pubkey,
+        sub_market_index: u16,
+        user_account_index: u8,
+        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
+    ) -> Result<()> 
+    {
+        let treasurer = &ctx.accounts.treasurer;
+        //Only the Treasurer can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), treasurer.address.key(), AuthorizationError::NotTreasurer);
+
+        let lending_stats = &mut ctx.accounts.lending_stats;
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
+        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
+        let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
+
+        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
+        if lending_user_account.lending_user_account_added == false
+        {
+            let mut new_account_name_to_use: String = String::from("Generic Ins Fee Claimer");
+            if let Some(new_account_name) = account_name
             {
-                //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
+                if !new_account_name.is_empty()
+                {
+                    new_account_name_to_use = new_account_name;
+                }
+            }
+
+            initialize_lending_user_account(
+                lending_user_account,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                new_account_name_to_use
+            )?;
+        }
+
+        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        if lending_user_tab_account.user_tab_account_added == false
+        {
+            initialize_lending_user_tab_account(
+                lending_user_account,
+                lending_user_tab_account,
+                token_mint_address.key(),
+                token_reserve.pyth_feed_id,
+                sub_market_owner_address.key(),
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+                true
+            )?;
+        }
+
+        //Initialize monthly statement account if the statement month/year has changed.
+        if lending_user_monthly_statement_account.monthly_statement_account_added == false
+        {
+            let lending_protocol = &ctx.accounts.lending_protocol;
+            initialize_lending_user_monthly_statement_account(
+                lending_user_monthly_statement_account,
+                lending_protocol,
+                token_mint_address.key(),
+                sub_market_owner_address.key(),
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                user_account_index,
+            )?;
+        }
+
+        //Transfer Tokens To Treasurer ATA
+        let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
+        let (_expected_pda, bump) = Pubkey::find_program_address
+        (
+            &[b"tokenReserve",
+            token_mint_address.key().as_ref()],
+            &ctx.program_id,
+        );
+
+        let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_accounts = Transfer
+        {
+            from: ctx.accounts.token_reserve_ata.to_account_info(),
+            to: ctx.accounts.treasurer_ata.to_account_info(),
+            authority: token_reserve.to_account_info()
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+
+        //Transfer Tokens Back to the User
+        let amount = token_reserve.uncollected_solvency_insurance_fees_amount as u64;
+        token::transfer(cpi_ctx, amount)?;
+
+        //Handle wSOL Token unwrap
+        if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
+        {
+            let user_balance_after_transfer = ctx.accounts.treasurer_ata.amount;
+
+            if user_balance_after_transfer > amount
+            {
+                //Since User already had wrapped SOL, only unwrapped the amount withdrawn
+                let cpi_accounts = system_program::Transfer
+                {
+                    from: ctx.accounts.treasurer_ata.to_account_info(),
+                    to: ctx.accounts.signer.to_account_info()
+                };
+                let cpi_program = ctx.accounts.system_program.to_account_info();
+                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+                system_program::transfer(cpi_ctx, amount)?;
+            }
+            else
+            {
+                //Since the User has no other wrapped SOL, unwrap it all, send it to the User, and close the temporary wrapped SOL account
                 let cpi_accounts = CloseAccount
                 {
-                    account: ctx.accounts.liquidator_repayment_ata.to_account_info(),
+                    account: ctx.accounts.treasurer_ata.to_account_info(),
                     destination: ctx.accounts.signer.to_account_info(),
                     authority: ctx.accounts.signer.to_account_info(),
                 };
@@ -1654,86 +2279,24 @@ pub mod lending_protocol
                 token::close_account(cpi_ctx)?; 
             }
         }
-        //Handle all other tokens
-        else
-        {
-            //Cross Program Invocation for Token Transfer
-            let cpi_accounts = Transfer
-            {
-                from: ctx.accounts.liquidator_repayment_ata.to_account_info(),
-                to: ctx.accounts.repayment_token_reserve_ata.to_account_info(),
-                authority: ctx.accounts.signer.to_account_info()
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
-            //Transfer Tokens Into The Reserve
-            token::transfer(cpi_ctx, repayment_amount)?;  
-        }
+        //Record Solvency Insurance Fee Collection
+        lending_user_tab_account.solvency_insurance_fees_collected_amount += amount;
+        lending_user_monthly_statement_account.monthly_solvency_insurance_fees_collected_amount += amount;
+        lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.solvency_insurance_fees_collected_amount;
 
-        //Update Repayment Values and Stat Listener
-        repayment_sub_market.borrowed_amount -= repayment_amount as u128;
-        repayment_sub_market.repaid_debt_amount += repayment_amount as u128;
-        repayment_token_reserve.borrowed_amount -= repayment_amount as u128;
-        repayment_token_reserve.repaid_debt_amount += repayment_amount as u128;
-        liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
-        liquidati_repayment_tab_account.repaid_debt_amount += repayment_amount;
-        liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
-        liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
-        liquidati_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidati_repayment_tab_account.repaid_debt_amount;
+        token_reserve.uncollected_solvency_insurance_fees_amount = 0;
 
-        //Liquidate part of the Liquidati's Collateral and Transfer it plus the 7% bonus to the Liquidator
-        //Multiply before dividing to help keep precision
-        let test_amount_to_be_liquidated_x_107 = test_amount_to_be_liquidated * 107;
-        let liquidation_amount_with_7_percent_bonus = test_amount_to_be_liquidated_x_107 / 100;
+        //Stat Listener
+        lending_stats.solvency_insurance_fee_collections += 1;
 
-        //Update Liquidation Values
-        liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
-        liquidation_token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
-        liquidati_liquidation_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus;
-        liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
-        liquidati_liquidation_monthly_statement_account.snap_shot_liquidated_amount = liquidati_liquidation_tab_account.liquidated_amount;
-        liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
-        
-        //Update Stat Listener
-        lending_stats.liquidations += 1;
-        
-        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
-        /*update_token_reserve_rates(deposit_token_reserve)?;
-        deposit_sub_market.supply_interest_change_index = deposit_token_reserve.supply_interest_change_index;
-        deposit_sub_market.borrow_interest_change_index = deposit_token_reserve.borrow_interest_change_index;
-        deposit_lending_user_tab_account.supply_interest_change_index = deposit_token_reserve.supply_interest_change_index;
-        deposit_lending_user_tab_account.borrow_interest_change_index = deposit_token_reserve.borrow_interest_change_index;
-        deposit_lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;*/
+        msg!("{} Collected Solvency Insurance Fees at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.signer.key(),
+        token_mint_address.key(),
+        sub_market_owner_address.key(),
+        sub_market_index);
 
-        //Update last activity on accounts
-        repayment_token_reserve.last_lending_activity_amount = repayment_amount;
-        repayment_token_reserve.last_lending_activity_type = Activity::Repay as u8;
-        repayment_token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        liquidation_token_reserve.last_lending_activity_amount = repayment_amount;
-        liquidation_token_reserve.last_lending_activity_type = Activity::Liquidate as u8;
-        liquidation_token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        repayment_sub_market.last_lending_activity_amount = repayment_amount;
-        repayment_sub_market.last_lending_activity_type = Activity::Repay as u8;
-        repayment_sub_market.last_lending_activity_time_stamp = time_stamp;
-        liquidation_sub_market.last_lending_activity_amount = repayment_amount;
-        liquidation_sub_market.last_lending_activity_type = Activity::Liquidate as u8;
-        liquidation_sub_market.last_lending_activity_time_stamp = time_stamp;
-        liquidati_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
-        liquidati_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
-        liquidati_repayment_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
-        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
-        liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
-        liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
-        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
-        liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
-        liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
-        
-        msg!("{} liquidated {}", ctx.accounts.signer.key(), liquidati_account_owner_address.key());
+        msg!("FeeCollectorAccountIndex: {}", user_account_index);
 
         Ok(())
     }
@@ -1758,6 +2321,14 @@ pub struct InitializeLendingProtocol<'info>
         bump,
         space = size_of::<LendingProtocolCEO>() + 8)]
     pub ceo: Account<'info, LendingProtocolCEO>,
+
+    #[account(
+        init, 
+        payer = signer,
+        seeds = [b"lendingProtocolTreasurer".as_ref()],
+        bump,
+        space = size_of::<LendingProtocolTreasurer>() + 8)]
+    pub treasurer: Account<'info, LendingProtocolTreasurer>,
 
     #[account(
         init, 
@@ -1810,6 +2381,19 @@ pub struct PassOnLendingProtocolCEO<'info>
     pub system_program: Program<'info, System>
 }
 
+#[derive(Accounts)]
+pub struct PassOnLendingProtocolTreasurer<'info> 
+{
+    #[account(
+        mut,
+        seeds = [b"lendingProtocolTreasurer".as_ref()],
+        bump)]
+    pub treasurer: Account<'info, LendingProtocolTreasurer>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
 
 #[derive(Accounts)]
 pub struct UpdateCurrentStatementMonthAndYear<'info> 
@@ -1958,7 +2542,7 @@ pub struct DepositTokens<'info>
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Account<'info, LendingStats>,
+    pub lending_stats: Box<Account<'info, LendingStats>>,
 
     #[account(
         mut,
@@ -1978,7 +2562,7 @@ pub struct DepositTokens<'info>
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
         bump, 
         space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
-    pub user_lending_account: Account<'info, LendingUserAccount>,
+    pub lending_user_account: Account<'info, LendingUserAccount>,
 
     #[account(
         init_if_needed,
@@ -2047,7 +2631,7 @@ pub struct EditLendingUserAccountName<'info>
         mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub user_lending_account: Account<'info, LendingUserAccount>,
+    pub lending_user_account: Account<'info, LendingUserAccount>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -2085,7 +2669,7 @@ pub struct WithdrawTokens<'info>
         mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub user_lending_account: Account<'info, LendingUserAccount>,
+    pub lending_user_account: Account<'info, LendingUserAccount>,
 
     #[account(
         mut,
@@ -2168,7 +2752,7 @@ pub struct BorrowTokens<'info>
         mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub user_lending_account: Account<'info, LendingUserAccount>,
+    pub lending_user_account: Account<'info, LendingUserAccount>,
 
     #[account(
         init_if_needed,
@@ -2300,128 +2884,6 @@ pub struct RepayTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_owner_address: Pubkey, user_account_index: u8)]
-pub struct UpdateUserSnapShot<'info> 
-{
-    #[account(
-        seeds = [b"lendingProtocol".as_ref()],
-        bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
-
-    #[account(
-        mut, 
-        seeds = [b"lendingStats".as_ref()],
-        bump)]
-    pub lending_stats: Account<'info, LendingStats>,
-
-    #[account(
-        mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
-        bump)]
-    pub token_reserve: Account<'info, TokenReserve>,
-
-    #[account(
-        mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
-        bump)]
-    pub sub_market: Account<'info, SubMarket>,
-
-    #[account(
-        mut,
-        seeds = [b"lendingUserTabAccount".as_ref(),
-        token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
-        sub_market_index.to_le_bytes().as_ref(),
-        signer.key().as_ref(),
-        user_account_index.to_le_bytes().as_ref()], 
-        bump)]
-    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
-
-    #[account(
-        init_if_needed,
-        payer = signer,
-        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
-        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
-        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
-        sub_market_index.to_le_bytes().as_ref(),
-        user_account_owner_address.key().as_ref(),
-        user_account_index.to_le_bytes().as_ref()], 
-        bump, 
-        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
-    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
-
-    #[account(mut)]
-    pub signer: Signer<'info>,
-    pub system_program: Program<'info, System>
-}
-
-#[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
-pub struct ClaimSubMarketFees<'info> 
-{
-    #[account(
-        seeds = [b"lendingProtocol".as_ref()],
-        bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
-
-    #[account(
-        mut, 
-        seeds = [b"lendingStats".as_ref()],
-        bump)]
-    pub lending_stats: Account<'info, LendingStats>,
-
-    #[account(
-        mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
-        bump)]
-    pub token_reserve: Account<'info, TokenReserve>,
-
-    #[account(
-        mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
-        bump)]
-    pub sub_market: Account<'info, SubMarket>,
-
-    #[account(
-        mut,
-        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
-        bump)]
-    pub user_lending_account: Account<'info, LendingUserAccount>,
-
-    #[account(
-        mut,
-        seeds = [b"lendingUserTabAccount".as_ref(),
-        token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
-        sub_market_index.to_le_bytes().as_ref(),
-        signer.key().as_ref(),
-        user_account_index.to_le_bytes().as_ref()], 
-        bump)]
-    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
-
-    #[account(
-        init_if_needed,
-        payer = signer,
-        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
-        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
-        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
-        sub_market_index.to_le_bytes().as_ref(),
-        signer.key().as_ref(),
-        user_account_index.to_le_bytes().as_ref()], 
-        bump, 
-        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
-    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
-
-    #[account(mut)]
-    pub signer: Signer<'info>,
-    pub system_program: Program<'info, System>
-}
-
-#[derive(Accounts)]
 #[instruction(repayment_token_mint_address: Pubkey,
     liquidation_token_mint_address: Pubkey,
     repayment_sub_market_owner_address: Pubkey,
@@ -2482,6 +2944,7 @@ pub struct LiquidateAccount<'info>
         space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
     pub liquidator_lending_account: Box<Account<'info, LendingUserAccount>>,
 
+    //This account can be updated with the UpdateUserSnapShot function if interest calculations are older than 120 seconds
     #[account(
         mut,
         seeds = [b"lendingUserTabAccount".as_ref(),
@@ -2493,6 +2956,7 @@ pub struct LiquidateAccount<'info>
         bump)]
     pub liquidati_repayment_tab_account: Box<Account<'info, LendingUserTabAccount>>,
 
+    //This account can be updated with the UpdateUserSnapShot function if interest calculations are older than 120 seconds
     #[account(
         mut,
         seeds = [b"lendingUserTabAccount".as_ref(),
@@ -2584,9 +3048,336 @@ pub struct LiquidateAccount<'info>
     pub system_program: Program<'info, System>
 }
 
+#[derive(Accounts)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_owner_address: Pubkey, user_account_index: u8)]
+pub struct UpdateUserSnapShot<'info> 
+{
+    #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        mut, 
+        seeds = [b"lendingStats".as_ref()],
+        bump)]
+    pub lending_stats: Account<'info, LendingStats>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        bump)]
+    pub token_reserve: Account<'info, TokenReserve>,
+
+    #[account(
+        mut,
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub sub_market: Account<'info, SubMarket>,
+
+    #[account(
+        mut,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        user_account_owner_address.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+pub struct ClaimSubMarketFees<'info> 
+{
+    #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        mut, 
+        seeds = [b"lendingStats".as_ref()],
+        bump)]
+    pub lending_stats: Account<'info, LendingStats>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        bump)]
+    pub token_reserve: Account<'info, TokenReserve>,
+
+    #[account(
+        mut,
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub sub_market: Account<'info, SubMarket>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
+        bump, 
+        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+    pub lending_user_account: Account<'info, LendingUserAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+#[instruction(token_mint_address: Pubkey,
+    initial_sub_market_owner_address: Pubkey,
+    initial_sub_market_index: u16,
+    destination_sub_market_owner_address: Pubkey,
+    destination_sub_market_index: u16,
+    user_account_index: u8)]
+pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info> 
+{
+    #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        mut, 
+        seeds = [b"lendingStats".as_ref()],
+        bump)]
+    pub lending_stats: Account<'info, LendingStats>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()],
+        bump)]
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
+
+    #[account(
+        mut,
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), initial_sub_market_owner_address.key().as_ref(), initial_sub_market_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub initial_sub_market: Box<Account<'info, SubMarket>>,
+
+    #[account(
+        mut,
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), destination_sub_market_owner_address.key().as_ref(), destination_sub_market_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub destination_sub_market: Box<Account<'info, SubMarket>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
+        bump, 
+        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+    pub lending_user_account: Account<'info, LendingUserAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint_address.key().as_ref(),
+        initial_sub_market_owner_address.key().as_ref(),
+        initial_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub initial_lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint_address.key().as_ref(),
+        destination_sub_market_owner_address.key().as_ref(),
+        destination_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub destination_lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint_address.key().as_ref(),
+        initial_sub_market_owner_address.key().as_ref(),
+        initial_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub initial_lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint_address.key().as_ref(),
+        destination_sub_market_owner_address.key().as_ref(),
+        destination_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub destination_lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+pub struct ClaimSolvencyInsuranceFees<'info> 
+{
+    #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        mut, 
+        seeds = [b"lendingStats".as_ref()],
+        bump)]
+    pub lending_stats: Box<Account<'info, LendingStats>>,
+
+    #[account(
+        seeds = [b"lendingProtocolTreasurer".as_ref()],
+        bump)]
+    pub treasurer: Account<'info, LendingProtocolTreasurer>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        bump)]
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
+        bump, 
+        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+    pub lending_user_account: Account<'info, LendingUserAccount>,
+
+    //The SubMarket doesn't matter that much here since all of the fees are collected from the Token Reserve, but a SubMarket is still neccessary for using the tab account
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+
+    //The SubMarket doesn't matter that much here since all of the fees are collected from the Token Reserve, but a SubMarket is still neccessary for using the monthly statements
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint_address.key().as_ref(),
+        sub_market_owner_address.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        user_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+
+    #[account(
+        init_if_needed, //SOL has to be claimed as wSOL then converted to SOL for Treasurer. This function also closes wSOL ata if it is empty.
+        payer = signer,
+        associated_token::mint = mint,
+        associated_token::authority = signer
+    )]
+    pub treasurer_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = token_mint_address,
+        associated_token::authority = token_reserve
+    )]
+    pub token_reserve_ata: Account<'info, TokenAccount>,
+
+    pub mint: Account<'info, Mint>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
 //Accounts
 #[account]
 pub struct LendingProtocolCEO
+{
+    pub address: Pubkey
+}
+
+#[account]
+pub struct LendingProtocolTreasurer
 {
     pub address: Pubkey
 }
@@ -2621,7 +3412,8 @@ pub struct LendingStats
     pub repayments: u128,
     pub liquidations: u128,
     pub snap_shots: u128,
-    pub fee_collections: u128,
+    pub sub_market_fee_collections: u128,
+    pub solvency_insurance_fee_collections: u64,
     pub collateral_swaps: u128
 }
 
@@ -2648,7 +3440,10 @@ pub struct TokenReserve
     pub borrow_interest_change_index: u128, //Starts at 1 (in fixed point notation) and increases as Borrow User interest is accrued for Supply Users so that it can be proportionally distributed to Borrow Users
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
-    pub fees_generated_amount: u128,
+    pub sub_market_fees_generated_amount: u128,
+    pub solvency_insurance_fee_rate: u16,
+    pub solvency_insurance_fees_generated_amount: u128,
+    pub uncollected_solvency_insurance_fees_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
@@ -2671,8 +3466,9 @@ pub struct SubMarket
     pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated. This is only used in the frontend for calculating the 7 day projection rate
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
-    pub fees_generated_amount: u128,
-    pub uncollected_fees_amount: u128,
+    pub sub_market_fees_generated_amount: u128,
+    pub uncollected_sub_market_fees_amount: u128,
+    pub solvency_insurance_fees_generated_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
@@ -2696,19 +3492,21 @@ pub struct LendingUserAccount //Giving the lending account an index to allow use
 pub struct LendingUserTabAccount
 {
     pub token_mint_address: Pubkey,
+    pub pyth_feed_id: [u8; 32],
     pub sub_market_owner_address: Pubkey,
     pub sub_market_index: u16,
     pub owner: Pubkey,
     pub user_account_index: u8,
-    pub pyth_feed_id: [u8; 32],
     pub user_tab_account_index: u16,
     pub user_tab_account_added: bool,
     pub supply_interest_change_index: u128, //This index is set to match the token reserve index after previously earned interest is updated
     pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated
     pub deposited_amount: u64,
     pub interest_earned_amount: u64,
-    pub fees_generated_amount: u64,
-    pub fees_collected_amount: u64,
+    pub sub_market_fees_generated_amount: u64,
+    pub sub_market_fees_collected_amount: u64,
+    pub solvency_insurance_fees_generated_amount: u64,
+    pub solvency_insurance_fees_collected_amount: u64,
     pub borrowed_amount: u64,
     pub interest_accrued_amount: u64,
     pub repaid_debt_amount: u64,
@@ -2730,8 +3528,10 @@ pub struct LendingUserMonthlyStatementAccount
     pub monthly_statement_account_added: bool,
     pub snap_shot_balance_amount: u64,//The snap_shot properties give a snapshot of the value of the Tab Account over its whole life time at the time it is updated
     pub snap_shot_interest_earned_amount: u64,
-    pub snap_shot_fees_generated_amount: u64,
-    pub snap_shot_fees_collected_amount: u64,
+    pub snap_shot_sub_market_fees_generated_amount: u64,
+    pub snap_shot_sub_market_fees_collected_amount: u64,
+    pub snap_shot_solvency_insurance_fees_generated_amount: u64,
+    pub snap_shot_solvency_insurance_fees_collected_amount: u64,
     pub snap_shot_debt_amount: u64,
     pub snap_shot_interest_accrued_amount: u64,
     pub snap_shot_repaid_debt_amount: u64,
@@ -2739,8 +3539,10 @@ pub struct LendingUserMonthlyStatementAccount
     pub snap_shot_liquidator_amount: u64,
     pub monthly_deposited_amount: u64,//The monthly properties give the specific value changes for that specific month
     pub monthly_interest_earned_amount: u64,
-    pub monthly_fees_generated_amount: u64,
-    pub monthly_fees_collected_amount: u64,
+    pub monthly_sub_market_fees_generated_amount: u64,
+    pub monthly_sub_market_fees_collected_amount: u64,
+    pub monthly_solvency_insurance_fees_generated_amount: u64,
+    pub monthly_solvency_insurance_fees_collected_amount: u64,
     pub monthly_withdrawal_amount: u64,
     pub monthly_borrowed_amount: u64,
     pub monthly_interest_accrued_amount: u64,

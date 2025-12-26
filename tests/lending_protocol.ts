@@ -58,10 +58,12 @@ describe("lending_protocol", () =>
   const globalLimit1 = new anchor.BN(10_000_000_000)
   const globalLimit2 = new anchor.BN(20_000_000_000)
 
-  const feeRateAbove100Percent = 10001
-  const feeRateBelove0Percent = -1
-  const feeRate4Percent = 400
-  const feeRate100Percent = 10000
+  const feeRateAbove100Percent = 10001 //100.01%
+  const feeRateBelove0Percent = -1 //-0.01%
+  const feeRate4Percent = 400 //4%
+  const feeRate100Percent = 10000 //100.00%
+  const solvencyInsurancefeeRatePercent1 = 50 //0.50%
+  const solvencyInsurancefeeRatePercent2 = 100 //1.00%
 
   const testSubMarketIndex = 4
   const testUserAccountIndex = 7
@@ -244,7 +246,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, true, globalLimit1)//IDE complains about ByteArray but still works
+      await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, true, globalLimit1, solvencyInsurancefeeRatePercent1)//IDE complains about ByteArray but still works
       .accounts({ mint: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -259,7 +261,7 @@ describe("lending_protocol", () =>
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, true, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(solTokenMintAddress, solTokenDecimalAmount, solPythFeedIDArray, borrowAPY5Percent, true, globalLimit1, solvencyInsurancefeeRatePercent1)//IDE complains about ByteArray but still works
     .accounts({ mint: solTokenMintAddress })
     .rpc()
     
@@ -271,6 +273,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.pythFeedId.toString() == solPythFeedIDArray.toString())
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
+    assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsurancefeeRatePercent1)
   })
 
   it("Verifies That Only the CEO Can Update the Token Reserve", async () => 
@@ -279,7 +282,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit1)
+      await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit1, solvencyInsurancefeeRatePercent1)
       .accounts({ signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -292,13 +295,14 @@ describe("lending_protocol", () =>
     assert(errorMessage == notCEOErrorMsg)
   })
 
-  it("Updates Token Reserve Borrow APY and Global Limit", async () => 
+  it("Updates Token Reserve Borrow APY, Global Limit, and Solvency Insurance Rate", async () => 
   {
-    await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit2).rpc()
+    await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit2, solvencyInsurancefeeRatePercent2).rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
     assert(tokenReserve.borrowApy == borrowAPY7Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit2))
+    assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsurancefeeRatePercent2)
   })
 
   it("Verifies That a SubMarket Can't be Created With a Fee on Interest Rate Higher than 100%", async () => 
@@ -607,7 +611,7 @@ describe("lending_protocol", () =>
   
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythFeedIDArray, borrowAPY5Percent, true, globalLimit1)//IDE complains about ByteArray but still works
+    await program.methods.addTokenReserve(usdcMint.publicKey, usdcTokenDecimalAmount, usdcPythFeedIDArray, borrowAPY5Percent, true, globalLimit1, solvencyInsurancefeeRatePercent1)//IDE complains about ByteArray but still works
     .accounts({ mint: usdcMint.publicKey })
     .rpc()
     
@@ -619,6 +623,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.pythFeedId.toString() == usdcPythFeedIDArray.toString())
     assert(tokenReserve.borrowApy == borrowAPY5Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
+    assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsurancefeeRatePercent1)
   })
 
   it("Creates a USDC SubMarket", async () => 
@@ -844,6 +849,7 @@ describe("lending_protocol", () =>
       solTokenMintAddress,
       program.provider.publicKey,
       testSubMarketIndex,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     )
     .accounts({ signer: successorWalletKeypair.publicKey })
@@ -855,6 +861,7 @@ describe("lending_protocol", () =>
       usdcMint.publicKey,
       program.provider.publicKey,
       testSubMarketIndex,
+      successorWalletKeypair.publicKey,
       testUserAccountIndex
     )
     .accounts({ signer: successorWalletKeypair.publicKey })
@@ -866,6 +873,7 @@ describe("lending_protocol", () =>
       solTokenMintAddress,
       program.provider.publicKey,
       testSubMarketIndex,
+      borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     )
     .accounts({ signer: borrowerWalletKeypair.publicKey })
@@ -877,6 +885,7 @@ describe("lending_protocol", () =>
       usdcMint.publicKey,
       program.provider.publicKey,
       testSubMarketIndex,
+      borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     )
     .accounts({ signer: borrowerWalletKeypair.publicKey })
@@ -937,10 +946,10 @@ describe("lending_protocol", () =>
       console.log(tokenReserveUSDCATABalance.value.uiAmount)
       console.log(Number(supplierLendingUserTabAccount.interestAccruedAmount))
       console.log(Number(supplierLendingUserTabAccount.interestEarnedAmount))
-      console.log(Number(supplierLendingUserTabAccount.feesGeneratedAmount))
+      console.log(Number(supplierLendingUserTabAccount.subMarketFeesGeneratedAmount))
       console.log(Number(borrowerLendingUserTabAccount.interestAccruedAmount))
       console.log(Number(borrowerLendingUserTabAccount.interestEarnedAmount))
-      console.log(Number(borrowerLendingUserTabAccount.feesGeneratedAmount))
+      console.log(Number(borrowerLendingUserTabAccount.subMarketFeesGeneratedAmount))
 
       const interestAccruedAmount = Number(borrowerLendingUserTabAccount.interestAccruedAmount) / Math.pow(10, tokenReserveUSDCATABalance.value.decimals)
       assert(tokenReserveUSDCATABalance.value.uiAmount == 10.000000 + interestAccruedAmount)
