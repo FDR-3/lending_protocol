@@ -113,7 +113,11 @@ pub enum LendingError
     #[msg("You can't repay more than 50% of a liquidati's debt position")]
     OverLiquidation,
     #[msg("Duplicate SubMarket Detected")]
-    DuplicateSubMarket
+    DuplicateSubMarket,
+    #[msg("Negative Price Detected")]
+    NegativePriceDetected,
+    #[msg("Oracle Price Too Unstable")]
+    OraclePriceTooUnstable,
 }
 
 //Helper function to get the token price by the pyth ID
@@ -240,8 +244,8 @@ fn update_token_reserve_rates<'info>(token_reserve: &mut Account<TokenReserve>) 
     }
     
     msg!("Updated Token Reserve Rates");
-    msg!("Utilization Rate: {}", token_reserve.utilization_rate);
-    msg!("Supply Apy: {}", token_reserve.supply_apy);
+    msg!("Utilization Rate: {}", token_reserve.utilization_rate as f64 / 100.0);
+    msg!("Supply Apy: {}", token_reserve.supply_apy as f64 / 100.0);
 
     Ok(())
 }
@@ -407,6 +411,13 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         let price_update_account = PriceUpdateV2::try_deserialize(&mut data_slice)?;
         let current_price = get_token_pyth_price_by_id(price_update_account, tab_account.pyth_feed_id)?;
 
+        //Negative Price Detected
+        require!(current_price.price > 0, LendingError::NegativePriceDetected);
+
+        //Oracle Price Too Unstable
+        let uncertainty_ratio = current_price.conf as f64 / current_price.price as f64;
+        require!(uncertainty_ratio <= 0.02, LendingError::OraclePriceTooUnstable);//Reject price if more than 2% price uncertainty
+
         msg!
         (
             "Token Price: {} +- {} x 10^{}",
@@ -415,14 +426,26 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
             current_price.exponent
         );
 
-        user_deposited_value += tab_account.deposited_amount as i128 * current_price.price as i128;
-        user_borrowed_value += tab_account.borrowed_amount as i128 * current_price.price as i128;
+        let normalized_price_8_decimals = normalize_pyth_price_to_8_decimals(current_price.price, current_price.exponent);
+
+        msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
+
+        let base_int :u64 = 10;
+        let token_conversion_number = base_int.pow(tab_account.token_decimal_amount as u32); 
+        
+        user_deposited_value += (tab_account.deposited_amount * normalized_price_8_decimals) / token_conversion_number;
+        user_borrowed_value += (tab_account.borrowed_amount * normalized_price_8_decimals) / token_conversion_number;
+
+        //Debug
+        msg!("Token Mint Address: {}", tab_account.token_mint_address);
+        msg!("Deposit Value: {}", user_deposited_value);
+        msg!("Borrow Value: {}", user_borrowed_value);
 
         //Only add to the value of the token being withdrawn or borrowed once since there might be multiple SubMarkets
         if token_mint_address.key() == tab_account.token_mint_address.key() && evaluated_price_of_withdraw_or_borrow_token == false &&
         (activity_type == Activity::Withdraw as u8 || activity_type == Activity::Borrow as u8)
         {
-            user_withdraw_or_borrow_request_value += withdraw_borrow_or_repay_amount as i128 * current_price.price as i128;
+            user_withdraw_or_borrow_request_value += (withdraw_borrow_or_repay_amount * normalized_price_8_decimals) / token_conversion_number;
             evaluated_price_of_withdraw_or_borrow_token = true;
         }
 
@@ -430,18 +453,23 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         {
             if token_mint_address.key() == tab_account.token_mint_address.key()
             {
-                liquidation_repay_token_value = withdraw_borrow_or_repay_amount as i128 * current_price.price as i128;
+                liquidation_repay_token_value = (withdraw_borrow_or_repay_amount * normalized_price_8_decimals) / token_conversion_number;
+                //Debug
+                msg!("Liquidation Repay Value: {}", liquidation_repay_token_value);
             }
 
             if liquidation_token_mint_address.unwrap().key() == tab_account.token_mint_address.key()
             {
-                liquidation_liquidate_token_value = current_price.price as i128;
+                liquidation_liquidate_token_value = normalized_price_8_decimals;
+                //Debug
+                msg!("Liquidation Liquidate Value: {}", liquidation_repay_token_value);
             }
         }
 
         user_tab_index += 1;
     }
 
+    //Debug
     msg!
     (
         "Value calculation test. Deposited: {}, Borrowed: {}, Requested: {}",
@@ -459,7 +487,10 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
         require!(user_borrowed_value >= eighty_percent_of_deposited_value, LendingError::NotLiquidatable);
 
-        let liquidation_amount = (liquidation_repay_token_value / liquidation_liquidate_token_value) as u64;
+        let liquidation_amount = liquidation_repay_token_value / liquidation_liquidate_token_value;
+
+        //Debug
+        msg!("Liquidation Amount: {}", liquidation_amount);
 
         return Ok(liquidation_amount)
     }
@@ -467,11 +498,11 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     {
         if activity_type == Activity::Withdraw as u8
         {
-            user_deposited_value = user_deposited_value - user_withdraw_or_borrow_request_value as i128;
+            user_deposited_value = user_deposited_value - user_withdraw_or_borrow_request_value;
         }
         else
         {
-            user_borrowed_value = user_borrowed_value + user_withdraw_or_borrow_request_value as i128;
+            user_borrowed_value = user_borrowed_value + user_withdraw_or_borrow_request_value;
         }
 
         //Multiply before dividing to help keep precision
@@ -483,6 +514,27 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     }
 
     Ok(0)
+}
+
+fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u64
+{
+    let expo = pyth_expo.abs() as u32;
+    let base_int :u64 = 10;
+
+    if expo > 8
+    {
+        let conversion_number = base_int.pow(expo - 8); 
+        return pyth_price as u64 * conversion_number;
+    }
+    else if expo < 8
+    {
+        let conversion_number = base_int.pow(8 - expo); 
+        return pyth_price as u64 / conversion_number;
+    }
+    else
+    {
+        return pyth_price as u64;
+    }
 }
 
 //Helper function to initialize Lending User Account
@@ -509,6 +561,7 @@ fn initialize_lending_user_account<'info>(lending_user_account: &mut Account<Len
 fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut Account<LendingUserAccount>,
     lending_user_tab_account: &mut Account<LendingUserTabAccount>,
     token_mint_address: Pubkey,
+    token_decimal_amount: u8,
     pyth_feed_id: [u8; 32],
     sub_market_owner_address: Pubkey,
     sub_market_index: u16,
@@ -518,6 +571,7 @@ fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut Account
 ) -> Result<()>
 {
     lending_user_tab_account.token_mint_address = token_mint_address;
+    lending_user_tab_account.token_decimal_amount = token_decimal_amount;
     lending_user_tab_account.pyth_feed_id = pyth_feed_id;
     lending_user_tab_account.sub_market_owner_address = sub_market_owner_address;
     lending_user_tab_account.sub_market_index = sub_market_index;
@@ -818,6 +872,7 @@ pub mod lending_protocol
                 lending_user_account,
                 lending_user_tab_account,
                 token_mint_address.key(),
+                token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
@@ -1170,6 +1225,7 @@ pub mod lending_protocol
                 lending_user_account,
                 lending_user_tab_account,
                 token_mint_address.key(),
+                token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
@@ -1546,6 +1602,7 @@ pub mod lending_protocol
                 liquidator_lending_account,
                 liquidator_liquidation_tab_account,
                 liquidation_token_mint_address.key(),
+                liquidation_token_reserve.token_decimal_amount,
                 liquidation_token_reserve.pyth_feed_id,
                 liquidation_sub_market_owner_address.key(),
                 liquidation_sub_market_index,
@@ -1913,6 +1970,7 @@ pub mod lending_protocol
                 lending_user_account,
                 lending_user_tab_account,
                 token_mint_address.key(),
+                token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
@@ -2046,6 +2104,7 @@ pub mod lending_protocol
                 lending_user_account,
                 initial_lending_user_tab_account,
                 token_mint_address.key(),
+                token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 initial_sub_market_owner_address,
                 initial_sub_market_index,
@@ -2060,6 +2119,7 @@ pub mod lending_protocol
                 lending_user_account,
                 destination_lending_user_tab_account,
                 token_mint_address.key(),
+                token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 destination_sub_market_owner_address,
                 destination_sub_market_index,
@@ -2199,6 +2259,7 @@ pub mod lending_protocol
                 lending_user_account,
                 lending_user_tab_account,
                 token_mint_address.key(),
+                token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
@@ -3492,6 +3553,7 @@ pub struct LendingUserAccount //Giving the lending account an index to allow use
 pub struct LendingUserTabAccount
 {
     pub token_mint_address: Pubkey,
+    pub token_decimal_amount: u8,
     pub pyth_feed_id: [u8; 32],
     pub sub_market_owner_address: Pubkey,
     pub sub_market_index: u16,

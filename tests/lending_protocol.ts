@@ -34,7 +34,7 @@ describe("lending_protocol", () =>
   const solTokenDecimalAmount = 9
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
   const solTestPrice = new anchor.BN(12345)
-  const solTestConf = new anchor.BN(12345)
+  const solTestConf = new anchor.BN(245)
   var solPythPriceUpdateAccountKeypair: Keypair
   var successorSOLLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var borrowerSOLLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
@@ -48,7 +48,7 @@ describe("lending_protocol", () =>
   const elevenUSDC = new anchor.BN(11_000_000)
   const tenKUSDC = 10_000_000_000
   const usdcTestPrice = new anchor.BN(12345)
-  const usdcTestConf = new anchor.BN(12345)
+  const usdcTestConf = new anchor.BN(245)
   var usdcPythPriceUpdateAccountKeypair: Keypair
   var usdcLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
@@ -751,8 +751,8 @@ describe("lending_protocol", () =>
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    console.log("Token Reserve Supply Interest Change Index", Number(tokenReserve.supplyInterestChangeIndex))
-    console.log("Token Reserve Borrow Interest Change Index", Number(tokenReserve.borrowInterestChangeIndex))
+    console.log("Token Reserve Supply Interest Change Index: ", Number(tokenReserve.supplyInterestChangeIndex))
+    console.log("Token Reserve Borrow Interest Change Index: ", Number(tokenReserve.borrowInterestChangeIndex))
     assert(tokenReserve.borrowedAmount.eq(tenUSDC))
     assert(tokenReserve.borrowApy == 500)
     assert(tokenReserve.supplyApy == 500)
@@ -893,8 +893,8 @@ describe("lending_protocol", () =>
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    console.log("Token Reserve Supply Interest Change Index", Number(tokenReserve.supplyInterestChangeIndex))
-    console.log("Token Reserve Borrow Interest Change Index", Number(tokenReserve.borrowInterestChangeIndex))
+    console.log("Token Reserve Supply Interest Change Index: ", Number(tokenReserve.supplyInterestChangeIndex))
+    console.log("Token Reserve Borrow Interest Change Index: ", Number(tokenReserve.borrowInterestChangeIndex))
   })
 
   it("Repays Borrowed USDC To the Token Reserve", async () => 
@@ -943,13 +943,15 @@ describe("lending_protocol", () =>
         testUserAccountIndex
       ))
 
-      console.log(tokenReserveUSDCATABalance.value.uiAmount)
-      console.log(Number(supplierLendingUserTabAccount.interestAccruedAmount))
-      console.log(Number(supplierLendingUserTabAccount.interestEarnedAmount))
-      console.log(Number(supplierLendingUserTabAccount.subMarketFeesGeneratedAmount))
-      console.log(Number(borrowerLendingUserTabAccount.interestAccruedAmount))
-      console.log(Number(borrowerLendingUserTabAccount.interestEarnedAmount))
-      console.log(Number(borrowerLendingUserTabAccount.subMarketFeesGeneratedAmount))
+      console.log("Token Reserve Balance After Repayment: ", tokenReserveUSDCATABalance.value.uiAmount)
+      console.log("Supplier Interest Accrued: ", Number(supplierLendingUserTabAccount.interestAccruedAmount))
+      console.log("Supplier Interest Earned: ", Number(supplierLendingUserTabAccount.interestEarnedAmount))
+      console.log("Supplier SubMarket Fees Generated: ", Number(supplierLendingUserTabAccount.subMarketFeesGeneratedAmount))
+      console.log("Supplier Solvency Insurance Generated: ", Number(supplierLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount))
+      console.log("Borrower Interest Accrued: ", Number(borrowerLendingUserTabAccount.interestAccruedAmount))
+      console.log("Borrower Interest Earned: ", Number(borrowerLendingUserTabAccount.interestEarnedAmount))
+      console.log("Borrower SubMarket Fees Generated: ", Number(borrowerLendingUserTabAccount.subMarketFeesGeneratedAmount))
+      console.log("Borrower Solvency Insurance Generated: ", Number(borrowerLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount))
 
       const interestAccruedAmount = Number(borrowerLendingUserTabAccount.interestAccruedAmount) / Math.pow(10, tokenReserveUSDCATABalance.value.decimals)
       assert(tokenReserveUSDCATABalance.value.uiAmount == 10.000000 + interestAccruedAmount)
@@ -981,45 +983,6 @@ describe("lending_protocol", () =>
 
     assert(errorMessage == incorrectOrderOfTabAccountsErrorMsg)
   })
-
-  async function debugPrintPythAccount(accountPubkey: PublicKey)
-  {
-    const accountInfo = await program.provider.connection.getAccountInfo(accountPubkey)
-    
-    if (!accountInfo)
-    {
-      console.log("Account not found!")
-      return
-    }
-
-    const data = accountInfo.data
-    
-    // Manual Parsing based on your buffer layout
-    // Offset 0-8: Discriminator
-    // Offset 40: Verification Level
-    // Offset 41-73: Feed ID
-    // Offset 73-81: Price
-    // Offset 97-105: Publish Time
-
-    const feedId = data.subarray(41, 73).toString('hex')
-    const price = data.readBigInt64LE(73)
-    const conf = data.readBigUInt64LE(81)
-    const exponent = data.readInt32LE(89)
-    const publishTime = data.readBigInt64LE(93)
-    
-    console.log("--- DEBUG PYTH ACCOUNT ---")
-    console.log("Feed ID (Hex):", feedId)
-    console.log("Price:", price.toString())
-    console.log("Exponent:", exponent)
-    console.log("Publish Time:", publishTime.toString())
-    
-    // Check against current time
-    const slot = await program.provider.connection.getSlot()
-    const currentTime = await program.provider.connection.getBlockTime(slot)
-    console.log("Current Chain Time:", currentTime)
-    console.log("Age (seconds):", currentTime - Number(publishTime))
-    console.log("--------------------------")
-  }
 
   it("Withdraws USDC From the Token Reserve", async () => 
   {
@@ -1398,6 +1361,45 @@ describe("lending_protocol", () =>
     .rpc()
   }
 
+  async function debugPrintPythAccount(accountPubkey: PublicKey)
+  {
+    const accountInfo = await program.provider.connection.getAccountInfo(accountPubkey)
+    
+    if (!accountInfo)
+    {
+      console.log("Account not found!")
+      return
+    }
+
+    const data = accountInfo.data
+    
+    // Manual Parsing based on your buffer layout
+    // Offset 0-8: Discriminator
+    // Offset 40: Verification Level
+    // Offset 41-73: Feed ID
+    // Offset 73-81: Price
+    // Offset 97-105: Publish Time
+
+    const feedId = data.subarray(41, 73).toString('hex')
+    const price = data.readBigInt64LE(73)
+    const conf = data.readBigUInt64LE(81)
+    const exponent = data.readInt32LE(89)
+    const publishTime = data.readBigInt64LE(93)
+    
+    console.log("--- DEBUG PYTH ACCOUNT ---")
+    console.log("Feed ID (Hex):", feedId)
+    console.log("Price:", price.toString())
+    console.log("Exponent:", exponent)
+    console.log("Publish Time:", publishTime.toString())
+    
+    // Check against current time
+    const slot = await program.provider.connection.getSlot()
+    const currentTime = await program.provider.connection.getBlockTime(slot)
+    console.log("Current Chain Time:", currentTime)
+    console.log("Age (seconds):", currentTime - Number(publishTime))
+    console.log("--------------------------")
+  }
+
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
   var counter = 0
   
@@ -1411,8 +1413,25 @@ describe("lending_protocol", () =>
 
   async function timeOutFunction(timeToWaitInSeconds: number)
   {
+    timeOutCountDown(timeToWaitInSeconds)
+
     const timeToWaitInMilliSeconds = timeToWaitInSeconds * 1000
     console.log("Sleeping for: " + timeToWaitInSeconds + " seconds")
     await sleep(timeToWaitInMilliSeconds)
+  }
+
+  function timeOutCountDown(timeToWaitInSeconds: number)
+  {
+    var timeLeftInSeconds = timeToWaitInSeconds
+    console.log(`${timeLeftInSeconds} Seconds Left`)
+
+    const countDownIntervalId = setInterval(() =>
+    {
+      timeLeftInSeconds -= 10
+      console.log(`${timeLeftInSeconds} Seconds Left`)
+      
+      if(timeLeftInSeconds <= 0)
+        clearInterval(countDownIntervalId)  
+    }, 10000) 
   }
 })
