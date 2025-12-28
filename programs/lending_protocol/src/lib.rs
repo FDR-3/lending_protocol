@@ -277,18 +277,18 @@ fn update_user_previous_interest_earned<'info>(
     
     //Calculate SubMarket Fee
     let sub_market_fee_rate_fixed_point = FixedPoint::from_bps(sub_market.fee_on_interest_earned_rate as u64)?;
-    let new_sub_market_fees_generated_amount_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.mul(&sub_market_fee_rate_fixed_point)?;
-    let new_sub_market_fees_generated_amount = new_sub_market_fees_generated_amount_fixed_point.to_u128()?;
+    let new_sub_market_fees_generated_amount_fixed_point_floor = (new_user_interest_earned_amount_before_fee_fixed_point.mul(&sub_market_fee_rate_fixed_point)?).floor(); //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
+    let new_sub_market_fees_generated_amount = new_sub_market_fees_generated_amount_fixed_point_floor.to_u128()?;
 
     //Calculate Solvency Insurance Fee
     let solvency_insurance_fee_rate_fixed_point = FixedPoint::from_bps(token_reserve.solvency_insurance_fee_rate as u64)?;
-    let new_solvency_insurance_fees_generated_amount_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.mul(&solvency_insurance_fee_rate_fixed_point)?;
-    let new_solvency_insurance_fees_generated_amount = new_solvency_insurance_fees_generated_amount_fixed_point.to_u128()?;
+    let new_solvency_insurance_fees_generated_amount_fixed_point_floor = (new_user_interest_earned_amount_before_fee_fixed_point.mul(&solvency_insurance_fee_rate_fixed_point)?).floor(); //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
+    let new_solvency_insurance_fees_generated_amount = new_solvency_insurance_fees_generated_amount_fixed_point_floor.to_u128()?;
 
     //Apply Fees to Interest Earned
-    let new_user_interest_earned_amount_after_sb_fee_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.sub(&new_sub_market_fees_generated_amount_fixed_point)?;
-    let new_user_interest_earned_amount_after_fee_fixed_point = new_user_interest_earned_amount_after_sb_fee_fixed_point.sub(&new_solvency_insurance_fees_generated_amount_fixed_point)?;
-    let new_user_interest_earned_amount_after_fees = new_user_interest_earned_amount_after_fee_fixed_point.to_u128()?;
+    let new_user_interest_earned_amount_after_sb_fee_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.sub(&new_sub_market_fees_generated_amount_fixed_point_floor)?;
+    let new_user_interest_earned_amount_after_fees_fixed_point = new_user_interest_earned_amount_after_sb_fee_fixed_point.sub(&new_solvency_insurance_fees_generated_amount_fixed_point_floor)?;
+    let new_user_interest_earned_amount_after_fees = new_user_interest_earned_amount_after_fees_fixed_point.to_u128()?;
     
     token_reserve.deposited_amount += new_user_interest_earned_amount_after_fees;
     token_reserve.interest_earned_amount += new_user_interest_earned_amount_after_fees;
@@ -430,11 +430,11 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
         msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
 
-        let base_int :u64 = 10;
+        let base_int :u128 = 10;
         let token_conversion_number = base_int.pow(tab_account.token_decimal_amount as u32); 
         
-        user_deposited_value += (tab_account.deposited_amount * normalized_price_8_decimals) / token_conversion_number;
-        user_borrowed_value += (tab_account.borrowed_amount * normalized_price_8_decimals) / token_conversion_number;
+        user_deposited_value += (tab_account.deposited_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
+        user_borrowed_value += (tab_account.borrowed_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
 
         //Debug
         msg!("Token Mint Address: {}", tab_account.token_mint_address);
@@ -445,7 +445,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         if token_mint_address.key() == tab_account.token_mint_address.key() && evaluated_price_of_withdraw_or_borrow_token == false &&
         (activity_type == Activity::Withdraw as u8 || activity_type == Activity::Borrow as u8)
         {
-            user_withdraw_or_borrow_request_value += (withdraw_borrow_or_repay_amount * normalized_price_8_decimals) / token_conversion_number;
+            user_withdraw_or_borrow_request_value += (withdraw_borrow_or_repay_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
             evaluated_price_of_withdraw_or_borrow_token = true;
         }
 
@@ -453,7 +453,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         {
             if token_mint_address.key() == tab_account.token_mint_address.key()
             {
-                liquidation_repay_token_value = (withdraw_borrow_or_repay_amount * normalized_price_8_decimals) / token_conversion_number;
+                liquidation_repay_token_value = (withdraw_borrow_or_repay_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
                 //Debug
                 msg!("Liquidation Repay Value: {}", liquidation_repay_token_value);
             }
@@ -492,7 +492,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         //Debug
         msg!("Liquidation Amount: {}", liquidation_amount);
 
-        return Ok(liquidation_amount)
+        return Ok(liquidation_amount as u64)
     }
     else if user_borrowed_value > 0
     {
@@ -516,24 +516,24 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     Ok(0)
 }
 
-fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u64
+fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
 {
     let expo = pyth_expo.abs() as u32;
-    let base_int :u64 = 10;
+    let base_int :u128 = 10;
 
     if expo > 8
     {
         let conversion_number = base_int.pow(expo - 8); 
-        return pyth_price as u64 * conversion_number;
+        return pyth_price as u128 * conversion_number;
     }
     else if expo < 8
     {
         let conversion_number = base_int.pow(8 - expo); 
-        return pyth_price as u64 / conversion_number;
+        return pyth_price as u128 / conversion_number;
     }
     else
     {
-        return pyth_price as u64;
+        return pyth_price as u128;
     }
 }
 
