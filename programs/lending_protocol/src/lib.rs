@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer, SyncNative, CloseAccount};
 use anchor_lang::system_program::{self};
+use anchor_spl::associated_token::AssociatedToken;
+use anchor_spl::token_interface::{self, Mint, TokenInterface, TokenAccount, TransferChecked, SyncNative, CloseAccount};
 use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
@@ -275,13 +275,27 @@ fn update_user_previous_interest_earned<'info>(
     let new_user_deposited_amount_before_fee_fixed_point = old_user_balance_mul_token_reserve_index_fixed_point.div(&user_supply_index_fixed_point)?;
     let new_user_interest_earned_amount_before_fee_fixed_point = new_user_deposited_amount_before_fee_fixed_point.sub(&old_user_deposited_amount_fixed_point)?;
     
+    //Make Sure SubMarket Fee and Solvency Insurance Fee don't exceed 100%
+    let sub_market_fee;
+    let solvency_insurance_fee;
+    if sub_market.fee_on_interest_earned_rate + token_reserve.solvency_insurance_fee_rate <= 10_000
+    {
+        sub_market_fee = sub_market.fee_on_interest_earned_rate;
+        solvency_insurance_fee = token_reserve.solvency_insurance_fee_rate;
+    }
+    else
+    {
+        sub_market_fee = 5_000;
+        solvency_insurance_fee = 5_000;
+    }
+
     //Calculate SubMarket Fee
-    let sub_market_fee_rate_fixed_point = FixedPoint::from_bps(sub_market.fee_on_interest_earned_rate as u64)?;
+    let sub_market_fee_rate_fixed_point = FixedPoint::from_bps(sub_market_fee as u64)?;
     let new_sub_market_fees_generated_amount_fixed_point_floor = (new_user_interest_earned_amount_before_fee_fixed_point.mul(&sub_market_fee_rate_fixed_point)?).floor(); //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
     let new_sub_market_fees_generated_amount = new_sub_market_fees_generated_amount_fixed_point_floor.to_u128()?;
 
     //Calculate Solvency Insurance Fee
-    let solvency_insurance_fee_rate_fixed_point = FixedPoint::from_bps(token_reserve.solvency_insurance_fee_rate as u64)?;
+    let solvency_insurance_fee_rate_fixed_point = FixedPoint::from_bps(solvency_insurance_fee as u64)?;
     let new_solvency_insurance_fees_generated_amount_fixed_point_floor = (new_user_interest_earned_amount_before_fee_fixed_point.mul(&solvency_insurance_fee_rate_fixed_point)?).floor(); //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
     let new_solvency_insurance_fees_generated_amount = new_solvency_insurance_fees_generated_amount_fixed_point_floor.to_u128()?;
 
@@ -363,6 +377,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     withdraw_borrow_or_repay_amount: u64,
     activity_type: u8,
     new_lending_activity_time_stamp: u64,
+    possibly_newly_initialized_tab_account: &Account<LendingUserTabAccount>,
     liquidation_token_mint_address: Option<Pubkey>
 ) -> Result<u64>
 {
@@ -377,28 +392,88 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
     while let Some(tab_account_serialized) = remaining_accounts_iter.next()
     {
-        let data_ref = tab_account_serialized.data.borrow();
-        let mut data_slice: &[u8] = data_ref.deref();
+        let tab_account_bump;
+        let tab_token_mint_address_key;
+        let tab_token_decimal_amount;
+        let tab_pyth_feed_id;
+        let tab_sub_market_owner_address_key;
+        let tab_sub_market_index_to_le_bytes;
+        let tab_index;
+        let tab_interest_change_last_updated_time_stamp;
+        let tab_deposited_amount;
+        let tab_borrowed_amount;
 
-        let tab_account = LendingUserTabAccount::try_deserialize(&mut data_slice)?;
+        //Specifically for borrows, it's possible that a passed in tab account hasn't been initialized yet when calculating debt and collateral, IE: when a user borrows from a token they haven't enteracted with before.
+        //Don't try_deserialized on uninitialized accounts
+        if possibly_newly_initialized_tab_account.key() == tab_account_serialized.key()
+        {
+            tab_account_bump = possibly_newly_initialized_tab_account.bump;
+            tab_token_mint_address_key = possibly_newly_initialized_tab_account.token_mint_address.key();
+            tab_token_decimal_amount = possibly_newly_initialized_tab_account.token_decimal_amount;
+            tab_pyth_feed_id = possibly_newly_initialized_tab_account.pyth_feed_id;
+            tab_sub_market_owner_address_key = possibly_newly_initialized_tab_account.sub_market_owner_address.key();
+            tab_sub_market_index_to_le_bytes = possibly_newly_initialized_tab_account.sub_market_index.to_le_bytes(); 
+            tab_index = possibly_newly_initialized_tab_account.user_tab_account_index;
+            tab_interest_change_last_updated_time_stamp = possibly_newly_initialized_tab_account.interest_change_last_updated_time_stamp;
+            tab_deposited_amount = possibly_newly_initialized_tab_account.deposited_amount;
+            tab_borrowed_amount = possibly_newly_initialized_tab_account.borrowed_amount;
+        }
+        else
+        {
+            let data_ref = tab_account_serialized.data.borrow();
+            let mut data_slice: &[u8] = data_ref.deref();
 
-        let (expected_pda, _bump) = Pubkey::find_program_address(
+            let tab_account = LendingUserTabAccount::try_deserialize(&mut data_slice)?;
+
+            tab_account_bump = tab_account.bump;
+            tab_token_mint_address_key = tab_account.token_mint_address.key();
+            tab_token_decimal_amount = tab_account.token_decimal_amount;
+            tab_pyth_feed_id = tab_account.pyth_feed_id; 
+            tab_sub_market_owner_address_key = tab_account.sub_market_owner_address.key();
+            tab_sub_market_index_to_le_bytes = tab_account.sub_market_index.to_le_bytes();
+            tab_index = tab_account.user_tab_account_index;
+            tab_interest_change_last_updated_time_stamp = tab_account.interest_change_last_updated_time_stamp;
+            tab_deposited_amount = tab_account.deposited_amount;
+            tab_borrowed_amount = tab_account.borrowed_amount;
+        }
+
+        //Using find_program_address is very expensive and iterates to derive the address
+        //Storing the bump and using create_program_address is cheaper
+        /*let (expected_pda, _bump) = Pubkey::find_program_address(
             &[b"lendingUserTabAccount",
-            tab_account.token_mint_address.key().as_ref(),
-            tab_account.sub_market_owner_address.key().as_ref(),
-            tab_account.sub_market_index.to_le_bytes().as_ref(),
+            tab_token_mint_address_key.as_ref(),
+            tab_sub_market_owner_address_key.as_ref(),
+            tab_sub_market_index_to_le_bytes.as_ref(),
             user_account_owner_address.key().as_ref(),//The syntax 2 lines down is interchangeable with this line for Public Keys
             user_account_index.to_le_bytes().as_ref()],
             &program_id//The syntax 2 lines up is interchangeable with this line for Public Keys
-        );
+        );*/
+
+        //Need temp values since values are freed too soon when using directly
+
+        let user_account_owner_address_key = user_account_owner_address.key();
+        let user_account_index_to_le_bytes = user_account_index.to_le_bytes();
+        let seeds = &
+        [
+            b"lendingUserTabAccount",
+            tab_token_mint_address_key.as_ref(),
+            tab_sub_market_owner_address_key.as_ref(),
+            tab_sub_market_index_to_le_bytes.as_ref(),
+            user_account_owner_address_key.as_ref(),
+            user_account_index_to_le_bytes.as_ref(),
+            &[tab_account_bump]
+        ];
+
+        let expected_pda = Pubkey::create_program_address(seeds, &program_id)
+        .map_err(|_| InvalidInputError::UnexpectedTabAccount)?;
 
         //You must provide all of the sub user's tab accounts ordered by user_tab_account_index
-        require!(user_tab_index == tab_account.user_tab_account_index, InvalidInputError::IncorrectOrderOfTabAccounts);
+        require!(user_tab_index == tab_index, InvalidInputError::IncorrectOrderOfTabAccounts);
         require_keys_eq!(expected_pda.key(), tab_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
 
         //The lending user tab account interest earned and debt accured data (Plus Token Reserve data) must be no older than 120 seconds. The user has to run the update_user_snap_shots function if data is stale.
         //2 minutes gives the user plenty of time to call both functions. Users shouldn't earn or accrue that much interest or debt within 2 minutes and if they do, that's what the liquidation function is for if there's an issue later :X
-        let time_diff = new_lending_activity_time_stamp - tab_account.interest_change_last_updated_time_stamp;
+        let time_diff = new_lending_activity_time_stamp - tab_interest_change_last_updated_time_stamp;
         require!(time_diff <= 120, LendingError::StaleSnapShotData);
         
         //Validate Price Update Account
@@ -409,7 +484,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         let mut data_slice: &[u8] = data_ref.deref();
 
         let price_update_account = PriceUpdateV2::try_deserialize(&mut data_slice)?;
-        let current_price = get_token_pyth_price_by_id(price_update_account, tab_account.pyth_feed_id)?;
+        let current_price = get_token_pyth_price_by_id(price_update_account, tab_pyth_feed_id)?;
 
         //Negative Price Detected
         require!(current_price.price > 0, LendingError::NegativePriceDetected);
@@ -431,18 +506,18 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
 
         let base_int :u128 = 10;
-        let token_conversion_number = base_int.pow(tab_account.token_decimal_amount as u32); 
+        let token_conversion_number = base_int.pow(tab_token_decimal_amount as u32); 
         
-        user_deposited_value += (tab_account.deposited_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
-        user_borrowed_value += (tab_account.borrowed_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
+        user_deposited_value += (tab_deposited_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
+        user_borrowed_value += (tab_borrowed_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
 
         //Debug
-        msg!("Token Mint Address: {}", tab_account.token_mint_address);
+        msg!("Token Mint Address: {}", tab_token_mint_address_key);
         msg!("Deposit Value: {}", user_deposited_value);
         msg!("Borrow Value: {}", user_borrowed_value);
 
         //Only add to the value of the token being withdrawn or borrowed once since there might be multiple SubMarkets
-        if token_mint_address.key() == tab_account.token_mint_address.key() && evaluated_price_of_withdraw_or_borrow_token == false &&
+        if token_mint_address.key() == tab_token_mint_address_key && evaluated_price_of_withdraw_or_borrow_token == false &&
         (activity_type == Activity::Withdraw as u8 || activity_type == Activity::Borrow as u8)
         {
             user_withdraw_or_borrow_request_value += (withdraw_borrow_or_repay_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
@@ -451,18 +526,18 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
         if activity_type == Activity::Liquidate as u8
         {
-            if token_mint_address.key() == tab_account.token_mint_address.key()
+            if token_mint_address.key() == tab_token_mint_address_key
             {
                 liquidation_repay_token_value = (withdraw_borrow_or_repay_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
                 //Debug
                 msg!("Liquidation Repay Value: {}", liquidation_repay_token_value);
             }
 
-            if liquidation_token_mint_address.unwrap().key() == tab_account.token_mint_address.key()
+            if liquidation_token_mint_address.unwrap().key() == tab_token_mint_address_key
             {
                 liquidation_liquidate_token_value = normalized_price_8_decimals;
                 //Debug
-                msg!("Liquidation Liquidate Value: {}", liquidation_repay_token_value);
+                msg!("Liquidation Liquidate Value: {}", liquidation_liquidate_token_value);
             }
         }
 
@@ -487,14 +562,26 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
         require!(user_borrowed_value >= eighty_percent_of_deposited_value, LendingError::NotLiquidatable);
 
+        //Debug
+        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
+        //Debug
+        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
+        //Debug
+        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
+        //Debug
+        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
+        //Debug
+        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
+    
+
         let liquidation_amount = liquidation_repay_token_value / liquidation_liquidate_token_value;
 
         //Debug
-        msg!("Liquidation Amount: {}", liquidation_amount);
+        //msg!("Liquidation Amount: {}", liquidation_amount);
 
         return Ok(liquidation_amount as u64)
     }
-    else if user_borrowed_value > 0
+    else
     {
         if activity_type == Activity::Withdraw as u8
         {
@@ -505,15 +592,25 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
             user_borrowed_value = user_borrowed_value + user_withdraw_or_borrow_request_value;
         }
 
-        //Multiply before dividing to help keep precision
-        let user_deposited_value_x_70 = user_deposited_value * 70;
-        let seventy_percent_of_new_deposited_value = user_deposited_value_x_70 / 100;
+        if user_borrowed_value > 0
+        {
+            //Multiply before dividing to help keep precision
+            let user_deposited_value_x_70 = user_deposited_value * 70;
+            let seventy_percent_of_new_deposited_value = user_deposited_value_x_70 / 100;
 
-        //You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
-        require!(seventy_percent_of_new_deposited_value >= user_borrowed_value, LendingError::LiquidationExposure);
-    }
+            //Debug
+            msg!("user_deposited_value_x_70: {}", user_deposited_value_x_70);
+            msg!("seventy_percent_of_new_deposited_value: {}", seventy_percent_of_new_deposited_value);
 
-    Ok(0)
+            //You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
+            require!(seventy_percent_of_new_deposited_value >= user_borrowed_value, LendingError::LiquidationExposure);
+        }
+
+        //Debug
+        msg!("user_borrowed_value: {}", user_borrowed_value);
+
+        Ok(0)
+    } 
 }
 
 fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
@@ -541,7 +638,7 @@ fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
 fn initialize_lending_user_account<'info>(lending_user_account: &mut Account<LendingUserAccount>,
     user_account_owner: Pubkey,
     user_account_index: u8,
-    account_name: String //Optional variable. Use null/undefined on front end when not needed
+    account_name: String //Optional variable. Use null on front end when not needed
 ) -> Result<()>
 {
     //Account Name string must not be longer than 25 characters
@@ -560,16 +657,17 @@ fn initialize_lending_user_account<'info>(lending_user_account: &mut Account<Len
 //Helper function to initialize Lending User Tab Account
 fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut Account<LendingUserAccount>,
     lending_user_tab_account: &mut Account<LendingUserTabAccount>,
+    bump: u8,
     token_mint_address: Pubkey,
     token_decimal_amount: u8,
     pyth_feed_id: [u8; 32],
     sub_market_owner_address: Pubkey,
     sub_market_index: u16,
     user_account_owner: Pubkey,
-    user_account_index: u8,
-    set_added_to_true: bool //False is only used here when being newly initialized with the borrow function so the tab account isn't included with validation. We wouldn't want to include the newly initialized account in the debt calculation.
+    user_account_index: u8
 ) -> Result<()>
 {
+    lending_user_tab_account.bump = bump;
     lending_user_tab_account.token_mint_address = token_mint_address;
     lending_user_tab_account.token_decimal_amount = token_decimal_amount;
     lending_user_tab_account.pyth_feed_id = pyth_feed_id;
@@ -578,12 +676,9 @@ fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut Account
     lending_user_tab_account.user_tab_account_index = lending_user_account.tab_account_count;
     lending_user_tab_account.owner = user_account_owner;
     lending_user_tab_account.user_account_index = user_account_index;
-    lending_user_tab_account.user_tab_account_added = set_added_to_true;
+    lending_user_tab_account.user_tab_account_added = true;
 
-    if lending_user_tab_account.user_tab_account_added
-    {
-        lending_user_account.tab_account_count += 1;
-    }
+    lending_user_account.tab_account_count += 1;
 
     msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
 
@@ -830,7 +925,7 @@ pub mod lending_protocol
         sub_market_index: u16,
         user_account_index: u8,
         amount: u64,
-        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
+        account_name: Option<String> //Optional variable. Use null on front end when not needed
     ) -> Result<()> 
     {
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -871,14 +966,14 @@ pub mod lending_protocol
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                ctx.bumps.lending_user_tab_account,
                 token_mint_address.key(),
                 token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
-                user_account_index,
-                true
+                user_account_index
             )?;
         }
 
@@ -934,7 +1029,7 @@ pub mod lending_protocol
             };
             let cpi_program = ctx.accounts.token_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token::sync_native(cpi_ctx)?;
+            token_interface::sync_native(cpi_ctx)?;
 
             //Close temporary wSOL ATA if its balance is zero
             let user_balance_after_transfer = ctx.accounts.user_ata.amount;
@@ -949,24 +1044,25 @@ pub mod lending_protocol
                 };
                 let cpi_program = ctx.accounts.token_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token::close_account(cpi_ctx)?; 
+                token_interface::close_account(cpi_ctx)?; 
             }
         }
         //Handle all other tokens
         else
         {
             //Cross Program Invocation for Token Transfer
-            let cpi_accounts = Transfer
+            let cpi_accounts = TransferChecked
             {
                 from: ctx.accounts.user_ata.to_account_info(),
                 to: ctx.accounts.token_reserve_ata.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
                 authority: ctx.accounts.signer.to_account_info()
             };
             let cpi_program = ctx.accounts.token_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
             //Transfer Tokens Into The Reserve
-            token::transfer(cpi_ctx, amount)?;  
+            token_interface::transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;  
         }
 
         //Update Values and Stat Listener
@@ -1106,6 +1202,7 @@ pub mod lending_protocol
             withdraw_amount,
             Activity::Withdraw as u8,
             time_stamp,
+            lending_user_tab_account,
             None
         )?;
 
@@ -1121,17 +1218,18 @@ pub mod lending_protocol
         let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
         let signer_seeds = &[&seeds[..]];
 
-        let cpi_accounts = Transfer
+        let cpi_accounts = TransferChecked
         {
             from: ctx.accounts.token_reserve_ata.to_account_info(),
             to: ctx.accounts.user_ata.to_account_info(),
+            mint: ctx.accounts.mint.to_account_info(),
             authority: token_reserve.to_account_info()
         };
         let cpi_program = ctx.accounts.token_program.to_account_info();
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
 
         //Transfer Tokens Back to the User
-        token::transfer(cpi_ctx, withdraw_amount)?;
+        token_interface::transfer_checked(cpi_ctx, withdraw_amount, ctx.accounts.mint.decimals)?;
 
         //Handle wSOL Token unwrap
         if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
@@ -1161,7 +1259,7 @@ pub mod lending_protocol
                 };
                 let cpi_program = ctx.accounts.token_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token::close_account(cpi_ctx)?; 
+                token_interface::close_account(cpi_ctx)?; 
             }
         }
         
@@ -1224,15 +1322,18 @@ pub mod lending_protocol
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                ctx.bumps.lending_user_tab_account,
                 token_mint_address.key(),
                 token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
-                user_account_index,
-                false //If being newly initialized on a borrow, don't set added to true or increase tab count until after validation so it isn't included with validation/liquidation exposure checks
+                user_account_index
             )?;
+
+            //This would throw a Lending User Snap Shot data was stale error when borrowing a new token if not set.
+            lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
         }
 
         //Initialize monthly statement account if the statement month/year has changed.
@@ -1285,15 +1386,9 @@ pub mod lending_protocol
             amount,
             Activity::Borrow as u8,
             time_stamp,
+            lending_user_tab_account,
             None
         )?;
-
-        //If lending user tab account was just initialized, set added to true and increase tab account after validation so it isn't included with the validation/liquidation calculations.
-        if lending_user_tab_account.user_tab_account_added == false
-        {
-            lending_user_tab_account.user_tab_account_added = true;
-            lending_user_account.tab_account_count += 1;
-        }
 
         //Transfer Tokens Back To User ATA
         let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
@@ -1307,17 +1402,18 @@ pub mod lending_protocol
         let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
         let signer_seeds = &[&seeds[..]];
 
-        let cpi_accounts = Transfer
+        let cpi_accounts = TransferChecked
         {
             from: ctx.accounts.token_reserve_ata.to_account_info(),
             to: ctx.accounts.user_ata.to_account_info(),
+            mint: ctx.accounts.mint.to_account_info(),
             authority: token_reserve.to_account_info()
         };
         let cpi_program = ctx.accounts.token_program.to_account_info();
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
 
         //Transfer Tokens Back to the User
-        token::transfer(cpi_ctx, amount)?;
+        token_interface::transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;
 
         //Handle wSOL Token unwrap
         if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
@@ -1347,7 +1443,7 @@ pub mod lending_protocol
                 };
                 let cpi_program = ctx.accounts.token_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token::close_account(cpi_ctx)?; 
+                token_interface::close_account(cpi_ctx)?; 
             }
         }
 
@@ -1470,7 +1566,7 @@ pub mod lending_protocol
             };
             let cpi_program = ctx.accounts.token_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token::sync_native(cpi_ctx)?;
+            token_interface::sync_native(cpi_ctx)?;
 
             //Close temporary wSOL ATA if its balance is zero
             let user_balance_after_transfer = ctx.accounts.user_ata.amount;
@@ -1485,24 +1581,25 @@ pub mod lending_protocol
                 };
                 let cpi_program = ctx.accounts.token_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token::close_account(cpi_ctx)?; 
+                token_interface::close_account(cpi_ctx)?; 
             }
         }
         //Handle all other tokens
         else
         {
             //Cross Program Invocation for Token Transfer
-            let cpi_accounts = Transfer
+            let cpi_accounts = TransferChecked
             {
                 from: ctx.accounts.user_ata.to_account_info(),
                 to: ctx.accounts.token_reserve_ata.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
                 authority: ctx.accounts.signer.to_account_info()
             };
             let cpi_program = ctx.accounts.token_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
             //Transfer Tokens Into The Reserve
-            token::transfer(cpi_ctx, payment_amount)?;  
+            token_interface::transfer_checked(cpi_ctx, payment_amount, ctx.accounts.mint.decimals)?;  
         }
 
         //Update Values and Stat Listener
@@ -1556,7 +1653,7 @@ pub mod lending_protocol
         liquidati_account_index: u8,
         liquidator_account_index: u8,
         repayment_amount: u64,
-        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
+        account_name: Option<String> //Optional variable. Use null on front end when not needed
     ) -> Result<()>
     {
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -1601,14 +1698,14 @@ pub mod lending_protocol
             initialize_lending_user_tab_account(
                 liquidator_lending_account,
                 liquidator_liquidation_tab_account,
+                ctx.bumps.liquidator_liquidation_tab_account,
                 liquidation_token_mint_address.key(),
                 liquidation_token_reserve.token_decimal_amount,
                 liquidation_token_reserve.pyth_feed_id,
                 liquidation_sub_market_owner_address.key(),
                 liquidation_sub_market_index,
                 ctx.accounts.signer.key(),
-                liquidator_account_index,
-                true
+                liquidator_account_index
             )?;
         }
 
@@ -1690,6 +1787,7 @@ pub mod lending_protocol
             repayment_amount,
             Activity::Liquidate as u8,
             time_stamp,
+            liquidator_liquidation_tab_account,
             Some(liquidation_token_mint_address)
         )?;
  
@@ -1714,7 +1812,7 @@ pub mod lending_protocol
             };
             let cpi_program = ctx.accounts.token_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token::sync_native(cpi_ctx)?;
+            token_interface::sync_native(cpi_ctx)?;
 
             //Close temporary wSOL ATA if its balance is zero
             let user_balance_after_transfer = ctx.accounts.liquidator_repayment_ata.amount;
@@ -1729,24 +1827,25 @@ pub mod lending_protocol
                 };
                 let cpi_program = ctx.accounts.token_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token::close_account(cpi_ctx)?; 
+                token_interface::close_account(cpi_ctx)?; 
             }
         }
         //Handle all other tokens
         else
         {
             //Cross Program Invocation for Token Transfer
-            let cpi_accounts = Transfer
+            let cpi_accounts = TransferChecked
             {
                 from: ctx.accounts.liquidator_repayment_ata.to_account_info(),
                 to: ctx.accounts.repayment_token_reserve_ata.to_account_info(),
+                mint: ctx.accounts.repayment_mint.to_account_info(),
                 authority: ctx.accounts.signer.to_account_info()
             };
             let cpi_program = ctx.accounts.token_program.to_account_info();
             let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
             //Transfer Tokens Into The Reserve
-            token::transfer(cpi_ctx, repayment_amount)?;  
+            token_interface::transfer_checked(cpi_ctx, repayment_amount, ctx.accounts.repayment_mint.decimals)?;  
         }
 
         //Update Repayment Values
@@ -1929,7 +2028,7 @@ pub mod lending_protocol
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
-        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
+        account_name: Option<String> //Optional variable. Use null on front end when not needed
     ) -> Result<()> 
     {
         let sub_market = &mut ctx.accounts.sub_market;
@@ -1969,14 +2068,14 @@ pub mod lending_protocol
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
-                token_mint_address.key(),
+                ctx.bumps.lending_user_tab_account,
+                token_mint_address.key(), 
                 token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
-                user_account_index,
-                true
+                user_account_index
             )?;
         }
 
@@ -2055,7 +2154,7 @@ pub mod lending_protocol
         destination_sub_market_owner_address: Pubkey,
         destination_sub_market_index: u16,
         user_account_index: u8,
-        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
+        account_name: Option<String> //Optional variable. Use null on front end when not needed
     ) -> Result<()> 
     {
         let initial_sub_market = &mut ctx.accounts.initial_sub_market;
@@ -2103,14 +2202,14 @@ pub mod lending_protocol
             initialize_lending_user_tab_account(
                 lending_user_account,
                 initial_lending_user_tab_account,
+                ctx.bumps.initial_lending_user_tab_account,
                 token_mint_address.key(),
                 token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 initial_sub_market_owner_address,
                 initial_sub_market_index,
                 ctx.accounts.signer.key(),
-                user_account_index,
-                true
+                user_account_index
             )?;
         }
         if destination_lending_user_tab_account.user_tab_account_added == false
@@ -2118,14 +2217,14 @@ pub mod lending_protocol
             initialize_lending_user_tab_account(
                 lending_user_account,
                 destination_lending_user_tab_account,
+                ctx.bumps.destination_lending_user_tab_account,
                 token_mint_address.key(),
                 token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 destination_sub_market_owner_address,
                 destination_sub_market_index,
                 ctx.accounts.signer.key(),
-                user_account_index,
-                true
+                user_account_index
             )?;
         }
 
@@ -2219,7 +2318,7 @@ pub mod lending_protocol
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
-        account_name: Option<String> //Optional variable. Use null/undefined on front end when not needed
+        account_name: Option<String> //Optional variable. Use null on front end when not needed
     ) -> Result<()> 
     {
         let treasurer = &ctx.accounts.treasurer;
@@ -2258,14 +2357,14 @@ pub mod lending_protocol
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                ctx.bumps.lending_user_tab_account,
                 token_mint_address.key(),
                 token_reserve.token_decimal_amount,
                 token_reserve.pyth_feed_id,
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
-                user_account_index,
-                true
+                user_account_index
             )?;
         }
 
@@ -2296,10 +2395,11 @@ pub mod lending_protocol
         let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
         let signer_seeds = &[&seeds[..]];
 
-        let cpi_accounts = Transfer
+        let cpi_accounts = TransferChecked
         {
             from: ctx.accounts.token_reserve_ata.to_account_info(),
             to: ctx.accounts.treasurer_ata.to_account_info(),
+            mint: ctx.accounts.mint.to_account_info(),
             authority: token_reserve.to_account_info()
         };
         let cpi_program = ctx.accounts.token_program.to_account_info();
@@ -2307,7 +2407,7 @@ pub mod lending_protocol
 
         //Transfer Tokens Back to the User
         let amount = token_reserve.uncollected_solvency_insurance_fees_amount as u64;
-        token::transfer(cpi_ctx, amount)?;
+        token_interface::transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;
 
         //Handle wSOL Token unwrap
         if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
@@ -2337,7 +2437,7 @@ pub mod lending_protocol
                 };
                 let cpi_program = ctx.accounts.token_program.to_account_info();
                 let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token::close_account(cpi_ctx)?; 
+                token_interface::close_account(cpi_ctx)?; 
             }
         }
 
@@ -2502,11 +2602,13 @@ pub struct AddTokenReserve<'info>
         init, 
         payer = signer,
         associated_token::mint = mint,
-        associated_token::authority = token_reserve)]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
+    )]
+    pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
@@ -2651,25 +2753,27 @@ pub struct DepositTokens<'info>
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
-    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+    pub lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
         init_if_needed, //SOL has to be deposited as wSol and the user may or may not have a wSol account already.
         payer = signer,
         associated_token::mint = mint,
-        associated_token::authority = signer
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
     )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub user_ata: InterfaceAccount<'info, TokenAccount>,
 
     #[account(
         mut,
-        associated_token::mint = token_mint_address,
-        associated_token::authority = token_reserve
+        associated_token::mint = mint,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
     )]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+    pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
@@ -2762,19 +2866,21 @@ pub struct WithdrawTokens<'info>
         init_if_needed, //SOL has to be withdrawn as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
         payer = signer,
         associated_token::mint = mint,
-        associated_token::authority = signer
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
     )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub user_ata: InterfaceAccount<'info, TokenAccount>,
 
     #[account(
         mut,
-        associated_token::mint = token_mint_address,
-        associated_token::authority = token_reserve
+        associated_token::mint = mint,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
     )]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+    pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
@@ -2841,25 +2947,27 @@ pub struct BorrowTokens<'info>
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
-    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+    pub lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
         init_if_needed, //Init ATA account of token being borrowed if it doesn't exist for User
         payer = signer,
         associated_token::mint = mint,
-        associated_token::authority = signer
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
     )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub user_ata: InterfaceAccount<'info, TokenAccount>,
 
     #[account(
         mut,
-        associated_token::mint = token_mint_address,
-        associated_token::authority = token_reserve
+        associated_token::mint = mint,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
     )]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+    pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
@@ -2892,7 +3000,7 @@ pub struct RepayTokens<'info>
         mut,
         seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
-    pub sub_market: Account<'info, SubMarket>,
+    pub sub_market: Box<Account<'info, SubMarket>>,
 
     #[account(
         mut,
@@ -2924,19 +3032,21 @@ pub struct RepayTokens<'info>
         init_if_needed, //SOL has to be repaid as wSol and the user may or may not have a wSol account already.
         payer = signer,
         associated_token::mint = mint,
-        associated_token::authority = signer
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
     )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub user_ata: InterfaceAccount<'info, TokenAccount>,
 
     #[account(
         mut,
-        associated_token::mint = token_mint_address,
-        associated_token::authority = token_reserve
+        associated_token::mint = mint,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
     )]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+    pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
@@ -3086,22 +3196,24 @@ pub struct LiquidateAccount<'info>
     pub liquidator_liquidation_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
-        init_if_needed, //SOL has to be withdrawn as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
+        init_if_needed, //SOL has to be repaid as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
         payer = signer,
         associated_token::mint = repayment_mint,
-        associated_token::authority = signer
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
     )]
-    pub liquidator_repayment_ata: Box<Account<'info, TokenAccount>>,
+    pub liquidator_repayment_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
-        associated_token::mint = repayment_token_mint_address,
-        associated_token::authority = repayment_token_reserve
+        associated_token::mint = repayment_mint,
+        associated_token::authority = repayment_token_reserve,
+        associated_token::token_program = token_program
     )]
-    pub repayment_token_reserve_ata: Box<Account<'info, TokenAccount>>,
+    pub repayment_token_reserve_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub repayment_mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub repayment_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
@@ -3404,25 +3516,27 @@ pub struct ClaimSolvencyInsuranceFees<'info>
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
-    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+    pub lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
         init_if_needed, //SOL has to be claimed as wSOL then converted to SOL for Treasurer. This function also closes wSOL ata if it is empty.
         payer = signer,
         associated_token::mint = mint,
-        associated_token::authority = signer
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
     )]
-    pub treasurer_ata: Account<'info, TokenAccount>,
+    pub treasurer_ata: InterfaceAccount<'info, TokenAccount>,
 
     #[account(
         mut,
-        associated_token::mint = token_mint_address,
-        associated_token::authority = token_reserve
+        associated_token::mint = mint,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
     )]
-    pub token_reserve_ata: Account<'info, TokenAccount>,
+    pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
@@ -3552,6 +3666,7 @@ pub struct LendingUserAccount //Giving the lending account an index to allow use
 #[account]
 pub struct LendingUserTabAccount
 {
+    pub bump: u8,
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
     pub pyth_feed_id: [u8; 32],
