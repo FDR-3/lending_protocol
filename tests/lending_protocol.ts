@@ -20,6 +20,7 @@ describe("lending_protocol", () =>
   const mockedPythAccountSpace = 134
   const pythPriceDecimals = 8
   const notCEOErrorMsg = "Only the CEO can call this function"
+  const notTreasurerErrorMsg = "Only the Treasurer can call this function"
   const feeOnInterestEarnedRateTooHighMsg = "The fee on interest earned rate can't be greater than 100%"
   const feeOnInterestEarnedRateTooLowMsg = "ERR_OUT_OF_RANGE"
   const globalLimitExceededErrorMsg = "You can't deposit more than the global limit"
@@ -37,7 +38,6 @@ describe("lending_protocol", () =>
   const negativePythPriceErrorMsg = "Negative Price Detected"
   const unstablePythPriceErrorMsg = "Oracle Price Too Unstable"
   const notFeeCollectorErrorMsg = "Only the Fee Collector can claim the fees"
-  const notTreasurerErrorMsg = "Only the Treasurer can call this function"
   
   const solTokenMintAddress = new PublicKey("So11111111111111111111111111111111111111112")
   //const solTokenMintAddress = new PublicKey("9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP")
@@ -48,7 +48,7 @@ describe("lending_protocol", () =>
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
   const solTestPrice = BigInt(10_000_000_000)//8 Decimal Price
   const solNegativePrice = BigInt(-10_000_000_000)//8 Decimal Price
-  const solLiquidationPrice = BigInt(10_000_000_001)//8 Decimal Price
+  const solLiquidationPrice = BigInt(87_500_000)//8 Decimal Price
   const solTestConf = new anchor.BN(245)
   const solUncertainConf = new anchor.BN(200_000_001)
   var solPythPriceUpdateAccountKeypair: Keypair
@@ -235,6 +235,44 @@ describe("lending_protocol", () =>
     
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOAccountPDA())
     assert(ceoAccount.address.toBase58() == program.provider.publicKey.toBase58())
+  })
+
+  it("Verifies That Only the Treasurer Can Pass On Account", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.passOnLendingProtocolTreasurer(program.provider.publicKey)
+      .accounts({ signer: successorWalletKeypair.publicKey })
+      .signers([successorWalletKeypair])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == notTreasurerErrorMsg)
+  })
+
+  it("Passes on the Lending Protocol Treasurer Account", async () => 
+  {
+    await program.methods.passOnLendingProtocolTreasurer(successorWalletKeypair.publicKey).rpc()
+
+    var treasurerAccount = await program.account.lendingProtocolTreasurer.fetch(getLendingProtocolTreasurerAccountPDA())
+    assert(treasurerAccount.address.toBase58() == successorWalletKeypair.publicKey.toBase58())
+  })
+  
+  it("Passes back the Lending Protocol Treasurer Account", async () => 
+  {
+    await program.methods.passOnLendingProtocolTreasurer(program.provider.publicKey)
+    .accounts({ signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
+    
+    var treasurerAccount = await program.account.lendingProtocolTreasurer.fetch(getLendingProtocolTreasurerAccountPDA())
+    assert(treasurerAccount.address.toBase58() == program.provider.publicKey.toBase58())
   })
 
   it("Verifies That Only the CEO Can Update the Lending Protocol Statement Year", async () => 
@@ -1565,6 +1603,18 @@ describe("lending_protocol", () =>
       program.programId
     )
     return lendingProtocolCEOPDA
+  }
+
+  function getLendingProtocolTreasurerAccountPDA()
+  {
+    const [lendingProtocolTreasurerPDA] = anchor.web3.PublicKey.findProgramAddressSync
+    (
+      [
+        new TextEncoder().encode("lendingProtocolTreasurer")
+      ],
+      program.programId
+    )
+    return lendingProtocolTreasurerPDA
   }
 
   function getLendingProtocolPDA()

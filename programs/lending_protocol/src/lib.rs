@@ -9,7 +9,7 @@ use ra_solana_math::FixedPoint;
 use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
 use hex;
 
-declare_id!("JDiqkUzLo6qKGy9A8iRtmgLrNGv7D1Gj3a1aFwd3FEAB");
+declare_id!("G4bZxLRVVnYj3aUSgePfaNbSVmv1TftnBRgWSWgPWgb3");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -22,7 +22,7 @@ security_txt!
     policy: "If you find a bug, email me and say something please D:"
 }
 
-#[cfg(feature = "dev")] 
+#[cfg(feature = "dev")]
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
 #[cfg(feature = "dev")] 
 const INITIAL_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6zgxNa8F4nY3kfDpdRJsT8HdPU");
@@ -36,7 +36,7 @@ const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8
 #[cfg(feature = "local")] 
 const INITIAL_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
-const PYTH_PROGRAM_ID: Pubkey = pubkey!("EoRKL64KbTVsg5FQke7AAHcuMiNWVTcyC4JdkLeChSWc");
+const PYTH_PROGRAM_ID: Pubkey = pubkey!("446knK6VQrwXpRtetwALimsGfrEKBEr9srzur1PcTdzW");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -69,8 +69,10 @@ pub enum AuthorizationError
 #[error_code]
 pub enum InvalidInputError
 {
-    #[msg("The fee on interest earned rate can't be greater than 100%")]
-    InvalidFeeRate,
+    #[msg("The submarket fee on interest earned rate can't be greater than 100%")]
+    InvalidSubMarketFeeRate,
+    #[msg("The submarket fee on interest earned rate can't be greater than 100%")]
+    InvalidSolvencyInsuranceFeeRate,
     #[msg("You must provide all of the sub user's tab accounts")]
     IncorrectNumberOfTabAccounts,
     #[msg("You must provide all of the sub user's tab accounts and Pyth price update accounts")]
@@ -285,8 +287,8 @@ fn update_user_previous_interest_earned<'info>(
     }
     else
     {
-        sub_market_fee = 5_000;
-        solvency_insurance_fee = 5_000;
+        solvency_insurance_fee = token_reserve.solvency_insurance_fee_rate;
+        sub_market_fee = 10_000 - token_reserve.solvency_insurance_fee_rate;
     }
 
     //Calculate SubMarket Fee
@@ -792,6 +794,9 @@ pub mod lending_protocol
         //Only the CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);
 
+        //Solvency Insurance Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
+        require!(solvency_insurance_fee_rate <= 10_000, InvalidInputError::InvalidSolvencyInsuranceFeeRate);
+
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
         token_reserve.token_mint_address = token_mint_address.key();
@@ -830,7 +835,10 @@ pub mod lending_protocol
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);   
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);
+
+        //Solvency Insurance Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
+        require!(solvency_insurance_fee_rate <= 10_000, InvalidInputError::InvalidSolvencyInsuranceFeeRate);
 
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -868,8 +876,8 @@ pub mod lending_protocol
         fee_on_interest_earned_rate: u16
     ) -> Result<()> 
     {
-        //Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(fee_on_interest_earned_rate <= 10_000, InvalidInputError::InvalidFeeRate);
+        //SubMarket Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
+        require!(fee_on_interest_earned_rate <= 10_000, InvalidInputError::InvalidSubMarketFeeRate);
 
         let sub_market = &mut ctx.accounts.sub_market;
         sub_market.owner = ctx.accounts.signer.key();
@@ -899,8 +907,8 @@ pub mod lending_protocol
         fee_on_interest_earned_rate: u16
     ) -> Result<()> 
     {
-        //Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(fee_on_interest_earned_rate <= 10_000, InvalidInputError::InvalidFeeRate);
+        //SubMarket Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
+        require!(fee_on_interest_earned_rate <= 10_000, InvalidInputError::InvalidSubMarketFeeRate);
 
         let sub_market = &mut ctx.accounts.sub_market;
         sub_market.fee_collector_address = fee_collector_address.key();
