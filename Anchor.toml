@@ -12,7 +12,7 @@ pyth-mock = "446knK6VQrwXpRtetwALimsGfrEKBEr9srzur1PcTdzW"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Devnet"
+cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

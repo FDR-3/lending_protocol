@@ -25,7 +25,9 @@ security_txt!
 #[cfg(feature = "dev")]
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNraQ7RpPvzZg");
 #[cfg(feature = "dev")] 
-const INITIAL_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6zgxNa8F4nY3kfDpdRJsT8HdPU");
+const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6zgxNa8F4nY3kfDpdRJsT8HdPU");
+#[cfg(feature = "dev")] 
+const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("9BRgCdmwyP5wGVTvKAUDjSwucpqGncurVa35DjaWqSsC");
 #[cfg(feature = "dev")]
 use pyth_solana_receiver_sdk::ID as PYTH_RECEIVER_ID;
 #[cfg(feature = "dev")]
@@ -34,7 +36,9 @@ const PYTH_PROGRAM_ID: Pubkey = PYTH_RECEIVER_ID;
 #[cfg(feature = "local")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
-const INITIAL_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+#[cfg(feature = "local")] 
+const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
 const PYTH_PROGRAM_ID: Pubkey = pubkey!("446knK6VQrwXpRtetwALimsGfrEKBEr9srzur1PcTdzW");
 
@@ -60,8 +64,10 @@ pub enum AuthorizationError
 {
     #[msg("Only the CEO can call this function")]
     NotCEO,
-    #[msg("Only the Treasurer can call this function")]
-    NotTreasurer,
+    #[msg("Only the Solvency Treasurer can call this function")]
+    NotSolvencyTreasurer,
+    #[msg("Only the Liquidation Treasurer can call this function")]
+    NotLiquidationTreasurer,
     #[msg("Only the Fee Collector can claim the fees")]
     NotFeeCollector
 }
@@ -71,7 +77,7 @@ pub enum InvalidInputError
 {
     #[msg("The submarket fee on interest earned rate can't be greater than 100%")]
     InvalidSubMarketFeeRate,
-    #[msg("The submarket fee on interest earned rate can't be greater than 100%")]
+    #[msg("The solvency insurance fee on interest earned rate can't be greater than 100%")]
     InvalidSolvencyInsuranceFeeRate,
     #[msg("You must provide all of the sub user's tab accounts")]
     IncorrectNumberOfTabAccounts,
@@ -149,31 +155,31 @@ fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_res
     }
 
     //Use ra_solana_math library FixedPoint for fixed point math
-    let old_supply_interest_index_fixed_point = FixedPoint::from_int(token_reserve.supply_interest_change_index as u64);
-    let old_borrow_interest_index_fixed_point = FixedPoint::from_int(token_reserve.borrow_interest_change_index as u64);
-    let number_one_fixed_point = FixedPoint::from_int(1);
-    let supply_apy_fixed_point = FixedPoint::from_bps(token_reserve.supply_apy as u64)?;
-    let borrow_apy_fixed_point = FixedPoint::from_bps(token_reserve.borrow_apy as u64)?;
+    let old_supply_interest_index_fp = FixedPoint::from_int(token_reserve.supply_interest_change_index as u64);
+    let old_borrow_interest_index_fp = FixedPoint::from_int(token_reserve.borrow_interest_change_index as u64);
+    let number_one_fp = FixedPoint::from_int(1);
+    let supply_apy_fp = FixedPoint::from_bps(token_reserve.supply_apy as u64)?;
+    let borrow_apy_fp = FixedPoint::from_bps(token_reserve.borrow_apy as u64)?;
     let change_in_time = new_lending_activity_time_stamp - token_reserve.last_lending_activity_time_stamp;
-    let change_in_time_fixed_point =  FixedPoint::from_int(change_in_time);
-    let seconds_in_a_year_fixed_point = FixedPoint::from_int(31_556_952); //1 year = (365.2425 days) × (24 hours/day) × (3600 seconds/hour) = 31,556,952 seconds
+    let change_in_time_fp =  FixedPoint::from_int(change_in_time);
+    let seconds_in_a_year_fp = FixedPoint::from_int(31_556_952); //1 year = (365.2425 days) × (24 hours/day) × (3600 seconds/hour) = 31,556,952 seconds
     
     //Set Token Reserve Supply Interest Index = Old Supply Interest Index * (1 + Supply APY * Δt/Seconds in a Year)
     //Multiply before dividing to help keep precision
-    let supply_apy_mul_change_in_time_fixed_point = supply_apy_fixed_point.mul(&change_in_time_fixed_point)?;
-    let interest_change_factor_fixed_point = supply_apy_mul_change_in_time_fixed_point.div(&seconds_in_a_year_fixed_point)?;
-    let one_plus_interest_change_factor_fixed_point = number_one_fixed_point.add(&interest_change_factor_fixed_point)?;
-    let new_supply_interest_index_fixed_point = old_supply_interest_index_fixed_point.mul(&one_plus_interest_change_factor_fixed_point)?;
-    let new_supply_interest_index = new_supply_interest_index_fixed_point.to_u128()?;
+    let supply_apy_mul_change_in_time_fp = supply_apy_fp.mul(&change_in_time_fp)?;
+    let interest_change_factor_fp = supply_apy_mul_change_in_time_fp.div(&seconds_in_a_year_fp)?;
+    let one_plus_interest_change_factor_fp = number_one_fp.add(&interest_change_factor_fp)?;
+    let new_supply_interest_index_fp = old_supply_interest_index_fp.mul(&one_plus_interest_change_factor_fp)?;
+    let new_supply_interest_index = new_supply_interest_index_fp.to_u128()?;
     token_reserve.supply_interest_change_index = new_supply_interest_index;
 
     //Set Token Reserve Borrow Interest Index = Old Borrow Interest Index * (1 + Borrow APY * Δt/Seconds in a Year)
     //Multiply before dividing to help keep precision
-    let borrow_apy_mul_change_in_time_fixed_point = borrow_apy_fixed_point.mul(&change_in_time_fixed_point)?;
-    let interest_change_factor_fixed_point = borrow_apy_mul_change_in_time_fixed_point.div(&seconds_in_a_year_fixed_point)?;
-    let one_plus_interest_change_factor_fixed_point = number_one_fixed_point.add(&interest_change_factor_fixed_point)?;
-    let new_borrow_interest_index_fixed_point = old_borrow_interest_index_fixed_point.mul(&one_plus_interest_change_factor_fixed_point)?;
-    let new_borrow_interest_index = new_borrow_interest_index_fixed_point.to_u128()?;
+    let borrow_apy_mul_change_in_time_fp = borrow_apy_fp.mul(&change_in_time_fp)?;
+    let interest_change_factor_fp = borrow_apy_mul_change_in_time_fp.div(&seconds_in_a_year_fp)?;
+    let one_plus_interest_change_factor_fp = number_one_fp.add(&interest_change_factor_fp)?;
+    let new_borrow_interest_index_fp = old_borrow_interest_index_fp.mul(&one_plus_interest_change_factor_fp)?;
+    let new_borrow_interest_index = new_borrow_interest_index_fp.to_u128()?;
     token_reserve.borrow_interest_change_index = new_borrow_interest_index;
 
     msg!("Updated Token Reserve Interest Change Indexes");
@@ -268,14 +274,15 @@ fn update_user_previous_interest_earned<'info>(
 
     //Use ra_solana_math library FixedPoint for fixed point math
     //User New Balance = Old Balance * Token Reserve Earned Interest Index / User Earned Interest Index
-    let token_reserve_supply_index_fixed_point = FixedPoint::from_int(token_reserve.supply_interest_change_index as u64);
-    let user_supply_index_fixed_point = FixedPoint::from_int(lending_user_tab_account.supply_interest_change_index as u64);
-    let old_user_deposited_amount_fixed_point = FixedPoint::from_int(lending_user_tab_account.deposited_amount as u64);
+    let token_reserve_supply_index_fp = FixedPoint::from_int(token_reserve.supply_interest_change_index as u64);
+    let user_supply_index_fp = FixedPoint::from_int(lending_user_tab_account.supply_interest_change_index as u64);
+    let old_user_deposited_amount_fp = FixedPoint::from_int(lending_user_tab_account.deposited_amount as u64);
+    let round_up_at_point_5 = FixedPoint::from_ratio(1, 2)?;//Add 0.5 before floor() or to_128() when rounding
 
     //Perform multiplication before division to help keep more precision
-    let old_user_balance_mul_token_reserve_index_fixed_point = old_user_deposited_amount_fixed_point.mul(&token_reserve_supply_index_fixed_point)?;
-    let new_user_deposited_amount_before_fee_fixed_point = old_user_balance_mul_token_reserve_index_fixed_point.div(&user_supply_index_fixed_point)?;
-    let new_user_interest_earned_amount_before_fee_fixed_point = new_user_deposited_amount_before_fee_fixed_point.sub(&old_user_deposited_amount_fixed_point)?;
+    let old_user_balance_mul_token_reserve_index_fp = old_user_deposited_amount_fp.mul(&token_reserve_supply_index_fp)?;
+    let new_user_deposited_amount_before_fees_fp = old_user_balance_mul_token_reserve_index_fp.div(&user_supply_index_fp)?;
+    let new_user_interest_earned_amount_before_fees_fp = (new_user_deposited_amount_before_fees_fp.sub(&old_user_deposited_amount_fp)?).add(&round_up_at_point_5)?;
     
     //Make Sure SubMarket Fee and Solvency Insurance Fee don't exceed 100%
     let sub_market_fee;
@@ -290,21 +297,52 @@ fn update_user_previous_interest_earned<'info>(
         solvency_insurance_fee = token_reserve.solvency_insurance_fee_rate;
         sub_market_fee = 10_000 - token_reserve.solvency_insurance_fee_rate;
     }
-
-    //Calculate SubMarket Fee
-    let sub_market_fee_rate_fixed_point = FixedPoint::from_bps(sub_market_fee as u64)?;
-    let new_sub_market_fees_generated_amount_fixed_point_floor = (new_user_interest_earned_amount_before_fee_fixed_point.mul(&sub_market_fee_rate_fixed_point)?).floor(); //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
-    let new_sub_market_fees_generated_amount = new_sub_market_fees_generated_amount_fixed_point_floor.to_u128()?;
+   
+    //Calculate Total Fee
+    //The separate fee approach (below this commented out total fee approach) keeps the fees symmertrical always when they are the same rate and is more consistent
+    //IE: Total fee is 1.92 so submarket fee(example rate 4%) is 1 and solvency fee(example rate 4%) is 0.
+    /*let total_fee_rate_fp = FixedPoint::from_bps((sub_market_fee + solvency_insurance_fee)as u64)?;
+    let total_fees_generated_fp_floor = ((new_user_interest_earned_amount_before_fees_fp.mul(&total_fee_rate_fp)?)).floor(); //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
 
     //Calculate Solvency Insurance Fee
-    let solvency_insurance_fee_rate_fixed_point = FixedPoint::from_bps(solvency_insurance_fee as u64)?;
-    let new_solvency_insurance_fees_generated_amount_fixed_point_floor = (new_user_interest_earned_amount_before_fee_fixed_point.mul(&solvency_insurance_fee_rate_fixed_point)?).floor(); //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
-    let new_solvency_insurance_fees_generated_amount = new_solvency_insurance_fees_generated_amount_fixed_point_floor.to_u128()?;
+    let solvency_insurance_ratio_fp = FixedPoint::from_bps(solvency_insurance_fee as u64)?.div(&total_fee_rate_fp)?; //Get Solvency percentage of Fees
+    let new_solvency_insurance_fees_generated_amount_fp_floor = total_fees_generated_fp_floor.mul(&solvency_insurance_ratio_fp)?.floor();
+    let new_solvency_insurance_fees_generated_amount = new_solvency_insurance_fees_generated_amount_fp_floor.to_u128()?;
+
+    //Calculate SubMarket Fee
+    let new_sub_market_fees_generated_amount_fp = total_fees_generated_fp_floor.sub(&new_solvency_insurance_fees_generated_amount_fp_floor)?; //Submarket fee is the remainder without taking the floor again
+    let new_sub_market_fees_generated_amount = new_sub_market_fees_generated_amount_fp.to_u128()?;
 
     //Apply Fees to Interest Earned
-    let new_user_interest_earned_amount_after_sb_fee_fixed_point = new_user_interest_earned_amount_before_fee_fixed_point.sub(&new_sub_market_fees_generated_amount_fixed_point_floor)?;
-    let new_user_interest_earned_amount_after_fees_fixed_point = new_user_interest_earned_amount_after_sb_fee_fixed_point.sub(&new_solvency_insurance_fees_generated_amount_fixed_point_floor)?;
-    let new_user_interest_earned_amount_after_fees = new_user_interest_earned_amount_after_fees_fixed_point.to_u128()?;
+    let new_user_interest_earned_amount_after_fees_fp = new_user_interest_earned_amount_before_fees_fp.sub(&total_fees_generated_fp_floor)?;
+    let new_user_interest_earned_amount_after_fees = new_user_interest_earned_amount_after_fees_fp.to_u128()?;*/
+
+    //Separate Fee Approach
+    //Calculate SubMarket Fee
+    let sub_market_fee_rate_fp = FixedPoint::from_bps(sub_market_fee as u64)?;
+    let new_sub_market_fees_generated_amount_before_round = new_user_interest_earned_amount_before_fees_fp.mul(&sub_market_fee_rate_fp)?; //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
+    let new_sub_market_fees_generated_amount_fp_floor = (new_sub_market_fees_generated_amount_before_round/*.add(&round_up_at_point_5)?*/).floor();
+    let new_sub_market_fees_generated_amount = new_sub_market_fees_generated_amount_fp_floor.to_u128()?;
+
+    //Calculate Solvency Insurance Fee
+    let solvency_insurance_fee_rate_fp = FixedPoint::from_bps(solvency_insurance_fee as u64)?;
+    let new_solvency_insurance_fees_generated_amount_before_round = new_user_interest_earned_amount_before_fees_fp.mul(&solvency_insurance_fee_rate_fp)?; //Taking the floor before subtraction prevents the token reserve from having extra deposit amounts. Although having an extra deposit amount can act as a safety buffer for liquidity when there is bad debt, that's what the solvency insurance fee is for.
+    let new_solvency_insurance_fees_generated_amount_fp_floor = (new_solvency_insurance_fees_generated_amount_before_round/*.add(&round_up_at_point_5)?*/).floor();
+    let mut new_solvency_insurance_fees_generated_amount = new_solvency_insurance_fees_generated_amount_fp_floor.to_u128()?;
+
+    //Apply Fees to Interest Earned
+    let new_user_interest_earned_amount_after_sb_fee_fp = new_user_interest_earned_amount_before_fees_fp.sub(&new_sub_market_fees_generated_amount_fp_floor)?;
+    let new_user_interest_earned_amount_after_fees_fp = new_user_interest_earned_amount_after_sb_fee_fp.sub(&new_solvency_insurance_fees_generated_amount_fp_floor)?;
+    let mut new_user_interest_earned_amount_after_fees = (new_user_interest_earned_amount_after_fees_fp/*.add(&round_up_at_point_5)?*/).to_u128()?;
+
+    //User should earn 0% interest when combine fee rates are 100%
+    //Due to the separate fee operations above, 'new_user_interest_earned_amount_after_fees' might still hold 1 dust.
+    if sub_market_fee + solvency_insurance_fee == 10_000 && new_user_interest_earned_amount_after_fees > 0
+    {
+        //Sweep the remaining dust into Solvency
+        new_solvency_insurance_fees_generated_amount += new_user_interest_earned_amount_after_fees;
+        new_user_interest_earned_amount_after_fees = 0;
+    }
     
     token_reserve.deposited_amount += new_user_interest_earned_amount_after_fees;
     token_reserve.interest_earned_amount += new_user_interest_earned_amount_after_fees;
@@ -347,15 +385,16 @@ fn update_user_previous_interest_accrued<'info>(
 
     //Use ra_solana_math library FixedPoint for fixed point math
     //User New Debt = Old Debt * Token Reserve Accrued Interest Index / User Accrued Interest Index
-    let token_reserve_borrow_index_fixed_point = FixedPoint::from_int(token_reserve.borrow_interest_change_index as u64);
-    let user_borrow_index_fixed_point = FixedPoint::from_int(lending_user_tab_account.borrow_interest_change_index as u64);
-    let old_user_borrowed_amount_fixed_point = FixedPoint::from_int(lending_user_tab_account.borrowed_amount as u64);
+    let token_reserve_borrow_index_fp = FixedPoint::from_int(token_reserve.borrow_interest_change_index as u64);
+    let user_borrow_index_fp = FixedPoint::from_int(lending_user_tab_account.borrow_interest_change_index as u64);
+    let old_user_borrowed_amount_fp = FixedPoint::from_int(lending_user_tab_account.borrowed_amount as u64);
+    let round_up_at_point_5 = FixedPoint::from_ratio(1, 2)?;//Add 0.5 before floor() or to_128() when rounding
 
     //Perform multiplication before division to help keep more precision
-    let old_user_debt_mul_token_reserve_index_fixed_point = old_user_borrowed_amount_fixed_point.mul(&token_reserve_borrow_index_fixed_point)?;
-    let new_user_borrowed_amount_fixed_point = old_user_debt_mul_token_reserve_index_fixed_point.div(&user_borrow_index_fixed_point)?;
-    let new_user_interest_accrued_amount_fixed_point = new_user_borrowed_amount_fixed_point.sub(&old_user_borrowed_amount_fixed_point)?;
-    let new_user_interest_accrued_amount = new_user_interest_accrued_amount_fixed_point.to_u128()?;
+    let old_user_debt_mul_token_reserve_index_fp = old_user_borrowed_amount_fp.mul(&token_reserve_borrow_index_fp)?;
+    let new_user_borrowed_amount_fp = old_user_debt_mul_token_reserve_index_fp.div(&user_borrow_index_fp)?;
+    let new_user_interest_accrued_amount_fp = new_user_borrowed_amount_fp.sub(&old_user_borrowed_amount_fp)?;
+    let new_user_interest_accrued_amount = (new_user_interest_accrued_amount_fp.add(&round_up_at_point_5)?).to_u128()?;
 
     token_reserve.borrowed_amount += new_user_interest_accrued_amount;
     token_reserve.interest_accrued_amount += new_user_interest_accrued_amount;
@@ -439,7 +478,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
             tab_borrowed_amount = tab_account.borrowed_amount;
         }
 
-        //Using find_program_address is very expensive and iterates to derive the address
+        //Using find_program_address is more expensive and iterates to derive the address
         //Storing the bump and using create_program_address is cheaper
         /*let (expected_pda, _bump) = Pubkey::find_program_address(
             &[b"lendingUserTabAccount",
@@ -495,17 +534,18 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         let uncertainty_ratio = current_price.conf as f64 / current_price.price as f64;
         require!(uncertainty_ratio <= 0.02, LendingError::OraclePriceTooUnstable);//Reject price if more than 2% price uncertainty
 
-        msg!
+        //Debug
+        /*msg!
         (
             "Token Price: {} +- {} x 10^{}",
             current_price.price,
             current_price.conf,
             current_price.exponent
-        );
+        );*/
 
         let normalized_price_8_decimals = normalize_pyth_price_to_8_decimals(current_price.price, current_price.exponent);
 
-        msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
+        //msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
 
         let base_int :u128 = 10;
         let token_conversion_number = base_int.pow(tab_token_decimal_amount as u32); 
@@ -514,9 +554,9 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         user_borrowed_value += (tab_borrowed_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
 
         //Debug
-        msg!("Token Mint Address: {}", tab_token_mint_address_key);
-        msg!("Deposit Value: {}", user_deposited_value);
-        msg!("Borrow Value: {}", user_borrowed_value);
+        //msg!("Token Mint Address: {}", tab_token_mint_address_key);
+        //msg!("Deposit Value: {}", user_deposited_value);
+        //msg!("Borrow Value: {}", user_borrowed_value);
 
         //Only add to the value of the token being withdrawn or borrowed once since there might be multiple SubMarkets
         if token_mint_address.key() == tab_token_mint_address_key && evaluated_price_of_withdraw_or_borrow_token == false &&
@@ -532,14 +572,14 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
             {
                 liquidation_repay_token_value = (withdraw_borrow_or_repay_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
                 //Debug
-                msg!("Liquidation Repay Value: {}", liquidation_repay_token_value);
+                //msg!("Liquidation Repay Value: {}", liquidation_repay_token_value);
             }
 
             if liquidation_token_mint_address.unwrap().key() == tab_token_mint_address_key
             {
                 liquidation_liquidate_token_value = normalized_price_8_decimals;
                 //Debug
-                msg!("Liquidation Liquidate Value: {}", liquidation_liquidate_token_value);
+                //msg!("Liquidation Liquidate Value: {}", liquidation_liquidate_token_value);
             }
         }
 
@@ -547,13 +587,13 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     }
 
     //Debug
-    msg!
+    /*msg!
     (
         "Value calculation test. Deposited: {}, Borrowed: {}, Requested: {}",
         user_deposited_value,
         user_borrowed_value,
         user_withdraw_or_borrow_request_value
-    );
+    );*/
 
     if activity_type == Activity::Liquidate as u8
     {
@@ -565,16 +605,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         require!(user_borrowed_value >= eighty_percent_of_deposited_value, LendingError::NotLiquidatable);
 
         //Debug
-        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
-        //Debug
-        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
-        //Debug
-        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
-        //Debug
-        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
-        //Debug
-        msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
-    
+        //msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
 
         let liquidation_amount = liquidation_repay_token_value / liquidation_liquidate_token_value;
 
@@ -587,11 +618,11 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     {
         if activity_type == Activity::Withdraw as u8
         {
-            user_deposited_value = user_deposited_value - user_withdraw_or_borrow_request_value;
+            user_deposited_value -= user_withdraw_or_borrow_request_value;
         }
         else
         {
-            user_borrowed_value = user_borrowed_value + user_withdraw_or_borrow_request_value;
+            user_borrowed_value += user_withdraw_or_borrow_request_value;
         }
 
         if user_borrowed_value > 0
@@ -601,15 +632,15 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
             let seventy_percent_of_new_deposited_value = user_deposited_value_x_70 / 100;
 
             //Debug
-            msg!("user_deposited_value_x_70: {}", user_deposited_value_x_70);
-            msg!("seventy_percent_of_new_deposited_value: {}", seventy_percent_of_new_deposited_value);
+            //msg!("user_deposited_value_x_70: {}", user_deposited_value_x_70);
+            //msg!("seventy_percent_of_new_deposited_value: {}", seventy_percent_of_new_deposited_value);
 
             //You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
             require!(seventy_percent_of_new_deposited_value >= user_borrowed_value, LendingError::LiquidationExposure);
         }
 
         //Debug
-        msg!("user_borrowed_value: {}", user_borrowed_value);
+        //msg!("user_borrowed_value: {}", user_borrowed_value);
 
         Ok(0)
     } 
@@ -724,8 +755,11 @@ pub mod lending_protocol
         let ceo = &mut ctx.accounts.ceo;
         ceo.address = INITIAL_CEO_ADDRESS;
 
-        let treasurer = &mut ctx.accounts.treasurer;
-        treasurer.address = INITIAL_TREASURER_ADDRESS;
+        let solvency_treasurer = &mut ctx.accounts.solvency_treasurer;
+        solvency_treasurer.address = INITIAL_SOLVENCY_TREASURER_ADDRESS;
+
+        let liquidation_treasurer = &mut ctx.accounts.liquidation_treasurer;
+        liquidation_treasurer.address = INITIAL_LIQUIDATION_TREASURER_ADDRESS;
 
         let lending_protocol = &mut ctx.accounts.lending_protocol;
         lending_protocol.current_statement_month = statement_month;
@@ -752,16 +786,30 @@ pub mod lending_protocol
         Ok(())
     }
 
-    pub fn pass_on_lending_protocol_treasurer(ctx: Context<PassOnLendingProtocolTreasurer>, new_treasurer_address: Pubkey) -> Result<()> 
+    pub fn pass_on_solvency_treasurer(ctx: Context<PassOnSolvencyTreasurer>, new_treasurer_address: Pubkey) -> Result<()> 
     {
-        let treasurer = &mut ctx.accounts.treasurer;
+        let solvency_treasurer = &mut ctx.accounts.solvency_treasurer;
         //Only the Treasurer can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), treasurer.address.key(), AuthorizationError::NotTreasurer);
+        require_keys_eq!(ctx.accounts.signer.key(), solvency_treasurer.address.key(), AuthorizationError::NotSolvencyTreasurer);
 
-        msg!("The Lending Protocol Treasurer has passed on the title to a new Treasurer");
+        msg!("The Solvency Treasurer has passed on the title to a new Treasurer");
         msg!("New Treasurer: {}", new_treasurer_address.key());
 
-        treasurer.address = new_treasurer_address.key();
+        solvency_treasurer.address = new_treasurer_address.key();
+
+        Ok(())
+    }
+
+    pub fn pass_on_liquidation_treasurer(ctx: Context<PassOnLiquidationTreasurer>, new_treasurer_address: Pubkey) -> Result<()> 
+    {
+        let liquidation_treasurer = &mut ctx.accounts.liquidation_treasurer;
+        //Only the Treasurer can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), liquidation_treasurer.address.key(), AuthorizationError::NotLiquidationTreasurer);
+
+        msg!("The Liquidation Treasurer has passed on the title to a new Treasurer");
+        msg!("New Treasurer: {}", new_treasurer_address.key());
+
+        liquidation_treasurer.address = new_treasurer_address.key();
 
         Ok(())
     }
@@ -1660,7 +1708,8 @@ pub mod lending_protocol
         liquidati_account_owner_address: Pubkey,
         liquidati_account_index: u8,
         liquidator_account_index: u8,
-        repayment_amount: u64,
+        amount_to_repay: u64,
+        repay_max: bool,
         account_name: Option<String> //Optional variable. Use null on front end when not needed
     ) -> Result<()>
     {
@@ -1732,7 +1781,7 @@ pub mod lending_protocol
             )?;
         }
 
-        //Calculate Token Reserve Previously Earned And Accrued Interest
+        //Calculate Repayment Token Reserve Previously Earned And Accrued Interest
         update_token_reserve_supply_and_borrow_interest_change_index(repayment_token_reserve, time_stamp)?;
         update_user_previous_interest_earned(
             repayment_token_reserve,
@@ -1747,7 +1796,7 @@ pub mod lending_protocol
             liquidati_repayment_monthly_statement_account
         )?;
 
-        //Calculate Token Reserve Previously Earned And Accrued Interest
+        //Calculate Liquidation Token Reserve Previously Earned And Accrued Interest
         update_token_reserve_supply_and_borrow_interest_change_index(liquidation_token_reserve, time_stamp)?;
         update_user_previous_interest_earned(
             liquidation_token_reserve,
@@ -1778,6 +1827,16 @@ pub mod lending_protocol
         let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
         let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
 
+        let repayment_amount;
+        if repay_max
+        {
+            repayment_amount = fifty_percent_of_liquidati_borrowed_amount;
+        }
+        else
+        {
+            repayment_amount = amount_to_repay;
+        }
+
         //You can't repay more than 50% of a liquidati's debt position
         require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
 
@@ -1801,7 +1860,7 @@ pub mod lending_protocol
  
         //Repay Liquidati's Debt
         //Handle native SOL transactions
-        if liquidation_token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
+        if repayment_token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
         {
             //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
             let cpi_accounts = system_program::Transfer
@@ -1867,34 +1926,39 @@ pub mod lending_protocol
         liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
         liquidati_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidati_repayment_tab_account.repaid_debt_amount;
 
-        //Liquidate part of the Liquidati's Collateral and Transfer it plus the 7% bonus to the Liquidator and Solvency Insurance to Token Reserve
+        //Liquidate part of the Liquidati's Collateral and Transfer it plus a 7% bonus to the Liquidator
         //Multiply before dividing to help keep precision
         let amount_to_be_liquidated_x_107 = amount_to_be_liquidated * 107;
         let liquidation_amount_with_7_percent_bonus = amount_to_be_liquidated_x_107 / 100;
 
-        let decimal_scaling = 10_000; //10_000 = 100.00%
-        let amount_to_be_liquidated_x_insurance_rate = amount_to_be_liquidated * liquidation_token_reserve.solvency_insurance_fee_rate as u64;
-        let solvency_insurance_fee_amount = amount_to_be_liquidated_x_insurance_rate / decimal_scaling;
+        //Take a 1% liquidation fee
+        let liquidation_fee_amount = amount_to_be_liquidated / 100;
 
         //Update Liquidation and Solvency Insurance Values
         liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
-        liquidation_sub_market.liquidated_amount += solvency_insurance_fee_amount as u128;
+        liquidation_sub_market.liquidated_amount += liquidation_fee_amount as u128;
+        liquidation_sub_market.deposited_amount -= liquidation_fee_amount as u128;
+        liquidation_sub_market.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
         liquidation_token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
-        liquidation_token_reserve.liquidated_amount += solvency_insurance_fee_amount as u128;
+        liquidation_token_reserve.liquidated_amount += liquidation_fee_amount as u128;
+        liquidation_token_reserve.deposited_amount -= liquidation_fee_amount as u128;
+        liquidation_token_reserve.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
+        liquidation_token_reserve.uncollected_liquidation_fees_amount += liquidation_fee_amount as u128;
         liquidati_liquidation_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus;
-        liquidati_liquidation_tab_account.deposited_amount -= solvency_insurance_fee_amount;
+        liquidati_liquidation_tab_account.deposited_amount -= liquidation_fee_amount;
         liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
-        liquidati_liquidation_tab_account.liquidated_amount += solvency_insurance_fee_amount;
+        liquidati_liquidation_tab_account.liquidated_amount += liquidation_fee_amount;
         liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
         liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_tab_account.solvency_insurance_fees_generated_amount += solvency_insurance_fee_amount;
+        liquidator_liquidation_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_liquidated_amount = liquidati_liquidation_tab_account.liquidated_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
         liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_monthly_statement_account.monthly_solvency_insurance_fees_generated_amount += solvency_insurance_fee_amount;
+        liquidator_liquidation_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
         liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
-        liquidator_liquidation_monthly_statement_account.snap_shot_solvency_insurance_fees_generated_amount = liquidator_liquidation_tab_account.solvency_insurance_fees_generated_amount;
+        liquidator_liquidation_monthly_statement_account.snap_shot_liquidation_fees_generated_amount = liquidator_liquidation_tab_account.liquidation_fees_generated_amount;
         liquidator_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidator_liquidation_tab_account.deposited_amount;
         
         //Update Stat Listener
@@ -2331,7 +2395,7 @@ pub mod lending_protocol
     {
         let treasurer = &ctx.accounts.treasurer;
         //Only the Treasurer can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), treasurer.address.key(), AuthorizationError::NotTreasurer);
+        require_keys_eq!(ctx.accounts.signer.key(), treasurer.address.key(), AuthorizationError::NotSolvencyTreasurer);
 
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -2494,10 +2558,18 @@ pub struct InitializeLendingProtocol<'info>
     #[account(
         init, 
         payer = signer,
-        seeds = [b"lendingProtocolTreasurer".as_ref()],
+        seeds = [b"solvencyTreasurer".as_ref()],
         bump,
-        space = size_of::<LendingProtocolTreasurer>() + 8)]
-    pub treasurer: Account<'info, LendingProtocolTreasurer>,
+        space = size_of::<SolvencyTreasurer>() + 8)]
+    pub solvency_treasurer: Account<'info, SolvencyTreasurer>,
+
+    #[account(
+        init, 
+        payer = signer,
+        seeds = [b"liquidationTreasurer".as_ref()],
+        bump,
+        space = size_of::<LiquidationTreasurer>() + 8)]
+    pub liquidation_treasurer: Account<'info, LiquidationTreasurer>,
 
     #[account(
         init, 
@@ -2551,13 +2623,27 @@ pub struct PassOnLendingProtocolCEO<'info>
 }
 
 #[derive(Accounts)]
-pub struct PassOnLendingProtocolTreasurer<'info> 
+pub struct PassOnSolvencyTreasurer<'info> 
 {
     #[account(
         mut,
-        seeds = [b"lendingProtocolTreasurer".as_ref()],
+        seeds = [b"solvencyTreasurer".as_ref()],
         bump)]
-    pub treasurer: Account<'info, LendingProtocolTreasurer>,
+    pub solvency_treasurer: Account<'info, SolvencyTreasurer>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+pub struct PassOnLiquidationTreasurer<'info> 
+{
+    #[account(
+        mut,
+        seeds = [b"liquidationTreasurer".as_ref()],
+        bump)]
+    pub liquidation_treasurer: Account<'info, LiquidationTreasurer>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -2868,7 +2954,7 @@ pub struct WithdrawTokens<'info>
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
-    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+    pub lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
         init_if_needed, //SOL has to be withdrawn as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
@@ -3478,9 +3564,9 @@ pub struct ClaimSolvencyInsuranceFees<'info>
     pub lending_stats: Box<Account<'info, LendingStats>>,
 
     #[account(
-        seeds = [b"lendingProtocolTreasurer".as_ref()],
+        seeds = [b"solvencyTreasurer".as_ref()],
         bump)]
-    pub treasurer: Account<'info, LendingProtocolTreasurer>,
+    pub treasurer: Account<'info, SolvencyTreasurer>,
 
     #[account(
         mut,
@@ -3560,7 +3646,13 @@ pub struct LendingProtocolCEO
 }
 
 #[account]
-pub struct LendingProtocolTreasurer
+pub struct SolvencyTreasurer
+{
+    pub address: Pubkey
+}
+
+#[account]
+pub struct LiquidationTreasurer
 {
     pub address: Pubkey
 }
@@ -3627,6 +3719,8 @@ pub struct TokenReserve
     pub solvency_insurance_fee_rate: u16,
     pub solvency_insurance_fees_generated_amount: u128,
     pub uncollected_solvency_insurance_fees_amount: u128,
+    pub liquidation_fees_generated_amount: u128,
+    pub uncollected_liquidation_fees_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
@@ -3652,6 +3746,7 @@ pub struct SubMarket
     pub sub_market_fees_generated_amount: u128,
     pub uncollected_sub_market_fees_amount: u128,
     pub solvency_insurance_fees_generated_amount: u128,
+    pub liquidation_fees_generated_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
     pub repaid_debt_amount: u128,
@@ -3692,6 +3787,8 @@ pub struct LendingUserTabAccount
     pub sub_market_fees_collected_amount: u64,
     pub solvency_insurance_fees_generated_amount: u64,
     pub solvency_insurance_fees_collected_amount: u64,
+    pub liquidation_fees_generated_amount: u64,
+    pub liquidation_fees_collected_amount: u64,
     pub borrowed_amount: u64,
     pub interest_accrued_amount: u64,
     pub repaid_debt_amount: u64,
@@ -3717,6 +3814,8 @@ pub struct LendingUserMonthlyStatementAccount
     pub snap_shot_sub_market_fees_collected_amount: u64,
     pub snap_shot_solvency_insurance_fees_generated_amount: u64,
     pub snap_shot_solvency_insurance_fees_collected_amount: u64,
+    pub snap_shot_liquidation_fees_generated_amount: u64,
+    pub snap_shot_liquidation_fees_collected_amount: u64,
     pub snap_shot_debt_amount: u64,
     pub snap_shot_interest_accrued_amount: u64,
     pub snap_shot_repaid_debt_amount: u64,
@@ -3728,6 +3827,8 @@ pub struct LendingUserMonthlyStatementAccount
     pub monthly_sub_market_fees_collected_amount: u64,
     pub monthly_solvency_insurance_fees_generated_amount: u64,
     pub monthly_solvency_insurance_fees_collected_amount: u64,
+    pub monthly_liquidation_fees_generated_amount: u64,
+    pub monthly_liquidation_fees_collected_amount: u64,
     pub monthly_withdrawal_amount: u64,
     pub monthly_borrowed_amount: u64,
     pub monthly_interest_accrued_amount: u64,
