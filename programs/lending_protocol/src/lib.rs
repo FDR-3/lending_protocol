@@ -419,7 +419,8 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     activity_type: u8,
     new_lending_activity_time_stamp: u64,
     possibly_newly_initialized_tab_account: &Account<LendingUserTabAccount>,
-    liquidation_token_mint_address: Option<Pubkey>
+    liquidation_token_mint_address: Option<Pubkey>,
+    liquidation_token_decimal_amount: Option<u8>,
 ) -> Result<u64>
 {
     let mut user_tab_index = 0;
@@ -430,6 +431,8 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
     let mut liquidation_repay_token_value = 0;
     let mut liquidation_liquidate_token_value = 0;
+
+    let base_int :u128 = 10;
 
     while let Some(tab_account_serialized) = remaining_accounts_iter.next()
     {
@@ -547,7 +550,6 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
         //msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
 
-        let base_int :u128 = 10;
         let token_conversion_number = base_int.pow(tab_token_decimal_amount as u32); 
         
         user_deposited_value += (tab_deposited_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
@@ -606,10 +608,12 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
 
         //Debug
         //msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
-
-        let liquidation_amount = liquidation_repay_token_value / liquidation_liquidate_token_value;
+        let token_conversion_number = base_int.pow(liquidation_token_decimal_amount.unwrap() as u32); 
+        let liquidation_amount = (liquidation_repay_token_value * token_conversion_number) / liquidation_liquidate_token_value;
 
         //Debug
+        //msg!("Liquidation Repay Token Value: {}", liquidation_repay_token_value);
+        //msg!("Liquidation Liquidate Token Value: {}", liquidation_liquidate_token_value);
         //msg!("Liquidation Amount: {}", liquidation_amount);
 
         return Ok(liquidation_amount as u64)
@@ -654,12 +658,12 @@ fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
     if expo > 8
     {
         let conversion_number = base_int.pow(expo - 8); 
-        return pyth_price as u128 * conversion_number;
+        return pyth_price as u128 / conversion_number;
     }
     else if expo < 8
     {
         let conversion_number = base_int.pow(8 - expo); 
-        return pyth_price as u128 / conversion_number;
+        return pyth_price as u128 * conversion_number;
     }
     else
     {
@@ -1259,6 +1263,7 @@ pub mod lending_protocol
             Activity::Withdraw as u8,
             time_stamp,
             lending_user_tab_account,
+            None,
             None
         )?;
 
@@ -1443,6 +1448,7 @@ pub mod lending_protocol
             Activity::Borrow as u8,
             time_stamp,
             lending_user_tab_account,
+            None,
             None
         )?;
 
@@ -1855,7 +1861,8 @@ pub mod lending_protocol
             Activity::Liquidate as u8,
             time_stamp,
             liquidator_liquidation_tab_account,
-            Some(liquidation_token_mint_address)
+            Some(liquidation_token_mint_address),
+            Some(liquidation_token_reserve.token_decimal_amount)
         )?;
  
         //Repay Liquidati's Debt
