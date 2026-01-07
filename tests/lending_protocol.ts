@@ -4,7 +4,7 @@ import { LendingProtocol } from "../target/types/lending_protocol"
 import { PythMock } from "../target/types/pyth_mock"
 import { assert } from "chai"
 import * as fs from 'fs'
-import { PublicKey, LAMPORTS_PER_SOL, Transaction, Keypair, SystemProgram, ComputeBudgetProgram } from '@solana/web3.js'
+import { PublicKey, LAMPORTS_PER_SOL, Transaction, Keypair, SystemProgram, VersionedTransaction, TransactionMessage, ComputeBudgetProgram } from '@solana/web3.js'
 import { Token, ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token"
 
 describe("lending_protocol", () =>
@@ -53,6 +53,7 @@ describe("lending_protocol", () =>
   const solNegativePrice = BigInt(-10_000_000_000)//8 Decimal Price
   const solLiquidationPrice = BigInt(87_500_000_000)//9 Decimal Price for testing
   //const solLiquidationPrice = BigInt(20_000_000_000)//9 Decimal Price for testing
+  const solCantLiquidatePrice = BigInt(87_500_000_100)//9 Decimal Price for testing
   const solTestConf = new anchor.BN(245)
   const solUncertainConf = new anchor.BN(200_000_001)
   var solPythPriceUpdateAccountKeypair: Keypair
@@ -86,12 +87,12 @@ describe("lending_protocol", () =>
 
   const solvencyInsuranceFeeRateAbove100Percent = 10001 //100.01%
   const solvencyInsuranceFeeRateBelove0Percent = -1 //-0.01%
-  const solvencyInsuranceFeeRate8Percent = 800 //4.00%
+  const solvencyInsuranceFeeRate8Percent = 800 //8.00%
   const solvencyInsuranceFeeRate7Percent = 700 //7.00%
 
   const subMarketFeeRateAbove100Percent = 10001 //100.01%
   const subMarketFeeRateBelove0Percent = -1 //-0.01%
-  const subMarketFeeRate8Percent = 800 //4%
+  const subMarketFeeRate8Percent = 800 //8%
   const subMarketFeeRate100Percent = 10000 //100.00%
 
   const testSubMarketIndex = 4
@@ -113,7 +114,8 @@ describe("lending_protocol", () =>
   const borrowerWalletKeypair = anchor.web3.Keypair.generate()
 
   //Test Settings
-  const borrowWaitTimeInSeconds = 10
+  //const borrowWaitTimeInSeconds = 110
+  const borrowWaitTimeInSeconds = 0
   const useUSDCFixedBorrowAPY = false
 
   before(async () =>
@@ -558,13 +560,13 @@ describe("lending_protocol", () =>
     .accounts({ mint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
-   
+
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
     assert(tokenReserve.tokenReserveProtocolIndex == 0)
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(twoSol))
-  
+
     const tokenReserveATA = await deriveATA(getTokenReservePDA(solTokenMintAddress), solTokenMintAddress, true)
     const tokenReserveATAAccount = await program.provider.connection.getTokenAccountBalance(tokenReserveATA)
     assert(parseInt(tokenReserveATAAccount.value.amount) == twoSol.toNumber())
@@ -1070,7 +1072,7 @@ describe("lending_protocol", () =>
       (
         solPythPriceUpdateAccountKeypair,
         solPythFeedIDBuffer,
-        solTestPrice,
+        solCantLiquidatePrice,
         solTestConf,
         pythPriceDecimals
       )
@@ -1162,19 +1164,19 @@ describe("lending_protocol", () =>
     var repaymentTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     var repaymentTokenReserveUSDCATA = await deriveATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
     var repaymentTokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(repaymentTokenReserveUSDCATA)
-    console.log("Repayment Token Reserve Deposited Amount Before Liquidation", Number(repaymentTokenReserve.depositedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount))
-    console.log("Repayment Token Reserve Borrowed Amount Before Liquidation", Number(repaymentTokenReserve.borrowedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount))
-    console.log("Repayment Token Reserve Repaid Debt Before Liquidation", Number(repaymentTokenReserve.repaidDebtAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount))
-    console.log("Repayment Token Reserve Wallet Balance Before Liquidation", repaymentTokenReserveUSDCATABalance.value.uiAmount, "\n")
+    console.log("Repayment Token Reserve Deposited Amount Before Liquidation", Number(repaymentTokenReserve.depositedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
+    console.log("Repayment Token Reserve Borrowed Amount Before Liquidation", Number(repaymentTokenReserve.borrowedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
+    console.log("Repayment Token Reserve Repaid Debt Before Liquidation", Number(repaymentTokenReserve.repaidDebtAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
+    console.log("Repayment Token Reserve Wallet Balance Before Liquidation", repaymentTokenReserveUSDCATABalance.value.uiAmount, "USDC", "\n")
 
     var liquidationTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
     var liquidationTokenReserveUSDCATA = await deriveATA(getTokenReservePDA(solTokenMintAddress), solTokenMintAddress, true)
     var liquidationTokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(liquidationTokenReserveUSDCATA)
-    console.log("Liquidation Token Reserve Deposited Amount Before Liquidation", Number(liquidationTokenReserve.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Liquidated Amount Before Liquidation", Number(liquidationTokenReserve.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Liquidation Fees Generated Amount Before Liquidation", Number(liquidationTokenReserve.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amopunt Before Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Wallet Balance Before Liquidation", liquidationTokenReserveUSDCATABalance.value.uiAmount, "\n")
+    console.log("Liquidation Token Reserve Deposited Amount Before Liquidation", Number(liquidationTokenReserve.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Liquidated Amount Before Liquidation", Number(liquidationTokenReserve.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Liquidation Fees Generated Amount Before Liquidation", Number(liquidationTokenReserve.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amopunt Before Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Wallet Balance Before Liquidation", liquidationTokenReserveUSDCATABalance.value.uiAmount, "SOL", "\n")
 
     var liquidatiRepaymentLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
@@ -1184,8 +1186,7 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidati Borrowed Amount Before Liquidation", Number(liquidatiRepaymentLendingUserTabAccount.borrowedAmount))
-    console.log("Liquidati Repaid Debt Amount Before Liquidation", Number(liquidatiRepaymentLendingUserTabAccount.repaidDebtAmount), "\n")
+    console.log("Liquidati Borrowed Amount Before Liquidation", Number(liquidatiRepaymentLendingUserTabAccount.borrowedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
 
     var liquidatiLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
@@ -1195,8 +1196,8 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidati Deposited Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.depositedAmount))
-    console.log("Liquidati Liquidated Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount), "\n")
+    console.log("Liquidati Deposited Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidati Liquidated Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
 
     //Update Price timestamp for SOL Pyth mocked account
     await updateMockedPriceUpdateV2Account
@@ -1238,7 +1239,31 @@ describe("lending_protocol", () =>
     .remainingAccounts(remainingAccounts)
     .instruction()
 
-    const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 })
+    //1. Get the latest blockhash
+    const { blockhash } = await program.provider.connection.getLatestBlockhash()
+
+    //2. Compile your message (this converts your instructions into a Versioned format)
+    const messageV0 = new TransactionMessage({
+      payerKey: program.provider.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [liquidateInstruction],
+    }).compileToV0Message()
+
+    //3. Create the Versioned Transaction
+    const versionedTransaction = new VersionedTransaction(messageV0)
+
+    //4. Simulate using the non-deprecated config object
+    const simulation = await program.provider.connection.simulateTransaction(versionedTransaction,
+    {
+      replaceRecentBlockhash: true,
+      commitment: 'processed',
+    })
+
+    //5. Extract Compute Units
+    const unitsConsumed = simulation.value.unitsConsumed * 1.04
+    console.log("Estimated Compute Units:", unitsConsumed)
+
+    const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: unitsConsumed })
 
     const transaction = new anchor.web3.Transaction()
       .add(modifyComputeUnits)
@@ -1263,19 +1288,19 @@ describe("lending_protocol", () =>
     var repaymentTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     var repaymentTokenReserveUSDCATA = await deriveATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
     var repaymentTokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(repaymentTokenReserveUSDCATA)
-    console.log("Repayment Token Reserve Deposited Amount After Liquidation", Number(repaymentTokenReserve.depositedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount))
-    console.log("Repayment Token Reserve Borrowed Amount After Liquidation", Number(repaymentTokenReserve.borrowedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount))
-    console.log("Repayment Token Reserve Repaid Debt After Liquidation", Number(repaymentTokenReserve.repaidDebtAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount))
-    console.log("Repayment Token Reserve Wallet Balance After Liquidation", repaymentTokenReserveUSDCATABalance.value.uiAmount, "\n")
+    console.log("Repayment Token Reserve Deposited Amount After Liquidation", Number(repaymentTokenReserve.depositedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
+    console.log("Repayment Token Reserve Borrowed Amount After Liquidation", Number(repaymentTokenReserve.borrowedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
+    console.log("Repayment Token Reserve Repaid Debt After Liquidation", Number(repaymentTokenReserve.repaidDebtAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
+    console.log("Repayment Token Reserve Wallet Balance After Liquidation", repaymentTokenReserveUSDCATABalance.value.uiAmount, "USDC", "\n")
 
     var liquidationTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
-    var liquidationTokenReserveUSDCATA = await deriveATA(getTokenReservePDA(solTokenMintAddress), solTokenMintAddress, true)
-    var liquidationTokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(liquidationTokenReserveUSDCATA)
-    console.log("Liquidation Token Reserve Deposited Amount After Liquidation", Number(liquidationTokenReserve.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Liquidated Amount After Liquidation", Number(liquidationTokenReserve.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Liquidation Fees Generated Amount After Liquidation", Number(liquidationTokenReserve.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amopunt After Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount))
-    console.log("Liquidation Token Reserve Wallet Balance After Liquidation", liquidationTokenReserveUSDCATABalance.value.uiAmount, "\n")
+    var liquidationTokenReserveSOLATA = await deriveATA(getTokenReservePDA(solTokenMintAddress), solTokenMintAddress, true)
+    var liquidationTokenReserveSOLATABalance = await program.provider.connection.getTokenAccountBalance(liquidationTokenReserveSOLATA)
+    console.log("Liquidation Token Reserve Deposited Amount After Liquidation", Number(liquidationTokenReserve.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Liquidated Amount After Liquidation", Number(liquidationTokenReserve.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Liquidation Fees Generated Amount After Liquidation", Number(liquidationTokenReserve.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amopunt After Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Wallet Balance After Liquidation", liquidationTokenReserveSOLATABalance.value.uiAmount, "SOL", "\n")
 
     const liquidatorLendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
     (
@@ -1293,8 +1318,8 @@ describe("lending_protocol", () =>
       program.provider.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidator Liquidation Amount After Liquidation", Number(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
-    console.log("Liquidator Solvency Fee Generated Amount After Liquidation", Number(liquidatorLiquidationLendingUserTabAccount.liquidationFeesGeneratedAmount), "\n")
+    console.log("Liquidator Liquidation Amount After Liquidation", Number(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidator Solvency Fee Generated Amount After Liquidation", Number(liquidatorLiquidationLendingUserTabAccount.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
     assert(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount.gt(bnZero))
     assert(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.depositedAmount))
 
@@ -1306,10 +1331,8 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidati Borrowed Amount After Liquidation", Number(liquidatiRepaymentLendingUserTabAccount.borrowedAmount))
-    console.log("Liquidati Repaid Debt Amount After Liquidation", Number(liquidatiRepaymentLendingUserTabAccount.repaidDebtAmount), "\n")
+    console.log("Liquidati Borrowed Amount After Liquidation", Number(liquidatiRepaymentLendingUserTabAccount.borrowedAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
     assert(liquidatiRepaymentLendingUserTabAccount.borrowedAmount.eq(repaymentTokenReserve.borrowedAmount))
-    assert(liquidatiRepaymentLendingUserTabAccount.repaidDebtAmount.eq(repaymentTokenReserve.repaidDebtAmount))
 
     var liquidatiLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
@@ -1319,8 +1342,8 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidati Deposited Amount After Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.depositedAmount))
-    console.log("Liquidati Liquidated Amount After Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount), "\n")
+    console.log("Liquidati Deposited Amount After Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidati Liquidated Amount After Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     assert(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount.add(liquidatorLiquidationLendingUserTabAccount.liquidationFeesGeneratedAmount)))
     assert(oneSol.eq(liquidatiLiquidationLendingUserTabAccount.depositedAmount.add(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount)))
 
@@ -1334,9 +1357,7 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidati Repayment Monthly Statement Borrowed Amount", Number(liquidatiRepaymentMonthlyStatementAccount.monthlyRepaidDebtAmount))
-    console.log("Liquidati Repayment SnapShot Debt Balance Amount", Number(liquidatiRepaymentMonthlyStatementAccount.snapShotDebtAmount))
-    console.log("Liquidati Repayment SnapShot Repaid Debt Amount", Number(liquidatiRepaymentMonthlyStatementAccount.snapShotRepaidDebtAmount), "\n")
+    console.log("Liquidati SnapShot Debt Balance Amount After Liquidation", Number(liquidatiRepaymentMonthlyStatementAccount.snapShotDebtAmount) / Math.pow(10, repaymentTokenReserve.tokenDecimalAmount), "USDC")
     assert(liquidatiRepaymentMonthlyStatementAccount.snapShotDebtAmount.eq(liquidatiRepaymentLendingUserTabAccount.borrowedAmount))
     assert(liquidatiRepaymentMonthlyStatementAccount.snapShotRepaidDebtAmount.eq(liquidatiRepaymentLendingUserTabAccount.repaidDebtAmount))
     
@@ -1350,9 +1371,9 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidati Liquidation Monthly Statement Liquidated Amount", Number(liquidatiLiquidationMonthlyStatementAccount.monthlyLiquidatedAmount))
-    console.log("Liquidati Liquidation SnapShot Deposit Balance Amount", Number(liquidatiLiquidationMonthlyStatementAccount.snapShotBalanceAmount))
-    console.log("Liquidati Liquidation SnapShot Liquidated Amount", Number(liquidatiLiquidationMonthlyStatementAccount.snapShotLiquidatedAmount), "\n")
+    console.log("Liquidati Monthly Statement Liquidated Amount After Liquidation", Number(liquidatiLiquidationMonthlyStatementAccount.monthlyLiquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidati SnapShot Deposit Balance Amount After Liquidation", Number(liquidatiLiquidationMonthlyStatementAccount.snapShotBalanceAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidati SnapShot Liquidated Amount After Liquidation", Number(liquidatiLiquidationMonthlyStatementAccount.snapShotLiquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
     assert(liquidatiLiquidationMonthlyStatementAccount.snapShotBalanceAmount.eq(oneSol.sub(liquidatiLiquidationMonthlyStatementAccount.monthlyLiquidatedAmount)))
 
     const liquidatorLiquidationMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
@@ -1365,9 +1386,9 @@ describe("lending_protocol", () =>
       program.provider.publicKey,
       testUserAccountIndex
     ))
-    console.log("Liquidator Liquidation Monthly Statement Liquidated Amount", Number(liquidatorLiquidationMonthlyStatementAccount.monthlyLiquidatorAmount))
-    console.log("Liquidator Liquidation SnapShot Deposit Balance Amount", Number(liquidatorLiquidationMonthlyStatementAccount.snapShotBalanceAmount))
-    console.log("Liquidator Liquidation SnapShot Liquidator Amount", Number(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount), "\n")
+    console.log("Liquidator Monthly Statement Liquidated Amount After Liquidation", Number(liquidatorLiquidationMonthlyStatementAccount.monthlyLiquidatorAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidator SnapShot Deposit Balance Amount After Liquidation", Number(liquidatorLiquidationMonthlyStatementAccount.snapShotBalanceAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidator SnapShot Liquidator Amount After Liquidation", Number(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
     assert(liquidatorLiquidationMonthlyStatementAccount.monthlyLiquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotBalanceAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
@@ -1431,7 +1452,6 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     ))
-    //assert(borrowerLendingUserTabAccount.borrowedAmount.eq(bnZero))
 
     const tokenReserveUSDCATA = await deriveATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
     const tokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(tokenReserveUSDCATA)
@@ -1452,16 +1472,17 @@ describe("lending_protocol", () =>
     console.log("Token Reserve Interest Accrued: ", Number(tokenReserve.interestAccruedAmount))
     console.log("Token Reserve SubMarketFees: ", Number(tokenReserve.subMarketFeesGeneratedAmount))
     console.log("Token Reserve SolvencyFees: ", Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount))
-    console.log("Token Reserve Balance After Repayment: ", tokenReserveUSDCATABalance.value.uiAmount)
+    console.log("Token Reserve Balance After Repayment: ", tokenReserveUSDCATABalance.value.uiAmount, "\n")
 
-    console.log("Supplier Interest Accrued: ", Number(supplierLendingUserTabAccount.interestAccruedAmount))
     console.log("Supplier Interest Earned: ", Number(supplierLendingUserTabAccount.interestEarnedAmount))
+    console.log("Supplier Interest Accrued: ", Number(supplierLendingUserTabAccount.interestAccruedAmount))
     console.log("Supplier SubMarket Fees Generated: ", Number(supplierLendingUserTabAccount.subMarketFeesGeneratedAmount))
-    console.log("Supplier Solvency Insurance Generated: ", Number(supplierLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount))
-    console.log("Borrower Interest Accrued: ", Number(borrowerLendingUserTabAccount.interestAccruedAmount))
+    console.log("Supplier Solvency Insurance Generated: ", Number(supplierLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount), "\n")
+
     console.log("Borrower Interest Earned: ", Number(borrowerLendingUserTabAccount.interestEarnedAmount))
+    console.log("Borrower Interest Accrued: ", Number(borrowerLendingUserTabAccount.interestAccruedAmount))
     console.log("Borrower SubMarket Fees Generated: ", Number(borrowerLendingUserTabAccount.subMarketFeesGeneratedAmount))
-    console.log("Borrower Solvency Insurance Generated: ", Number(borrowerLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount))
+    console.log("Borrower Solvency Insurance Generated: ", Number(borrowerLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount), "\n")
   })
 
   it("Verifies you can't Over Repay.", async () => 
@@ -1811,7 +1832,7 @@ describe("lending_protocol", () =>
     assert(subMarket.uncollectedSubMarketFeesAmount.eq(bnZero))
   })
 
-  it("Verifies only Treasurer can Collect Solvency Insurance Fees", async () => 
+  it("Verifies only Solvency Treasurer can Collect Solvency Insurance Fees", async () => 
   {
     var errorMessage = ""
 
@@ -1864,6 +1885,58 @@ describe("lending_protocol", () =>
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     assert(tokenReserve.uncollectedSolvencyInsuranceFeesAmount.eq(bnZero))
+  })
+
+  it("Verifies only Liquidation Treasurer can Collect Liquidation Fees", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.claimLiquidationFees(
+      usdcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex,
+      null
+      )
+      .accounts({ signer: successorWalletKeypair.publicKey })
+      .signers([successorWalletKeypair])
+      .rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == notLiquidationTreasurerErrorMsg)
+  })
+
+  it("Claims Token Reserve Liquidation Fees", async () => 
+  {
+    await program.methods.claimLiquidationFees(
+    solTokenMintAddress,
+    program.provider.publicKey,
+    testSubMarketIndex,
+    testUserAccountIndex,
+    null
+    )
+    .rpc()
+
+    const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
+    (
+      solTokenMintAddress,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      program.provider.publicKey,
+      testUserAccountIndex
+    ))
+
+    assert(lendingUserTabAccount.liquidationFeesGeneratedAmount.gt(bnZero))
+    assert(lendingUserTabAccount.liquidationFeesGeneratedAmount.eq(lendingUserTabAccount.liquidationFeesCollectedAmount))
+
+    const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
+    assert(tokenReserve.uncollectedLiquidationFeesAmount.eq(bnZero))
   })
 
   function getLendingProtocolCEOPDA()
@@ -1991,7 +2064,7 @@ describe("lending_protocol", () =>
       [
         new TextEncoder().encode("userMonthlyStatementAccount"),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         new anchor.BN(statementMonth).toBuffer('le', 1),
-        new anchor.BN(statementYear).toBuffer('le', 4),
+        new anchor.BN(statementYear).toBuffer('le', 2),
         tokenMintAddress.toBuffer(),
         subMarketOwnerAddress.toBuffer(),
         new anchor.BN(subMarketIndex).toBuffer('le', 2),
