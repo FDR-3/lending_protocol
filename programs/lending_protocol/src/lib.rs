@@ -120,12 +120,14 @@ pub enum LendingError
     NotLiquidatable,
     #[msg("You can't repay more than 50% of a liquidati's debt position")]
     OverLiquidation,
+    #[msg("You can't zero out an account whose borrow liabilities aren't 100% or more of their deposited collateral")]
+    NotInsolvent,
     #[msg("Duplicate SubMarket Detected")]
     DuplicateSubMarket,
     #[msg("Negative Price Detected")]
     NegativePriceDetected,
     #[msg("Oracle Price Too Unstable")]
-    OraclePriceTooUnstable,
+    OraclePriceTooUnstable
 }
 
 //Helper function to get the token price by the pyth ID
@@ -283,7 +285,6 @@ fn update_user_previous_interest_earned<'info>(
     let old_user_balance_mul_token_reserve_index_fp = old_user_deposited_amount_fp.mul(&token_reserve_supply_index_fp)?;
     let new_user_deposited_amount_before_fees_fp = old_user_balance_mul_token_reserve_index_fp.div(&user_supply_index_fp)?;
     let new_user_interest_earned_amount_before_fees_fp = new_user_deposited_amount_before_fees_fp.sub(&old_user_deposited_amount_fp)?;
-    //let new_user_interest_earned_amount_before_fees_fp = (new_user_deposited_amount_before_fees_fp.sub(&old_user_deposited_amount_fp)?).add(&round_up_at_point_5)?;
 
     //Make Sure SubMarket Fee and Solvency Insurance Fee don't exceed 100%
     let sub_market_fee;
@@ -334,7 +335,7 @@ fn update_user_previous_interest_earned<'info>(
     //Apply Fees to Interest Earned
     let new_user_interest_earned_amount_after_sb_fee_fp = new_user_interest_earned_amount_before_fees_fp.sub(&new_sub_market_fees_generated_amount_fp_floor)?;
     let new_user_interest_earned_amount_after_fees_fp = new_user_interest_earned_amount_after_sb_fee_fp.sub(&new_solvency_insurance_fees_generated_amount_fp_floor)?;
-    let mut new_user_interest_earned_amount_after_fees = (new_user_interest_earned_amount_after_fees_fp/*.add(&round_up_at_point_5)?*/).to_u128()?;
+    let mut new_user_interest_earned_amount_after_fees = new_user_interest_earned_amount_after_fees_fp.to_u128()?;
 
     //User should earn 0% interest when combine fee rates are 100%
     //Due to the separate fee operations above, 'new_user_interest_earned_amount_after_fees' might still hold 1 dust.
@@ -389,14 +390,12 @@ fn update_user_previous_interest_accrued<'info>(
     let token_reserve_borrow_index_fp = FixedPoint::from_int(token_reserve.borrow_interest_change_index as u64);
     let user_borrow_index_fp = FixedPoint::from_int(lending_user_tab_account.borrow_interest_change_index as u64);
     let old_user_borrowed_amount_fp = FixedPoint::from_int(lending_user_tab_account.borrowed_amount as u64);
-    //let round_up_at_point_5 = FixedPoint::from_ratio(1, 2)?;//Add 0.5 before floor() or to_128() when rounding
 
     //Perform multiplication before division to help keep more precision
     let old_user_debt_mul_token_reserve_index_fp = old_user_borrowed_amount_fp.mul(&token_reserve_borrow_index_fp)?;
     let new_user_borrowed_amount_fp = old_user_debt_mul_token_reserve_index_fp.div(&user_borrow_index_fp)?;
-    let new_user_interest_accrued_amount_fp = new_user_borrowed_amount_fp.sub(&old_user_borrowed_amount_fp)?;
+    let new_user_interest_accrued_amount_fp = (new_user_borrowed_amount_fp.sub(&old_user_borrowed_amount_fp)?).ceil()?;
     let new_user_interest_accrued_amount = new_user_interest_accrued_amount_fp.to_u128()?;
-    //let new_user_interest_accrued_amount = (new_user_interest_accrued_amount_fp.add(&round_up_at_point_5)?).to_u128()?;
 
     token_reserve.borrowed_amount += new_user_interest_accrued_amount;
     token_reserve.interest_accrued_amount += new_user_interest_accrued_amount;
@@ -421,6 +420,7 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
     activity_type: u8,
     new_lending_activity_time_stamp: u64,
     possibly_newly_initialized_tab_account: &Account<LendingUserTabAccount>,
+    paying_off_insolvent_account: bool,
     liquidation_token_mint_address: Option<Pubkey>,
     liquidation_token_decimal_amount: Option<u8>,
 ) -> Result<u64>
@@ -605,8 +605,16 @@ fn validate_tab_and_price_update_accounts_and_check_liquidation_exposure<'a, 'in
         let user_deposited_value_x_80 = user_deposited_value * 80;
         let eighty_percent_of_deposited_value = user_deposited_value_x_80 / 100;
 
-        //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
-        require!(user_borrowed_value >= eighty_percent_of_deposited_value, LendingError::NotLiquidatable);
+        if paying_off_insolvent_account
+        {
+            //You can't zero out an account whose borrow liabilities aren't 100% or more of their deposited collateral
+            require!(user_borrowed_value >= user_deposited_value, LendingError::NotInsolvent);
+        }
+        else
+        {
+            //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
+            require!(user_borrowed_value >= eighty_percent_of_deposited_value, LendingError::NotLiquidatable);
+        }
 
         //Debug
         //msg!("user_borrowed_value: {}, eighty_percent_of_deposited_value: {}", user_borrowed_value, eighty_percent_of_deposited_value);
@@ -1265,6 +1273,7 @@ pub mod lending_protocol
             Activity::Withdraw as u8,
             time_stamp,
             lending_user_tab_account,
+            false,
             None,
             None
         )?;
@@ -1450,6 +1459,7 @@ pub mod lending_protocol
             Activity::Borrow as u8,
             time_stamp,
             lending_user_tab_account,
+            false,
             None,
             None
         )?;
@@ -1718,6 +1728,7 @@ pub mod lending_protocol
         liquidator_account_index: u8,
         amount_to_repay: u64,
         repay_max: bool,
+        paying_off_insolvent_account: bool,
         account_name: Option<String> //Optional variable. Use null on front end when not needed
     ) -> Result<()>
     {
@@ -1831,22 +1842,45 @@ pub mod lending_protocol
             liquidator_liquidation_monthly_statement_account
         )?;
 
-        //Multiply before dividing to help keep precision
-        let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
-        let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
-
         let repayment_amount;
-        if repay_max
+
+        if paying_off_insolvent_account
         {
-            repayment_amount = fifty_percent_of_liquidati_borrowed_amount;
+            if repay_max
+            {
+                repayment_amount = liquidati_repayment_tab_account.borrowed_amount;
+            }
+            else
+            {
+                if amount_to_repay > liquidati_repayment_tab_account.borrowed_amount
+                {
+                    //Can't pay more debt than the user has accumulated
+                    repayment_amount = liquidati_repayment_tab_account.borrowed_amount;
+                }
+                else
+                {
+                    repayment_amount = amount_to_repay;
+                }  
+            } 
         }
         else
         {
-            repayment_amount = amount_to_repay;
-        }
+            //Multiply before dividing to help keep precision
+            let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
+            let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
 
-        //You can't repay more than 50% of a liquidati's debt position
-        require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
+            if repay_max
+            {
+                repayment_amount = fifty_percent_of_liquidati_borrowed_amount;
+            }
+            else
+            {
+                repayment_amount = amount_to_repay;
+            }
+
+            //You can't repay more than 50% of a liquidati's debt position
+            require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
+        }
 
         //You must provide all of the sub user's tab accounts in remaining accounts. Every Tab Account has a corresponding Pyth Price Update Account directly after it in the passed in array
         require!((liquidati_lending_account.tab_account_count * 2) as usize == ctx.remaining_accounts.len() as usize, InvalidInputError::IncorrectNumberOfTabAndPythPriceUpdateAccounts);
@@ -1863,6 +1897,7 @@ pub mod lending_protocol
             Activity::Liquidate as u8,
             time_stamp,
             liquidator_liquidation_tab_account,
+            paying_off_insolvent_account,
             Some(liquidation_token_mint_address),
             Some(liquidation_token_reserve.token_decimal_amount)
         )?;

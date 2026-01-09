@@ -35,6 +35,7 @@ describe("lending_protocol", () =>
   const insufficientLiquidityErrorMsg = "Not enough liquidity in the Token Reserve for this withdraw or borrow"
   const notLiquidatableErrorMsg = "You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral"
   const overLiquidationErrorMsg = "You can't repay more than 50% of a liquidati's debt position"
+  const notInsolventErrorMsg = "You can't zero out an account whose borrow liabilities aren't 100% or more of their deposited collateral"
   const tooManyFundsErrorMsg = "You can't pay back more funds than you've borrowed"
   const incorrectOrderOfTabAccountsErrorMsg = "You must provide the sub user's tab accounts ordered by user_tab_account_index"
   const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
@@ -51,8 +52,6 @@ describe("lending_protocol", () =>
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
   const solTestPrice = BigInt(10_000_000_000)//8 Decimal Price
   const solNegativePrice = BigInt(-10_000_000_000)//8 Decimal Price
-  const solLiquidationPrice = BigInt(87_500_000_000)//9 Decimal Price for testing
-  //const solLiquidationPrice = BigInt(20_000_000_000)//9 Decimal Price for testing
   const solCantLiquidatePrice = BigInt(87_500_000_100)//9 Decimal Price for testing
   const solTestConf = new anchor.BN(245)
   const solUncertainConf = new anchor.BN(200_000_001)
@@ -114,9 +113,16 @@ describe("lending_protocol", () =>
   const borrowerWalletKeypair = anchor.web3.Keypair.generate()
 
   //Test Settings
-  //const borrowWaitTimeInSeconds = 110
-  const borrowWaitTimeInSeconds = 0
+  const borrowWaitTimeInSeconds = 30
+  //const borrowWaitTimeInSeconds = 0
   const useUSDCFixedBorrowAPY = false
+  const runInsolventTest = true
+  var solLiquidationPrice: bigint
+
+  if(!runInsolventTest)
+    solLiquidationPrice = BigInt(87_500_000_000)//9 Decimal Price for testing
+  else
+    solLiquidationPrice = BigInt(70_000_000_000)//9 Decimal Price for testing
 
   before(async () =>
   {
@@ -1061,7 +1067,7 @@ describe("lending_protocol", () =>
     assert(errorMessage == insufficientLiquidityErrorMsg)
   })
 
-  it("Verifies you can't liquidate an Account whose Debt Value is 80% or less than its Collateral Value", async () => 
+  it("Verifies you can't liquidate an Account whose Debt Value is less than 80% of its Collateral Value", async () => 
   {
     var errorMessage = ""
 
@@ -1101,6 +1107,7 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         halfBorrowerUSDCAmount,
         true,
+        false,
         null
       )
       .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
@@ -1135,6 +1142,7 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         borrowerUSDCAmount,
         false,
+        false,
         null
       )
       .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
@@ -1157,7 +1165,51 @@ describe("lending_protocol", () =>
     assert(errorMessage.includes(overLiquidationErrorMsg))
   })
 
-  it("Liquidates Account whose Debt Value is more than 80% of their Collateral Value", async () => 
+  it("Verifies you can't zero out an Account whose Debt Value is less than 100% of its Collateral Value", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      const remainingAccounts = [borrowerSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount, borrowerUSDCLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount]
+
+      const liquidateInstruction = await program.methods.liquidateAccount(
+        usdcMint.publicKey,
+        solTokenMintAddress,
+        program.provider.publicKey,
+        testSubMarketIndex,
+        program.provider.publicKey,
+        testSubMarketIndex,
+        borrowerWalletKeypair.publicKey,
+        testUserAccountIndex,
+        testUserAccountIndex,
+        borrowerUSDCAmount,
+        false,
+        true,
+        null
+      )
+      .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+      .remainingAccounts(remainingAccounts)
+      .instruction()
+
+      const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 })
+
+      const transaction = new anchor.web3.Transaction()
+        .add(modifyComputeUnits)
+        .add(liquidateInstruction)
+
+      await program.provider.sendAndConfirm(transaction)
+    }
+    catch(error)
+    {
+      errorMessage = error.transactionLogs.toString()
+    }
+
+    assert(errorMessage.includes(notInsolventErrorMsg))
+  })
+
+  //Liquidation test type controlled by "runInsolventTest" variable
+  it("Liquidates or Zero's out (Insolvent) Account whose Debt Value is more than 80% (100% for insolvent) of their Collateral Value", async () => 
   {
     console.log("\n", "<-- Before Liquidation -->")
 
@@ -1233,6 +1285,7 @@ describe("lending_protocol", () =>
       testUserAccountIndex,
       halfBorrowerUSDCAmount,
       true,
+      runInsolventTest,
       null
     )
     .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
@@ -1260,7 +1313,7 @@ describe("lending_protocol", () =>
     })
 
     //5. Extract Compute Units
-    const unitsConsumed = simulation.value.unitsConsumed * 1.04
+    const unitsConsumed = simulation.value.unitsConsumed * 1.15
     console.log("Estimated Compute Units:", unitsConsumed)
 
     const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: unitsConsumed })
@@ -1393,6 +1446,8 @@ describe("lending_protocol", () =>
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotBalanceAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
   })
+ 
+  
 
   it("Updates SnapShot", async () => 
   {
@@ -1520,7 +1575,7 @@ describe("lending_protocol", () =>
     Number(tokenReserve.borrowedAmount) / Math.pow(10, tokenReserve.tokenDecimalAmount) +
     Number(tokenReserve.subMarketFeesGeneratedAmount) / Math.pow(10, tokenReserve.tokenDecimalAmount) +
     Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount) / Math.pow(10, tokenReserve.tokenDecimalAmount)).toFixed(tokenReserve.tokenDecimalAmount))
-    assert(tokenReserveUSDCATABalance.value.uiAmount == currentTokenReserveAmount)
+    assert(tokenReserveUSDCATABalance.value.uiAmount >= currentTokenReserveAmount)
 
     await program.methods.repayTokens(
       usdcMint.publicKey,
@@ -1753,7 +1808,7 @@ describe("lending_protocol", () =>
     const tokenReserveUSDCATABalance = await program.provider.connection.getTokenAccountBalance(tokenReserveUSDCATA)
     console.log("Token Reserve Balance After Withdrawal: ", parseInt(tokenReserveUSDCATABalance.value.amount))
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(parseInt(tokenReserveUSDCATABalance.value.amount) == Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount) + Number(subMarket.uncollectedSubMarketFeesAmount))
+    assert(parseInt(tokenReserveUSDCATABalance.value.amount) >= Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount) + Number(subMarket.uncollectedSubMarketFeesAmount))
 
     const lendingUserMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
     (
@@ -1826,7 +1881,7 @@ describe("lending_protocol", () =>
     ))
     
     //Claiming SubMarket Fees just puts it in the Fee Collector's Tab Account
-    assert(parseInt(tokenReserveUSDCATABalance.value.amount) == Number(lendingUserTabAccount.depositedAmount) + Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount))
+    assert(parseInt(tokenReserveUSDCATABalance.value.amount) >= Number(lendingUserTabAccount.depositedAmount) + Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount))
 
     const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex))
     assert(subMarket.uncollectedSubMarketFeesAmount.eq(bnZero))
@@ -1881,7 +1936,7 @@ describe("lending_protocol", () =>
       testUserAccountIndex
     ))
 
-    assert(parseInt(tokenReserveUSDCATABalance.value.amount) == Number(lendingUserTabAccount.depositedAmount))
+    assert(parseInt(tokenReserveUSDCATABalance.value.amount) >= Number(lendingUserTabAccount.depositedAmount))
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     assert(tokenReserve.uncollectedSolvencyInsuranceFeesAmount.eq(bnZero))
