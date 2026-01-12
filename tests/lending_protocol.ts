@@ -1447,8 +1447,6 @@ describe("lending_protocol", () =>
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
   })
  
-  
-
   it("Updates SnapShot", async () => 
   {
     //Update Supplier SOL Tab SnapShot

@@ -55,7 +55,10 @@ enum Activity
     Withdraw = 1,
     Borrow = 2,
     Repay = 3,
-    Liquidate = 4
+    Liquidate = 4,
+    CollectSubMarketFees = 5,
+    CollectSolvencyFees = 6,
+    CollectLiquidationFees = 7
 }
 
 //Error Codes
@@ -2246,8 +2249,6 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
         lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = lending_user_tab_account.sub_market_fees_collected_amount;
 
-        sub_market.uncollected_sub_market_fees_amount = 0;
-
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
@@ -2260,7 +2261,17 @@ pub mod lending_protocol
         lending_stats.fee_collections += 1;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
+        token_reserve.last_lending_activity_amount = sub_market.uncollected_sub_market_fees_amount as u64;
+        token_reserve.last_lending_activity_type = Activity::CollectSubMarketFees as u8;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated 
+        sub_market.last_lending_activity_amount = sub_market.uncollected_sub_market_fees_amount as u64;
+        sub_market.last_lending_activity_type = Activity::CollectSubMarketFees as u8;
+        sub_market.last_lending_activity_time_stamp = time_stamp;
+        lending_user_monthly_statement_account.last_lending_activity_amount = sub_market.uncollected_sub_market_fees_amount as u64;
+        lending_user_monthly_statement_account.last_lending_activity_type = Activity::CollectSubMarketFees as u8;
+        lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+
+        sub_market.uncollected_sub_market_fees_amount = 0;
 
         msg!("{} Collected SubMarket Fees at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
@@ -2405,12 +2416,10 @@ pub mod lending_protocol
         destination_lending_user_tab_account.deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
         initial_lending_user_tab_account.sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
         initial_lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
-        initial_lending_user_monthly_statement_account.monthly_withdrawal_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a withdrawal from initial submarket. The fee collection and withdrawal cancel each other out, so no need to update snap shot balance for initial submarket
+        initial_lending_user_monthly_statement_account.monthly_withdrawal_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a withdrawal from initial submarket. The fee collection and withdrawal cancel each other out, so no need to update snap shot balance for initial submarket.
         initial_lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = initial_lending_user_tab_account.sub_market_fees_collected_amount;
         destination_lending_user_monthly_statement_account.monthly_deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a deposit into destination submarket.
         destination_lending_user_monthly_statement_account.snap_shot_balance_amount = destination_lending_user_tab_account.deposited_amount;
-        
-        initial_sub_market.uncollected_sub_market_fees_amount = 0;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
@@ -2424,7 +2433,23 @@ pub mod lending_protocol
         lending_stats.fee_collections += 1;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
+        token_reserve.last_lending_activity_amount = initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        token_reserve.last_lending_activity_type = Activity::CollectSubMarketFees as u8;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated 
+        initial_sub_market.last_lending_activity_amount = initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        initial_sub_market.last_lending_activity_type = Activity::CollectSubMarketFees as u8;
+        initial_sub_market.last_lending_activity_time_stamp = time_stamp;
+        destination_sub_market.last_lending_activity_amount = initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        destination_sub_market.last_lending_activity_type = Activity::Deposit as u8;
+        destination_sub_market.last_lending_activity_time_stamp = time_stamp;
+        initial_lending_user_monthly_statement_account.last_lending_activity_amount = initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        initial_lending_user_monthly_statement_account.last_lending_activity_type = Activity::CollectSubMarketFees as u8;
+        initial_lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+        destination_lending_user_monthly_statement_account.last_lending_activity_amount = initial_sub_market.uncollected_sub_market_fees_amount as u64;
+        destination_lending_user_monthly_statement_account.last_lending_activity_type = Activity::Deposit as u8;
+        destination_lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+
+        initial_sub_market.uncollected_sub_market_fees_amount = 0;
 
         msg!("{} Collected SubMarket Fees at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
@@ -2456,6 +2481,7 @@ pub mod lending_protocol
         let lending_user_account = &mut ctx.accounts.lending_user_account;
         let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
+        let time_stamp = Clock::get()?.unix_timestamp as u64;
 
         //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
         if lending_user_account.lending_user_account_added == false
@@ -2572,6 +2598,15 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.monthly_solvency_insurance_fees_collected_amount += amount;
         lending_user_monthly_statement_account.snap_shot_solvency_insurance_fees_collected_amount = lending_user_tab_account.solvency_insurance_fees_collected_amount;
 
+        //Update last activity on accounts
+        token_reserve.last_lending_activity_amount = token_reserve.uncollected_solvency_insurance_fees_amount as u64;
+        token_reserve.last_lending_activity_type = Activity::CollectSolvencyFees as u8;
+        //No interest change calculated since the solvency fees are sent to the Solvency Wallet outside the protocol
+        //token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated 
+        lending_user_monthly_statement_account.last_lending_activity_amount = token_reserve.uncollected_solvency_insurance_fees_amount as u64;
+        lending_user_monthly_statement_account.last_lending_activity_type = Activity::CollectSolvencyFees as u8;
+        lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+
         token_reserve.uncollected_solvency_insurance_fees_amount = 0;
 
         //Stat Listener
@@ -2686,8 +2721,6 @@ pub mod lending_protocol
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
         lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = lending_user_tab_account.liquidation_fees_collected_amount;
 
-        token_reserve.uncollected_liquidation_fees_amount = 0;
-
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexesbased interest indexes
         update_token_reserve_rates(token_reserve)?;
         sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
@@ -2700,7 +2733,17 @@ pub mod lending_protocol
         lending_stats.fee_collections += 1;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
+        token_reserve.last_lending_activity_amount = token_reserve.uncollected_liquidation_fees_amount as u64;
+        token_reserve.last_lending_activity_type = Activity::CollectLiquidationFees as u8;
+        token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated 
+        sub_market.last_lending_activity_amount = token_reserve.uncollected_liquidation_fees_amount as u64;
+        sub_market.last_lending_activity_type = Activity::CollectLiquidationFees as u8;
+        sub_market.last_lending_activity_time_stamp = time_stamp;
+        lending_user_monthly_statement_account.last_lending_activity_amount = token_reserve.uncollected_liquidation_fees_amount as u64;
+        lending_user_monthly_statement_account.last_lending_activity_type = Activity::CollectLiquidationFees as u8;
+        lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
+
+        token_reserve.uncollected_liquidation_fees_amount = 0;
 
         msg!("{} Collected Liquidation Fees at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
