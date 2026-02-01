@@ -60,6 +60,8 @@ describe("lending_protocol", () =>
   var borrowerSOLLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var solPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   
+  const mintAmount = 10_000_000_000
+
   var usdcMint = undefined
   const usdcPythFeedIDBuffer = Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", "hex")
   const usdcPythFeedIDArray = Array.from(Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", "hex"))
@@ -68,7 +70,6 @@ describe("lending_protocol", () =>
   const borrowerUSDCAmount = new anchor.BN(70_000_000)
   const overBorrowUSDCAmount = new anchor.BN(71_000_000)
   const supplierUSDCAmount = new anchor.BN(100_000_000)
-  const tenKUSDC = 10_000_000_000
   const usdcTestPrice = BigInt(100_000_000)//8 Decimal Price
   const usdcNegativePrice = BigInt(-100_000_000)//8 Decimal Price
   const usdcTestConf = new anchor.BN(245)
@@ -77,6 +78,45 @@ describe("lending_protocol", () =>
   var supplierUSDCLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var borrowerUSDCLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+
+  var daiMint = undefined
+  const daiPythFeedIDBuffer = Buffer.from("b0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e833f70dabfd", "hex")
+  const daiPythFeedIDArray = Array.from(Buffer.from("b0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e833f70dabfd", "hex"))
+  const daiTokenDecimalAmount = 8
+  const daiDepositAmount = new anchor.BN(10_000_000_000)
+  const daiHalfDepositAmount = new anchor.BN(5_000_000_000)
+  const daiTestPrice = BigInt(100_000_000)//8 Decimal Price
+  const daiTestConf = new anchor.BN(245)
+  var daiPythPriceUpdateAccountKeypair: Keypair
+  var supplierDAILendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var borrowerDAILendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var daiPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+
+  var wethMint = undefined
+  const wethPythFeedIDBuffer = Buffer.from("9d4294bbcd1174d6f2003ec365831e64cc31d9f6f15a2b85399db8d5000960f6", "hex")
+  const wethPythFeedIDArray = Array.from(Buffer.from("9d4294bbcd1174d6f2003ec365831e64cc31d9f6f15a2b85399db8d5000960f6", "hex"))
+  const wethTokenDecimalAmount = 8
+  const wethDepositAmount = new anchor.BN(10_000_000_000)
+  const wethHalfDepositAmount = new anchor.BN(5_000_000_000)
+  const wethTestPrice = BigInt(100_000_000)//8 Decimal Price
+  const wethTestConf = new anchor.BN(245)
+  var wethPythPriceUpdateAccountKeypair: Keypair
+  var supplierWEthLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var borrowerWEthLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var wethPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+
+  var wbtcMint = undefined
+  const wbtcPythFeedIDBuffer = Buffer.from("c9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", "hex")
+  const wbtcPythFeedIDArray = Array.from(Buffer.from("c9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", "hex"))
+  const wbtcTokenDecimalAmount = 8
+  const wbtcDepositAmount = new anchor.BN(10_000_000_000)
+  const wbtcHalfDepositAmount = new anchor.BN(5_000_000_000)
+  const wbtcTestPrice = BigInt(100_000_000)//8 Decimal Price
+  const wbtcTestConf = new anchor.BN(245)
+  var wbtcPythPriceUpdateAccountKeypair: Keypair
+  var supplierWBtcLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var borrowerWBtcLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var wbtcPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
   const borrowAPY5Percent = 500 //5.00%
   const borrowAPY7Percent = 700 //7.00%
@@ -135,32 +175,76 @@ describe("lending_protocol", () =>
     await airDropSol(borrowerWalletKeypair.publicKey)
 
     //Create a new USDC Mint for testing
-    console.log("Creating a USDC Token Mint and ATA for Testing")
+    console.log("Creating Token Mints and ATAs for Testing")
 
     usdcMint = await Token.createMint
     (
       program.provider.connection,
       testingWalletKeypair, //Payer for the mint creation
-      program.provider.publicKey, // Mint authority (who can mint tokens)
-      null, //Freeze authority (optional)
+      program.provider.publicKey, //Mint authority (who can mint tokens)
+      null, //Freeze authority (opttional)
       usdcTokenDecimalAmount, //Decimals for USDC
       TOKEN_2022_PROGRAM_ID //SPL Token program ID
     )
 
-    //Mint USDC to cEO Wallet
-    const testingWalletATA = await deriveATA(program.provider.publicKey, usdcMint.publicKey)
-    await createATAForWallet(testingWalletKeypair, usdcMint.publicKey, testingWalletATA)
-    await mintUSDCToWallet(usdcMint.publicKey, testingWalletATA)
+    daiMint = await Token.createMint
+    (
+      program.provider.connection,
+      testingWalletKeypair, //Payer for the mint creation
+      program.provider.publicKey, //Mint authority (who can mint tokens)
+      null, //Freeze authority (opttional)
+      daiTokenDecimalAmount, //Decimals for DAI
+      TOKEN_2022_PROGRAM_ID //SPL Token program ID
+    )
+
+    wethMint = await Token.createMint
+    (
+      program.provider.connection,
+      testingWalletKeypair, //Payer for the mint creation
+      program.provider.publicKey, //Mint authority (who can mint tokens)
+      null, //Freeze authority (opttional)
+      wethTokenDecimalAmount, //Decimals for WETH
+      TOKEN_2022_PROGRAM_ID //SPL Token program ID
+    )
+
+    wbtcMint = await Token.createMint
+    (
+      program.provider.connection,
+      testingWalletKeypair, //Payer for the mint creation
+      program.provider.publicKey, //Mint authority (who can mint tokens)
+      null, //Freeze authority (opttional)
+      wbtcTokenDecimalAmount, //Decimals for WBTC
+      TOKEN_2022_PROGRAM_ID //SPL Token program ID
+    )
+
+    //Mint USDC to CEO Wallet
+    const testingWalletUSDCATA = await deriveATA(program.provider.publicKey, usdcMint.publicKey)
+    await createATAForWallet(testingWalletKeypair, usdcMint.publicKey, testingWalletUSDCATA)
+    await mintTokenToWallet(usdcMint.publicKey, testingWalletUSDCATA)
 
     //Mint USDC to Successor Wallet
-    const successorWalletATA = await deriveATA(successorWalletKeypair.publicKey, usdcMint.publicKey)
-    await createATAForWallet(successorWalletKeypair, usdcMint.publicKey, successorWalletATA)
-    await mintUSDCToWallet(usdcMint.publicKey, successorWalletATA)
+    const successorWalletUSDCATA = await deriveATA(successorWalletKeypair.publicKey, usdcMint.publicKey)
+    await createATAForWallet(successorWalletKeypair, usdcMint.publicKey, successorWalletUSDCATA)
+    await mintTokenToWallet(usdcMint.publicKey, successorWalletUSDCATA)
 
     //Mint USDC to Borrower Wallet
-    const borrowerWalletATA = await deriveATA(borrowerWalletKeypair.publicKey, usdcMint.publicKey)
-    await createATAForWallet(borrowerWalletKeypair, usdcMint.publicKey, borrowerWalletATA)
-    await mintUSDCToWallet(usdcMint.publicKey, borrowerWalletATA)
+    const borrowerWalletUSDCATA = await deriveATA(borrowerWalletKeypair.publicKey, usdcMint.publicKey)
+    await createATAForWallet(borrowerWalletKeypair, usdcMint.publicKey, borrowerWalletUSDCATA)
+    await mintTokenToWallet(usdcMint.publicKey, borrowerWalletUSDCATA)
+
+    //Test other tokens
+    //Mint DAI to Successor Wallet
+    const successorWalletDAIATA = await deriveATA(successorWalletKeypair.publicKey, daiMint.publicKey)
+    await createATAForWallet(successorWalletKeypair, daiMint.publicKey, successorWalletDAIATA)
+    await mintTokenToWallet(daiMint.publicKey, successorWalletDAIATA)
+    //Mint WETH to Successor Wallet
+    const successorWalletWETHATA = await deriveATA(successorWalletKeypair.publicKey, wethMint.publicKey)
+    await createATAForWallet(successorWalletKeypair, wethMint.publicKey, successorWalletWETHATA)
+    await mintTokenToWallet(wethMint.publicKey, successorWalletWETHATA)
+    //Mint WBTC to Successor Wallet
+    const successorWalletWBTCATA = await deriveATA(successorWalletKeypair.publicKey, wbtcMint.publicKey)
+    await createATAForWallet(successorWalletKeypair, wbtcMint.publicKey, successorWalletWBTCATA)
+    await mintTokenToWallet(wbtcMint.publicKey, successorWalletWBTCATA)
 
     //Mock Sol Pyth Price Update Account
     console.log("Setting up SOL Mocked Pyth Price Update Account")
@@ -200,6 +284,69 @@ describe("lending_protocol", () =>
     usdcPythPriceUpdateRemainingAccount = 
     {
       pubkey: usdcPythPriceUpdateAccountKeypair.publicKey,
+      isSigner: false,
+      isWritable: true
+    }
+
+    //Mock DAI Pyth Price Update Account
+    console.log("Setting up DAI Mocked Pyth Price Update Account")
+
+    daiPythPriceUpdateAccountKeypair = await createMockedPythPriceUpdateAccount()
+
+    await updateMockedPriceUpdateV2Account
+    (
+      daiPythPriceUpdateAccountKeypair,
+      daiPythFeedIDBuffer,
+      daiTestPrice,
+      daiTestConf,
+      pythPriceDecimals
+    )
+
+    daiPythPriceUpdateRemainingAccount = 
+    {
+      pubkey: daiPythPriceUpdateAccountKeypair.publicKey,
+      isSigner: false,
+      isWritable: true
+    }
+
+    //Mock WEth Pyth Price Update Account
+    console.log("Setting up WEth Mocked Pyth Price Update Account")
+
+    wethPythPriceUpdateAccountKeypair = await createMockedPythPriceUpdateAccount()
+
+    await updateMockedPriceUpdateV2Account
+    (
+      wethPythPriceUpdateAccountKeypair,
+      wethPythFeedIDBuffer,
+      wethTestPrice,
+      wethTestConf,
+      pythPriceDecimals
+    )
+
+    wethPythPriceUpdateRemainingAccount = 
+    {
+      pubkey: wethPythPriceUpdateAccountKeypair.publicKey,
+      isSigner: false,
+      isWritable: true
+    }
+
+    //Mock WBtc Pyth Price Update Account
+    console.log("Setting up WBtc Mocked Pyth Price Update Account")
+
+    wbtcPythPriceUpdateAccountKeypair = await createMockedPythPriceUpdateAccount()
+
+    await updateMockedPriceUpdateV2Account
+    (
+      wbtcPythPriceUpdateAccountKeypair,
+      wbtcPythFeedIDBuffer,
+      wbtcTestPrice,
+      wbtcTestConf,
+      pythPriceDecimals
+    )
+
+    wbtcPythPriceUpdateRemainingAccount = 
+    {
+      pubkey: wbtcPythPriceUpdateAccountKeypair.publicKey,
       isSigner: false,
       isWritable: true
     }
@@ -352,7 +499,7 @@ describe("lending_protocol", () =>
     assert(errorMessage == notCEOErrorMsg)
   })
 
-  it("Updates Lending Lending Protocol Statement Year", async () => 
+  it("Updates Lending Protocol Statement Month and Year", async () => 
   {
     await program.methods.updateCurrentStatementMonthAndYear(newStatementMonth, newStatementYear).rpc()
 
@@ -617,7 +764,7 @@ describe("lending_protocol", () =>
     assert(lendingUserMonthlyStatementAccount.snapShotBalanceAmount.eq(twoSol))
     assert(lendingUserMonthlyStatementAccount.monthlyDepositedAmount.eq(twoSol))
 
-    //Populate sol remaining account
+    //Populate SOL remaining account
     const successorSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
       solTokenMintAddress,
@@ -1095,7 +1242,7 @@ describe("lending_protocol", () =>
 
       const remainingAccounts = [borrowerSOLLendingUserTabRemainingAccount, solPythPriceUpdateRemainingAccount, borrowerUSDCLendingUserTabRemainingAccount, usdcPythPriceUpdateRemainingAccount]
 
-      await program.methods.liquidateAccount(
+      const liquidateInstruction = await program.methods.liquidateAccount(
         usdcMint.publicKey,
         solTokenMintAddress,
         program.provider.publicKey,
@@ -1110,16 +1257,24 @@ describe("lending_protocol", () =>
         false,
         null
       )
-      .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+      .accounts({ repaymentMint: usdcMint.publicKey, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID })
       .remainingAccounts(remainingAccounts)
-      .rpc()
+      .instruction()
+
+      const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 })
+
+      const transaction = new anchor.web3.Transaction()
+        .add(modifyComputeUnits)
+        .add(liquidateInstruction)
+
+      await program.provider.sendAndConfirm(transaction)
     }
     catch(error)
     {
-      errorMessage = error.error.errorMessage
+      errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage == notLiquidatableErrorMsg)
+    assert(errorMessage.includes(notLiquidatableErrorMsg))
   })
 
   it("Verifies you can't repay more than 50% of someone's debt when liquidating them", async () => 
@@ -1145,7 +1300,7 @@ describe("lending_protocol", () =>
         false,
         null
       )
-      .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+      .accounts({ repaymentMint: usdcMint.publicKey, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID })
       .remainingAccounts(remainingAccounts)
       .instruction()
 
@@ -1188,7 +1343,7 @@ describe("lending_protocol", () =>
         true,
         null
       )
-      .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+      .accounts({ repaymentMint: usdcMint.publicKey, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID })
       .remainingAccounts(remainingAccounts)
       .instruction()
 
@@ -1209,7 +1364,7 @@ describe("lending_protocol", () =>
   })
 
   //Liquidation test type controlled by "runInsolventTest" variable
-  it("Liquidates or Zero's out (Insolvent) Account whose Debt Value is more than 80% (100% for insolvent) of their Collateral Value", async () => 
+  it("Liquidates or Zero's out insolvent Account whose Debt Value is 100% or more of their Collateral Value", async () => 
   {
     console.log("\n", "<-- Before Liquidation -->")
 
@@ -1288,7 +1443,7 @@ describe("lending_protocol", () =>
       runInsolventTest,
       null
     )
-    .accounts({ repaymentMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+    .accounts({ repaymentMint: usdcMint.publicKey, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID })
     .remainingAccounts(remainingAccounts)
     .instruction()
 
@@ -1313,7 +1468,7 @@ describe("lending_protocol", () =>
     })
 
     //5. Extract Compute Units
-    const unitsConsumed = simulation.value.unitsConsumed * 1.15
+    const unitsConsumed = simulation.value.unitsConsumed * 1.5
     console.log("Estimated Compute Units:", unitsConsumed)
 
     const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: unitsConsumed })
@@ -1826,7 +1981,7 @@ describe("lending_protocol", () =>
 
     const userATA = await deriveATA(successorWalletKeypair.publicKey, usdcMint.publicKey, true)
     const UserATAAccount = await program.provider.connection.getTokenAccountBalance(userATA)
-    assert(parseInt(UserATAAccount.value.amount) == tenKUSDC + Number(lendingUserMonthlyStatementAccount.monthlyInterestEarnedAmount))
+    assert(parseInt(UserATAAccount.value.amount) == mintAmount + Number(lendingUserMonthlyStatementAccount.monthlyInterestEarnedAmount))
   })
 
   it("Verifies only Fee Collector can Collect Fees from Submarket", async () => 
@@ -1990,6 +2145,265 @@ describe("lending_protocol", () =>
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
     assert(tokenReserve.uncollectedLiquidationFeesAmount.eq(bnZero))
+  })
+
+  it("Adds a DAI, WEth, and WBtc Token Reserves", async () => 
+  {
+    await program.methods.addTokenReserve(daiMint.publicKey, daiTokenDecimalAmount, daiPythFeedIDArray, borrowAPY5Percent, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
+    .accounts({ mint: daiMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+    .rpc()
+
+    await program.methods.addTokenReserve(wethMint.publicKey, wethTokenDecimalAmount, wethPythFeedIDArray, borrowAPY5Percent, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
+    .accounts({ mint: wethMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+    .rpc()
+
+    await program.methods.addTokenReserve(wbtcMint.publicKey, wbtcTokenDecimalAmount, wbtcPythFeedIDArray, borrowAPY5Percent, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
+    .accounts({ mint: wbtcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
+    .rpc()
+
+    const daiTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(daiMint.publicKey))
+    assert(daiTokenReserve.tokenReserveProtocolIndex == 2)
+    assert(daiTokenReserve.tokenMintAddress.toBase58() == daiMint.publicKey.toBase58())
+    assert(daiTokenReserve.tokenDecimalAmount == daiTokenDecimalAmount)
+    assert(daiTokenReserve.depositedAmount.eq(bnZero))
+    assert(daiTokenReserve.pythFeedId.toString() == daiPythFeedIDArray.toString())
+    assert(daiTokenReserve.borrowApy == borrowAPY5Percent)
+    assert(daiTokenReserve.globalLimit.eq(globalLimit1))
+    assert(daiTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
+
+    const wethTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(wethMint.publicKey))
+    assert(wethTokenReserve.tokenReserveProtocolIndex == 3)
+    assert(wethTokenReserve.tokenMintAddress.toBase58() == wethMint.publicKey.toBase58())
+    assert(wethTokenReserve.tokenDecimalAmount == wethTokenDecimalAmount)
+    assert(wethTokenReserve.depositedAmount.eq(bnZero))
+    assert(wethTokenReserve.pythFeedId.toString() == wethPythFeedIDArray.toString())
+    assert(wethTokenReserve.borrowApy == borrowAPY5Percent)
+    assert(wethTokenReserve.globalLimit.eq(globalLimit1))
+    assert(wethTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
+
+    const wbtcTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(wbtcMint.publicKey))
+    assert(wbtcTokenReserve.tokenReserveProtocolIndex == 4)
+    assert(wbtcTokenReserve.tokenMintAddress.toBase58() == wbtcMint.publicKey.toBase58())
+    assert(wbtcTokenReserve.tokenDecimalAmount == wbtcTokenDecimalAmount)
+    assert(wbtcTokenReserve.depositedAmount.eq(bnZero))
+    assert(wbtcTokenReserve.pythFeedId.toString() == wbtcPythFeedIDArray.toString())
+    assert(wbtcTokenReserve.borrowApy == borrowAPY5Percent)
+    assert(wbtcTokenReserve.globalLimit.eq(globalLimit1))
+    assert(wbtcTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
+  })
+
+  it("Creates a DAI, WEth, and WBtc SubMarket", async () => 
+  {
+    await program.methods.createSubMarket(daiMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
+    await program.methods.createSubMarket(wethMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
+    await program.methods.createSubMarket(wbtcMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
+
+    const daiSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(daiMint.publicKey, program.provider.publicKey, testSubMarketIndex))
+    assert(daiSubMarket.owner.toBase58() == program.provider.publicKey.toBase58())
+    assert(daiSubMarket.feeCollectorAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(daiSubMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
+    assert(daiSubMarket.tokenMintAddress.toBase58() == daiMint.publicKey.toBase58())
+    assert(daiSubMarket.subMarketIndex == testSubMarketIndex)
+
+    const wethSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(wethMint.publicKey, program.provider.publicKey, testSubMarketIndex))
+    assert(wethSubMarket.owner.toBase58() == program.provider.publicKey.toBase58())
+    assert(wethSubMarket.feeCollectorAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(wethSubMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
+    assert(wethSubMarket.tokenMintAddress.toBase58() == wethMint.publicKey.toBase58())
+    assert(wethSubMarket.subMarketIndex == testSubMarketIndex)
+
+    const wbtcSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(wbtcMint.publicKey, program.provider.publicKey, testSubMarketIndex))
+    assert(wbtcSubMarket.owner.toBase58() == program.provider.publicKey.toBase58())
+    assert(wbtcSubMarket.feeCollectorAddress.toBase58() == program.provider.publicKey.toBase58())
+    assert(wbtcSubMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
+    assert(wbtcSubMarket.tokenMintAddress.toBase58() == wbtcMint.publicKey.toBase58())
+    assert(wbtcSubMarket.subMarketIndex == testSubMarketIndex)
+  })
+
+  it("Deposits SOL, USDC, DAI, WEth, BTC into Token Reserve", async () => 
+  {
+    await program.methods.depositTokens(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
+    .accounts({ mint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
+    
+    await program.methods.depositTokens(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, supplierUSDCAmount, null)
+    .accounts({ mint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
+
+    await program.methods.depositTokens(daiMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, daiDepositAmount, null)
+    .accounts({ mint: daiMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
+
+    await program.methods.depositTokens(wethMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, wethDepositAmount, null)
+    .accounts({ mint: wethMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
+
+    await program.methods.depositTokens(wbtcMint.publicKey, program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, wbtcDepositAmount, null)
+    .accounts({ mint: wbtcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .signers([successorWalletKeypair])
+    .rpc()
+
+    //Populate DAI remaining account
+    const successorDAILendingUserTabAccountPDA = getLendingUserTabAccountPDA
+    (
+      daiMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWalletKeypair.publicKey,
+      testUserAccountIndex
+    )
+    supplierDAILendingUserTabRemainingAccount = 
+    {
+      pubkey: successorDAILendingUserTabAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
+
+    //Populate WEth remaining account
+    const successorWEthLendingUserTabAccountPDA = getLendingUserTabAccountPDA
+    (
+      wethMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWalletKeypair.publicKey,
+      testUserAccountIndex
+    )
+    supplierWEthLendingUserTabRemainingAccount = 
+    {
+      pubkey: successorWEthLendingUserTabAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
+
+    //Populate WBtc remaining account
+    const successorWBtcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
+    (
+      wbtcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      successorWalletKeypair.publicKey,
+      testUserAccountIndex
+    )
+    supplierWBtcLendingUserTabRemainingAccount = 
+    {
+      pubkey: successorWBtcLendingUserTabAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
+  })
+
+  it("Withdraws DAI, WEth, and WBtc From the Token Reserve", async () => 
+  {
+    //await debugPrintPythAccount(usdcPythPriceUpdateAccountKeypair.publicKey)
+
+    //Update Price timestamp for SOL Pyth mocked account
+    await updateMockedPriceUpdateV2Account
+    (
+      solPythPriceUpdateAccountKeypair,
+      solPythFeedIDBuffer,
+      solTestPrice,
+      solTestConf,
+      pythPriceDecimals
+    )
+
+    //Update Price timestamp for USDC Pyth mocked account
+    await updateMockedPriceUpdateV2Account
+    (
+      usdcPythPriceUpdateAccountKeypair,
+      usdcPythFeedIDBuffer,
+      usdcTestPrice,
+      usdcTestConf,
+      pythPriceDecimals
+    )
+
+    //Update Price timestamp for DAI Pyth mocked account
+    await updateMockedPriceUpdateV2Account
+    (
+      daiPythPriceUpdateAccountKeypair,
+      daiPythFeedIDBuffer,
+      daiTestPrice,
+      daiTestConf,
+      pythPriceDecimals
+    )
+
+    //Update Price timestamp for WEth Pyth mocked account
+    await updateMockedPriceUpdateV2Account
+    (
+      wethPythPriceUpdateAccountKeypair,
+      wethPythFeedIDBuffer,
+      wethTestPrice,
+      wethTestConf,
+      pythPriceDecimals
+    )
+
+    //Update Price timestamp for WBtc Pyth mocked account
+    await updateMockedPriceUpdateV2Account
+    (
+      wbtcPythPriceUpdateAccountKeypair,
+      wbtcPythFeedIDBuffer,
+      wbtcTestPrice,
+      wbtcTestConf,
+      pythPriceDecimals
+    )
+
+    //await debugPrintPythAccount(usdcPythPriceUpdateAccountKeypair.publicKey)
+  
+    const remainingAccounts =
+    [ 
+      supplierSOLLendingUserTabRemainingAccount,
+      solPythPriceUpdateRemainingAccount,
+      supplierUSDCLendingUserTabRemainingAccount,
+      usdcPythPriceUpdateRemainingAccount,
+      supplierDAILendingUserTabRemainingAccount,
+      daiPythPriceUpdateRemainingAccount,
+      supplierWEthLendingUserTabRemainingAccount,
+      wethPythPriceUpdateRemainingAccount,
+      supplierWBtcLendingUserTabRemainingAccount,
+      wbtcPythPriceUpdateRemainingAccount,
+    ]
+
+    await program.methods.withdrawTokens(
+      daiMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex,
+      daiHalfDepositAmount,
+      false
+    )
+    .accounts({ mint: daiMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .remainingAccounts(remainingAccounts)
+    .signers([successorWalletKeypair])
+    .rpc()
+
+    await program.methods.withdrawTokens(
+      wethMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex,
+      wethHalfDepositAmount,
+      false
+    )
+    .accounts({ mint: wethMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .remainingAccounts(remainingAccounts)
+    .signers([successorWalletKeypair])
+    .rpc()
+
+    await program.methods.withdrawTokens(
+      wbtcMint.publicKey,
+      program.provider.publicKey,
+      testSubMarketIndex,
+      testUserAccountIndex,
+      wbtcHalfDepositAmount,
+      false
+    )
+    .accounts({ mint: wbtcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
+    .remainingAccounts(remainingAccounts)
+    .signers([successorWalletKeypair])
+    .rpc()
   })
 
   function getLendingProtocolCEOPDA()
@@ -2197,7 +2611,7 @@ describe("lending_protocol", () =>
     await program.provider.connection.confirmTransaction(tx, 'processed')
   }
 
-  async function mintUSDCToWallet(tokenMintAddress: PublicKey, walletATA: PublicKey)
+  async function mintTokenToWallet(tokenMintAddress: PublicKey, walletATA: PublicKey)
   {
     //1. Add createMintTo instruction to transaction
     const transaction = new Transaction().add
@@ -2209,7 +2623,7 @@ describe("lending_protocol", () =>
         walletATA,
         program.provider.publicKey,
         [testingWalletKeypair],
-        tenKUSDC//$10,000.00
+        mintAmount
       )
     )
 

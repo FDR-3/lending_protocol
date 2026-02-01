@@ -759,6 +759,147 @@ fn initialize_lending_user_monthly_statement_account<'info>(lending_user_monthly
     Ok(())
 }
 
+fn deposit_tokens_into_token_reserve_from_user<'info>(token_mint_address: Pubkey,
+    token_reserve_ata: &InterfaceAccount<'info, TokenAccount>,
+    user_ata: &InterfaceAccount<'info, TokenAccount>,
+    token_mint: &InterfaceAccount<'info, Mint>,
+    token_program: &Interface<'info, TokenInterface>,
+    signer: &Signer<'info>,
+    system_program_account: &Program<'info, System>,
+    transfer_amount: u64
+) -> Result<()>
+{
+    //Handle native SOL transactions
+    if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
+    {
+        //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
+        let cpi_accounts = system_program::Transfer
+        {
+            from: signer.to_account_info(),
+            to: token_reserve_ata.to_account_info()
+        };
+        let cpi_program = system_program_account.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        system_program::transfer(cpi_ctx, transfer_amount)?;
+
+        //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
+        let cpi_accounts = SyncNative
+        {
+            account: token_reserve_ata.to_account_info(),
+        };
+        let cpi_program = token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token_interface::sync_native(cpi_ctx)?;
+
+        //Close temporary wSOL ATA if its balance is zero
+        let user_balance_after_transfer = user_ata.amount;
+        if user_balance_after_transfer == 0
+        {
+            //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
+            let cpi_accounts = CloseAccount
+            {
+                account: user_ata.to_account_info(),
+                destination: signer.to_account_info(),
+                authority: signer.to_account_info(),
+            };
+            let cpi_program = token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            token_interface::close_account(cpi_ctx)?; 
+        }
+    }
+    //Handle all other tokens
+    else
+    {
+        //Cross Program Invocation for Token Transfer
+        let cpi_accounts = TransferChecked
+        {
+            from: user_ata.to_account_info(),
+            to: token_reserve_ata.to_account_info(),
+            mint: token_mint.to_account_info(),
+            authority: signer.to_account_info()
+        };
+        let cpi_program = token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+
+        //Transfer Tokens Into The Reserve
+        token_interface::transfer_checked(cpi_ctx, transfer_amount, token_mint.decimals)?;  
+    }
+
+    Ok(())
+}
+
+fn withdraw_tokens_from_token_reserve_to_user<'info>(token_mint_address: Pubkey,
+    token_reserve: &Account<'info, TokenReserve>,
+    token_reserve_ata: &InterfaceAccount<'info, TokenAccount>,
+    user_ata: &InterfaceAccount<'info, TokenAccount>,
+    token_mint: &InterfaceAccount<'info, Mint>,
+    token_program: &Interface<'info, TokenInterface>,
+    signer: &Signer<'info>,
+    program_id: Pubkey,
+    system_program_account: &Program<'info, System>,
+    transfer_amount: u64
+) -> Result<()>
+{
+    //Transfer Tokens Back To User ATA
+    let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
+    let (_expected_pda, bump) = Pubkey::find_program_address
+    (
+        &[b"tokenReserve",
+        token_mint_address.key().as_ref()],
+        &program_id,
+    );
+
+    let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
+    let signer_seeds = &[&seeds[..]];
+
+    let cpi_accounts = TransferChecked
+    {
+        from: token_reserve_ata.to_account_info(),
+        to: user_ata.to_account_info(),
+        mint: token_mint.to_account_info(),
+        authority: token_reserve.to_account_info()
+    };
+    let cpi_program = token_program.to_account_info();
+    let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+
+    //Transfer Tokens Back to the User
+    token_interface::transfer_checked(cpi_ctx, transfer_amount, token_mint.decimals)?;
+
+    //Handle wSOL Token unwrap
+    if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
+    {
+        let user_balance_after_transfer = user_ata.amount;
+
+        if user_balance_after_transfer > transfer_amount
+        {
+            //Since User already had wrapped SOL, only unwrapped the amount withdrawn
+            let cpi_accounts = system_program::Transfer
+            {
+                from: user_ata.to_account_info(),
+                to: signer.to_account_info()
+            };
+            let cpi_program = system_program_account.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            system_program::transfer(cpi_ctx, transfer_amount)?;
+        }
+        else
+        {
+            //Since the User has no other wrapped SOL, unwrap it all, send it to the User, and close the temporary wrapped SOL account
+            let cpi_accounts = CloseAccount
+            {
+                account: user_ata.to_account_info(),
+                destination: signer.to_account_info(),
+                authority: signer.to_account_info(),
+            };
+            let cpi_program = token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            token_interface::close_account(cpi_ctx)?; 
+        }
+    }
+
+    Ok(())
+}
+
 #[program]
 pub mod lending_protocol 
 {
@@ -1082,61 +1223,16 @@ pub mod lending_protocol
             lending_user_monthly_statement_account
         )?;
 
-        //Handle native SOL transactions
-        if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
-        {
-            //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
-            let cpi_accounts = system_program::Transfer
-            {
-                from: ctx.accounts.signer.to_account_info(),
-                to: ctx.accounts.token_reserve_ata.to_account_info()
-            };
-            let cpi_program = ctx.accounts.system_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            system_program::transfer(cpi_ctx, amount)?;
-
-            //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
-            let cpi_accounts = SyncNative
-            {
-                account: ctx.accounts.token_reserve_ata.to_account_info(),
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token_interface::sync_native(cpi_ctx)?;
-
-            //Close temporary wSOL ATA if its balance is zero
-            let user_balance_after_transfer = ctx.accounts.user_ata.amount;
-            if user_balance_after_transfer == 0
-            {
-                //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
-                let cpi_accounts = CloseAccount
-                {
-                    account: ctx.accounts.user_ata.to_account_info(),
-                    destination: ctx.accounts.signer.to_account_info(),
-                    authority: ctx.accounts.signer.to_account_info(),
-                };
-                let cpi_program = ctx.accounts.token_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token_interface::close_account(cpi_ctx)?; 
-            }
-        }
-        //Handle all other tokens
-        else
-        {
-            //Cross Program Invocation for Token Transfer
-            let cpi_accounts = TransferChecked
-            {
-                from: ctx.accounts.user_ata.to_account_info(),
-                to: ctx.accounts.token_reserve_ata.to_account_info(),
-                mint: ctx.accounts.mint.to_account_info(),
-                authority: ctx.accounts.signer.to_account_info()
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-
-            //Transfer Tokens Into The Reserve
-            token_interface::transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;  
-        }
+        deposit_tokens_into_token_reserve_from_user(
+            token_mint_address.key(),
+            &ctx.accounts.token_reserve_ata,
+            &ctx.accounts.user_ata,
+            &ctx.accounts.mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.signer,
+            &ctx.accounts.system_program,
+            amount
+        )?;
 
         //Update Values and Stat Listener
         lending_stats.deposits += 1;
@@ -1281,62 +1377,18 @@ pub mod lending_protocol
             None
         )?;
 
-        //Transfer Tokens Back To User ATA
-        let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
-        let (_expected_pda, bump) = Pubkey::find_program_address
-        (
-            &[b"tokenReserve",
-            token_mint_address.key().as_ref()],
-            &ctx.program_id,
-        );
-
-        let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
-        let signer_seeds = &[&seeds[..]];
-
-        let cpi_accounts = TransferChecked
-        {
-            from: ctx.accounts.token_reserve_ata.to_account_info(),
-            to: ctx.accounts.user_ata.to_account_info(),
-            mint: ctx.accounts.mint.to_account_info(),
-            authority: token_reserve.to_account_info()
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
-
-        //Transfer Tokens Back to the User
-        token_interface::transfer_checked(cpi_ctx, withdraw_amount, ctx.accounts.mint.decimals)?;
-
-        //Handle wSOL Token unwrap
-        if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
-        {
-            let user_balance_after_transfer = ctx.accounts.user_ata.amount;
-
-            if user_balance_after_transfer > withdraw_amount
-            {
-                //Since User already had wrapped SOL, only unwrapped the amount withdrawn
-                let cpi_accounts = system_program::Transfer
-                {
-                    from: ctx.accounts.user_ata.to_account_info(),
-                    to: ctx.accounts.signer.to_account_info()
-                };
-                let cpi_program = ctx.accounts.system_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                system_program::transfer(cpi_ctx, withdraw_amount)?;
-            }
-            else
-            {
-                //Since the User has no other wrapped SOL, unwrap it all, send it to the User, and close the temporary wrapped SOL account
-                let cpi_accounts = CloseAccount
-                {
-                    account: ctx.accounts.user_ata.to_account_info(),
-                    destination: ctx.accounts.signer.to_account_info(),
-                    authority: ctx.accounts.signer.to_account_info(),
-                };
-                let cpi_program = ctx.accounts.token_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token_interface::close_account(cpi_ctx)?; 
-            }
-        }
+        withdraw_tokens_from_token_reserve_to_user(
+            token_mint_address.key(),
+            token_reserve,
+            &ctx.accounts.token_reserve_ata,
+            &ctx.accounts.user_ata,
+            &ctx.accounts.mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.signer,
+            *ctx.program_id,
+            &ctx.accounts.system_program,
+            withdraw_amount
+        )?;
         
         //Update Values and Stat Listener
         lending_stats.withdrawals += 1;
@@ -1467,62 +1519,18 @@ pub mod lending_protocol
             None
         )?;
 
-        //Transfer Tokens Back To User ATA
-        let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
-        let (_expected_pda, bump) = Pubkey::find_program_address
-        (
-            &[b"tokenReserve",
-            token_mint_address.key().as_ref()],
-            &ctx.program_id,
-        );
-
-        let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
-        let signer_seeds = &[&seeds[..]];
-
-        let cpi_accounts = TransferChecked
-        {
-            from: ctx.accounts.token_reserve_ata.to_account_info(),
-            to: ctx.accounts.user_ata.to_account_info(),
-            mint: ctx.accounts.mint.to_account_info(),
-            authority: token_reserve.to_account_info()
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
-
-        //Transfer Tokens Back to the User
-        token_interface::transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;
-
-        //Handle wSOL Token unwrap
-        if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
-        {
-            let user_balance_after_transfer = ctx.accounts.user_ata.amount;
-
-            if user_balance_after_transfer > amount
-            {
-                //Since User already had wrapped SOL, only unwrapped the amount withdrawn
-                let cpi_accounts = system_program::Transfer
-                {
-                    from: ctx.accounts.user_ata.to_account_info(),
-                    to: ctx.accounts.signer.to_account_info()
-                };
-                let cpi_program = ctx.accounts.system_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                system_program::transfer(cpi_ctx, amount)?;
-            }
-            else
-            {
-                //Since the User has no other wrapped SOL, unwrap it all, send it to the User, and close the temporary wrapped SOL account
-                let cpi_accounts = CloseAccount
-                {
-                    account: ctx.accounts.user_ata.to_account_info(),
-                    destination: ctx.accounts.signer.to_account_info(),
-                    authority: ctx.accounts.signer.to_account_info(),
-                };
-                let cpi_program = ctx.accounts.token_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token_interface::close_account(cpi_ctx)?; 
-            }
-        }
+        withdraw_tokens_from_token_reserve_to_user(
+            token_mint_address.key(),
+            token_reserve,
+            &ctx.accounts.token_reserve_ata,
+            &ctx.accounts.user_ata,
+            &ctx.accounts.mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.signer,
+            *ctx.program_id,
+            &ctx.accounts.system_program,
+            amount
+        )?;
 
         //Update Values and Stat Listener
         lending_stats.borrows += 1;
@@ -1609,85 +1617,41 @@ pub mod lending_protocol
         )?;
 
         //After updating interest earned and accrued, set payment amount
-        let payment_amount;
+        let repayment_amount;
 
         if pay_off_loan
         {
-            payment_amount = lending_user_tab_account.borrowed_amount;
+            repayment_amount = lending_user_tab_account.borrowed_amount;
         }
         else
         {
-            payment_amount = amount
+            repayment_amount = amount
         }
 
         //You can't repay an amount that is greater than your borrowed amount.
-        require!(lending_user_tab_account.borrowed_amount >= payment_amount, LendingError::TooManyFunds);
+        require!(lending_user_tab_account.borrowed_amount >= repayment_amount, LendingError::TooManyFunds);
 
-        //Handle native SOL transactions
-        if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
-        {
-            //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
-            let cpi_accounts = system_program::Transfer
-            {
-                from: ctx.accounts.signer.to_account_info(),
-                to: ctx.accounts.token_reserve_ata.to_account_info()
-            };
-            let cpi_program = ctx.accounts.system_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            system_program::transfer(cpi_ctx, payment_amount)?;
-
-            //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
-            let cpi_accounts = SyncNative
-            {
-                account: ctx.accounts.token_reserve_ata.to_account_info(),
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token_interface::sync_native(cpi_ctx)?;
-
-            //Close temporary wSOL ATA if its balance is zero
-            let user_balance_after_transfer = ctx.accounts.user_ata.amount;
-            if user_balance_after_transfer == 0
-            {
-                //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
-                let cpi_accounts = CloseAccount
-                {
-                    account: ctx.accounts.user_ata.to_account_info(),
-                    destination: ctx.accounts.signer.to_account_info(),
-                    authority: ctx.accounts.signer.to_account_info(),
-                };
-                let cpi_program = ctx.accounts.token_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token_interface::close_account(cpi_ctx)?; 
-            }
-        }
-        //Handle all other tokens
-        else
-        {
-            //Cross Program Invocation for Token Transfer
-            let cpi_accounts = TransferChecked
-            {
-                from: ctx.accounts.user_ata.to_account_info(),
-                to: ctx.accounts.token_reserve_ata.to_account_info(),
-                mint: ctx.accounts.mint.to_account_info(),
-                authority: ctx.accounts.signer.to_account_info()
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-
-            //Transfer Tokens Into The Reserve
-            token_interface::transfer_checked(cpi_ctx, payment_amount, ctx.accounts.mint.decimals)?;  
-        }
+        //Repay debt
+        deposit_tokens_into_token_reserve_from_user(
+            token_mint_address.key(),
+            &ctx.accounts.token_reserve_ata,
+            &ctx.accounts.user_ata,
+            &ctx.accounts.mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.signer,
+            &ctx.accounts.system_program,
+            repayment_amount
+        )?;
 
         //Update Values and Stat Listener
         lending_stats.repayments += 1;
-        sub_market.borrowed_amount -= payment_amount as u128;
-        sub_market.repaid_debt_amount += payment_amount as u128;
-        token_reserve.borrowed_amount -= payment_amount as u128;
-        token_reserve.repaid_debt_amount += payment_amount as u128;
-        lending_user_tab_account.borrowed_amount -= payment_amount;
-        lending_user_tab_account.repaid_debt_amount += payment_amount;
-        lending_user_monthly_statement_account.monthly_repaid_debt_amount += payment_amount;
+        sub_market.borrowed_amount -= repayment_amount as u128;
+        sub_market.repaid_debt_amount += repayment_amount as u128;
+        token_reserve.borrowed_amount -= repayment_amount as u128;
+        token_reserve.repaid_debt_amount += repayment_amount as u128;
+        lending_user_tab_account.borrowed_amount -= repayment_amount;
+        lending_user_tab_account.repaid_debt_amount += repayment_amount;
+        lending_user_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
         lending_user_monthly_statement_account.snap_shot_repaid_debt_amount = lending_user_tab_account.repaid_debt_amount;
         
@@ -1700,13 +1664,13 @@ pub mod lending_protocol
         lending_user_tab_account.interest_change_last_updated_time_stamp = time_stamp;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_amount = payment_amount;
+        token_reserve.last_lending_activity_amount = repayment_amount;
         token_reserve.last_lending_activity_type = Activity::Repay as u8;
         token_reserve.last_lending_activity_time_stamp = time_stamp; //It is critical for this to be updated after new interest change indexes are calculated
-        sub_market.last_lending_activity_amount = payment_amount;
+        sub_market.last_lending_activity_amount = repayment_amount;
         sub_market.last_lending_activity_type = Activity::Repay as u8;
         sub_market.last_lending_activity_time_stamp = time_stamp;
-        lending_user_monthly_statement_account.last_lending_activity_amount = payment_amount;
+        lending_user_monthly_statement_account.last_lending_activity_amount = repayment_amount;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = time_stamp;
   
@@ -1906,73 +1870,16 @@ pub mod lending_protocol
         )?;
  
         //Repay Liquidati's Debt
-        //Handle native SOL transactions
-        if repayment_token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
-        {
-            //CPI to the System Program to transfer SOL from the user to the program's wSOL ATA.
-            let cpi_accounts = system_program::Transfer
-            {
-                from: ctx.accounts.signer.to_account_info(),
-                to: ctx.accounts.repayment_token_reserve_ata.to_account_info()
-            };
-            let cpi_program = ctx.accounts.system_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            system_program::transfer(cpi_ctx, repayment_amount)?;
-
-            //CPI to the SPL Token Program to "sync" the wSOL ATA's balance.
-            let cpi_accounts = SyncNative
-            {
-                account: ctx.accounts.repayment_token_reserve_ata.to_account_info(),
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token_interface::sync_native(cpi_ctx)?;
-
-            //Close temporary wSOL ATA if its balance is zero
-            let user_balance_after_transfer = ctx.accounts.liquidator_repayment_ata.amount;
-            if user_balance_after_transfer == 0
-            {
-                //Since the User has no other wrapped SOL, close the temporary wrapped SOL account
-                let cpi_accounts = CloseAccount
-                {
-                    account: ctx.accounts.liquidator_repayment_ata.to_account_info(),
-                    destination: ctx.accounts.signer.to_account_info(),
-                    authority: ctx.accounts.signer.to_account_info(),
-                };
-                let cpi_program = ctx.accounts.token_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token_interface::close_account(cpi_ctx)?; 
-            }
-        }
-        //Handle all other tokens
-        else
-        {
-            //Cross Program Invocation for Token Transfer
-            let cpi_accounts = TransferChecked
-            {
-                from: ctx.accounts.liquidator_repayment_ata.to_account_info(),
-                to: ctx.accounts.repayment_token_reserve_ata.to_account_info(),
-                mint: ctx.accounts.repayment_mint.to_account_info(),
-                authority: ctx.accounts.signer.to_account_info()
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-
-            //Transfer Tokens Into The Reserve
-            token_interface::transfer_checked(cpi_ctx, repayment_amount, ctx.accounts.repayment_mint.decimals)?;  
-        }
-
-        //Update Repayment Values
-        repayment_sub_market.borrowed_amount -= repayment_amount as u128;
-        repayment_sub_market.repaid_debt_amount += repayment_amount as u128;
-        repayment_token_reserve.borrowed_amount -= repayment_amount as u128;
-        repayment_token_reserve.repaid_debt_amount += repayment_amount as u128;
-        liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
-        //The Liquidator is actually the one repaying in this case, but not able to fit the Liquidator repayment tab account into this function
-        //liquidati_repayment_tab_account.repaid_debt_amount += repayment_amount;
-        //liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
-        liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
-        //liquidati_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidati_repayment_tab_account.repaid_debt_amount;
+        deposit_tokens_into_token_reserve_from_user(
+            repayment_token_mint_address.key(),
+            &ctx.accounts.repayment_token_reserve_ata,
+            &ctx.accounts.liquidator_repayment_ata,
+            &ctx.accounts.repayment_mint,
+            &ctx.accounts.repayment_token_program,
+            &ctx.accounts.signer,
+            &ctx.accounts.system_program,
+            repayment_amount
+        )?;
 
         //Liquidate part of the Liquidati's Collateral and Transfer it plus a 7% bonus to the Liquidator
         //Multiply before dividing to help keep precision
@@ -1991,7 +1898,19 @@ pub mod lending_protocol
             liquidation_amount_with_7_percent_bonus = liquidati_liquidation_tab_account.deposited_amount - liquidation_fee_amount;
         }
 
-        //Update Liquidation and Solvency Insurance Values
+        //Update Repayment Values
+        repayment_sub_market.borrowed_amount -= repayment_amount as u128;
+        repayment_sub_market.repaid_debt_amount += repayment_amount as u128;
+        repayment_token_reserve.borrowed_amount -= repayment_amount as u128;
+        repayment_token_reserve.repaid_debt_amount += repayment_amount as u128;
+        liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
+        //The Liquidator is actually the one repaying in this case, but I'm not able to fit the Liquidator repayment tab account into this function
+        //liquidati_repayment_tab_account.repaid_debt_amount += repayment_amount;
+        //liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
+        liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
+        //liquidati_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidati_repayment_tab_account.repaid_debt_amount;
+
+        //Update Liquidation and Fee Values
         liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
         liquidation_sub_market.liquidated_amount += liquidation_fee_amount as u128;
         liquidation_sub_market.deposited_amount -= liquidation_fee_amount as u128;
@@ -2535,63 +2454,19 @@ pub mod lending_protocol
             )?;
         }
 
-        //Transfer Tokens To Treasurer ATA
-        let token_mint_key = token_mint_address.key(); //Need this temporary value for seeds variable because token_mint_address.key() is freed while still in use
-        let (_expected_pda, bump) = Pubkey::find_program_address
-        (
-            &[b"tokenReserve",
-            token_mint_address.key().as_ref()],
-            &ctx.program_id,
-        );
-
-        let seeds = &[b"tokenReserve", token_mint_key.as_ref(), &[bump]];
-        let signer_seeds = &[&seeds[..]];
-
-        let cpi_accounts = TransferChecked
-        {
-            from: ctx.accounts.token_reserve_ata.to_account_info(),
-            to: ctx.accounts.treasurer_ata.to_account_info(),
-            mint: ctx.accounts.mint.to_account_info(),
-            authority: token_reserve.to_account_info()
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
-
-        //Transfer Tokens Back to the User
         let amount = token_reserve.uncollected_solvency_insurance_fees_amount as u64;
-        token_interface::transfer_checked(cpi_ctx, amount, ctx.accounts.mint.decimals)?;
-
-        //Handle wSOL Token unwrap
-        if token_mint_address.key() == SOL_TOKEN_MINT_ADDRESS.key()
-        {
-            let user_balance_after_transfer = ctx.accounts.treasurer_ata.amount;
-
-            if user_balance_after_transfer > amount
-            {
-                //Since User already had wrapped SOL, only unwrapped the amount withdrawn
-                let cpi_accounts = system_program::Transfer
-                {
-                    from: ctx.accounts.treasurer_ata.to_account_info(),
-                    to: ctx.accounts.signer.to_account_info()
-                };
-                let cpi_program = ctx.accounts.system_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                system_program::transfer(cpi_ctx, amount)?;
-            }
-            else
-            {
-                //Since the User has no other wrapped SOL, unwrap it all, send it to the User, and close the temporary wrapped SOL account
-                let cpi_accounts = CloseAccount
-                {
-                    account: ctx.accounts.treasurer_ata.to_account_info(),
-                    destination: ctx.accounts.signer.to_account_info(),
-                    authority: ctx.accounts.signer.to_account_info(),
-                };
-                let cpi_program = ctx.accounts.token_program.to_account_info();
-                let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-                token_interface::close_account(cpi_ctx)?; 
-            }
-        }
+        withdraw_tokens_from_token_reserve_to_user(
+            token_mint_address.key(),
+            token_reserve,
+            &ctx.accounts.token_reserve_ata,
+            &ctx.accounts.treasurer_ata,
+            &ctx.accounts.mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.signer,
+            *ctx.program_id,
+            &ctx.accounts.system_program,
+            amount
+        )?;
 
         //Record Solvency Insurance Fee Collection
         lending_user_tab_account.solvency_insurance_fees_collected_amount += amount;
@@ -3380,12 +3255,12 @@ pub struct RepayTokens<'info>
     liquidati_account_owner_address: Pubkey,
     liquidati_account_index: u8,
     liquidator_account_index: u8)]
-pub struct LiquidateAccount<'info> 
+pub struct LiquidateAccount<'info>
 {
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
+    pub lending_protocol: Account<'info, LendingProtocol>,
 
     #[account(
         mut, 
@@ -3516,7 +3391,7 @@ pub struct LiquidateAccount<'info>
         payer = signer,
         associated_token::mint = repayment_mint,
         associated_token::authority = signer,
-        associated_token::token_program = token_program
+        associated_token::token_program = repayment_token_program
     )]
     pub liquidator_repayment_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -3524,12 +3399,12 @@ pub struct LiquidateAccount<'info>
         mut,
         associated_token::mint = repayment_mint,
         associated_token::authority = repayment_token_reserve,
-        associated_token::token_program = token_program
+        associated_token::token_program = repayment_token_program
     )]
     pub repayment_token_reserve_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub repayment_mint: Box<InterfaceAccount<'info, Mint>>,
-    pub token_program: Interface<'info, TokenInterface>,
+    pub repayment_token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
