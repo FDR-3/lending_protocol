@@ -3445,7 +3445,7 @@ pub struct UpdateUserSnapShot<'info>
         token_mint_address.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
-        signer.key().as_ref(),
+        user_account_owner_address.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
