@@ -709,7 +709,6 @@ pub mod lending_protocol
     }
 
     pub fn add_token_reserve(ctx: Context<AddTokenReserve>,
-        token_mint_address: Pubkey,
         token_decimal_amount: u8,
         pyth_feed_id: [u8; 32],
         fixed_borrow_apy: u16,
@@ -727,7 +726,7 @@ pub mod lending_protocol
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
         token_reserve.bump = ctx.bumps.token_reserve;
-        token_reserve.token_mint_address = token_mint_address.key();
+        token_reserve.token_mint_address = ctx.accounts.token_mint.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
         token_reserve.pyth_feed_id = pyth_feed_id;
         token_reserve.borrow_apy = fixed_borrow_apy;
@@ -744,7 +743,7 @@ pub mod lending_protocol
         let hex_string = hex::encode(pyth_feed_id);
 
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
-        msg!("Token Mint Address: {}", token_mint_address.key());
+        msg!("Token Mint Address: {}", ctx.accounts.token_mint.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
         msg!("Pyth Feed ID: 0x{}", hex_string);
         msg!("Fixed Borrow APY: {}", fixed_borrow_apy);
@@ -856,7 +855,6 @@ pub mod lending_protocol
     }
 
     pub fn deposit_tokens(ctx: Context<DepositTokens>,
-        token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
@@ -896,14 +894,14 @@ pub mod lending_protocol
             )?;
         }
         
-        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
                 ctx.bumps.lending_user_tab_account,
-                token_mint_address.key(),
+                ctx.accounts.token_mint.key(),
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
@@ -920,7 +918,7 @@ pub mod lending_protocol
                 lending_user_tab_account,
                 lending_protocol,
                 ctx.bumps.lending_user_monthly_statement_account,
-                token_mint_address.key(),
+                ctx.accounts.token_mint.key(),
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
@@ -946,10 +944,10 @@ pub mod lending_protocol
         )?;
 
         deposit_tokens_into_token_reserve_from_user(
-            token_mint_address.key(),
+            ctx.accounts.token_mint.key(),
             &ctx.accounts.token_reserve_ata,
             &ctx.accounts.user_ata,
-            &ctx.accounts.mint,
+            &ctx.accounts.token_mint,
             &ctx.accounts.token_program,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
@@ -983,7 +981,7 @@ pub mod lending_protocol
 
         msg!("{} deposited at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
-        token_mint_address.key(),
+        ctx.accounts.token_mint.key(),
         sub_market_owner_address.key(),
         sub_market_index);
 
@@ -1010,7 +1008,6 @@ pub mod lending_protocol
     }
 
     pub fn withdraw_tokens(ctx: Context<WithdrawTokens>,
-        token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         _user_account_index: u8,
@@ -1067,11 +1064,11 @@ pub mod lending_protocol
         }
 
         withdraw_tokens_from_token_reserve_to_user(
-            token_mint_address.key(),
+            ctx.accounts.token_mint.key(),
             token_reserve,
             &ctx.accounts.token_reserve_ata,
             &ctx.accounts.user_ata,
-            &ctx.accounts.mint,
+            &ctx.accounts.token_mint,
             &ctx.accounts.token_program,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
@@ -1105,7 +1102,7 @@ pub mod lending_protocol
         
         msg!("{} withdrew at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
-        token_mint_address.key(),
+        ctx.accounts.token_mint.key(),
         sub_market_owner_address.key(),
         sub_market_index);
 
@@ -1113,7 +1110,6 @@ pub mod lending_protocol
     }
 
     pub fn borrow_tokens(ctx: Context<BorrowTokens>,
-        token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
@@ -1134,7 +1130,7 @@ pub mod lending_protocol
         require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
         require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
 
-        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         //This is for when a user is borrowing a token they have never interacted with before
         if lending_user_tab_account.user_tab_account_added == false
         {
@@ -1142,7 +1138,7 @@ pub mod lending_protocol
                 lending_user_account,
                 lending_user_tab_account,
                 ctx.bumps.lending_user_tab_account,
-                token_mint_address.key(),
+                ctx.accounts.token_mint.key(),
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
@@ -1158,7 +1154,7 @@ pub mod lending_protocol
                 lending_user_tab_account,
                 lending_protocol,
                 ctx.bumps.lending_user_monthly_statement_account,
-                token_mint_address.key(),
+                ctx.accounts.token_mint.key(),
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
@@ -1183,11 +1179,11 @@ pub mod lending_protocol
         require!(available_token_amount >= amount as u128, LendingError::InsufficientLiquidity);
 
         withdraw_tokens_from_token_reserve_to_user(
-            token_mint_address.key(),
+            ctx.accounts.token_mint.key(),
             token_reserve,
             &ctx.accounts.token_reserve_ata,
             &ctx.accounts.user_ata,
-            &ctx.accounts.mint,
+            &ctx.accounts.token_mint,
             &ctx.accounts.token_program,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
@@ -1221,7 +1217,7 @@ pub mod lending_protocol
         
         msg!("{} borrowed at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
-        token_mint_address.key(),
+        ctx.accounts.token_mint.key(),
         sub_market_owner_address.key(),
         sub_market_index);
 
@@ -1229,7 +1225,6 @@ pub mod lending_protocol
     }
 
     pub fn repay_tokens(ctx: Context<RepayTokens>,
-        token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         _user_account_index: u8,
@@ -1282,10 +1277,10 @@ pub mod lending_protocol
 
         //Repay debt
         deposit_tokens_into_token_reserve_from_user(
-            token_mint_address.key(),
+            ctx.accounts.token_mint.key(),
             &ctx.accounts.token_reserve_ata,
             &ctx.accounts.user_ata,
-            &ctx.accounts.mint,
+            &ctx.accounts.token_mint,
             &ctx.accounts.token_program,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
@@ -1323,7 +1318,7 @@ pub mod lending_protocol
   
         msg!("{} repaid debt at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
-        token_mint_address.key(),
+        ctx.accounts.token_mint.key(),
         sub_market_owner_address.key(),
         sub_market_index);
         
@@ -1331,8 +1326,6 @@ pub mod lending_protocol
     }
 
     pub fn liquidate_account(ctx: Context<LiquidateAccount>,
-        repayment_token_mint_address: Pubkey,
-        liquidation_token_mint_address: Pubkey,
         repayment_sub_market_owner_address: Pubkey,
         repayment_sub_market_index: u16,
         liquidation_sub_market_owner_address: Pubkey,
@@ -1377,7 +1370,7 @@ pub mod lending_protocol
         let repayment_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
         let mut repayment_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
             repayment_sub_market_account_serialized,
-            repayment_token_mint_address,
+            ctx.accounts.repayment_mint.key(),
             repayment_sub_market_owner_address,
             repayment_sub_market_index)?;
 
@@ -1386,7 +1379,7 @@ pub mod lending_protocol
         let liquidation_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
         let mut liquidation_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
             liquidation_sub_market_account_serialized,
-            liquidation_token_mint_address,
+            ctx.accounts.liquidation_mint.key(),
             liquidation_sub_market_owner_address,
             liquidation_sub_market_index)?;
 
@@ -1395,7 +1388,7 @@ pub mod lending_protocol
         let liquidati_repayment_tab_account_serialized = remaining_accounts_iter.next().unwrap();
         let mut liquidati_repayment_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
             liquidati_repayment_tab_account_serialized,
-            repayment_token_mint_address,
+            ctx.accounts.repayment_mint.key(),
             repayment_sub_market_owner_address,
             repayment_sub_market_index,
             liquidati_account_owner_address,
@@ -1406,7 +1399,7 @@ pub mod lending_protocol
         let liquidati_liquidation_tab_account_serialized = remaining_accounts_iter.next().unwrap();
         let mut liquidati_liquidation_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
             liquidati_liquidation_tab_account_serialized,
-            liquidation_token_mint_address,
+            ctx.accounts.liquidation_mint.key(),
             liquidation_sub_market_owner_address,
             liquidation_sub_market_index,
             liquidati_account_owner_address,
@@ -1419,7 +1412,7 @@ pub mod lending_protocol
             liquidati_repayment_monthly_statement_account_serialized,
             lending_protocol.current_statement_month,
             lending_protocol.current_statement_year,
-            repayment_token_mint_address,
+            ctx.accounts.repayment_mint.key(),
             repayment_sub_market_owner_address,
             repayment_sub_market_index,
             liquidati_account_owner_address,
@@ -1432,7 +1425,7 @@ pub mod lending_protocol
             liquidati_liquidation_monthly_statement_account_serialized,
             lending_protocol.current_statement_month,
             lending_protocol.current_statement_year,
-            liquidation_token_mint_address,
+            ctx.accounts.liquidation_mint.key(),
             liquidation_sub_market_owner_address,
             liquidation_sub_market_index,
             liquidati_account_owner_address,
@@ -1517,14 +1510,14 @@ pub mod lending_protocol
             )?;
         }
 
-        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if liquidator_repayment_tab_account.user_tab_account_added == false
         {
             initialize_lending_user_tab_account(
                 liquidator_lending_account,
                 liquidator_repayment_tab_account,
                 ctx.bumps.liquidator_repayment_tab_account,
-                repayment_token_mint_address.key(),
+                ctx.accounts.repayment_mint.key(),
                 repayment_sub_market_owner_address.key(),
                 repayment_sub_market_index,
                 ctx.accounts.signer.key(),
@@ -1537,7 +1530,7 @@ pub mod lending_protocol
                 liquidator_lending_account,
                 liquidator_liquidation_tab_account,
                 ctx.bumps.liquidator_liquidation_tab_account,
-                liquidation_token_mint_address.key(),
+                ctx.accounts.liquidation_mint.key(),
                 liquidation_sub_market_owner_address.key(),
                 liquidation_sub_market_index,
                 ctx.accounts.signer.key(),
@@ -1553,7 +1546,7 @@ pub mod lending_protocol
                 liquidator_repayment_tab_account,
                 lending_protocol,
                 ctx.bumps.liquidator_repayment_monthly_statement_account,
-                repayment_token_mint_address.key(),
+                ctx.accounts.repayment_mint.key(),
                 repayment_sub_market_owner_address,
                 repayment_sub_market_index,
                 ctx.accounts.signer.key(),
@@ -1567,7 +1560,7 @@ pub mod lending_protocol
                 liquidator_liquidation_tab_account,
                 lending_protocol,
                 ctx.bumps.liquidator_liquidation_monthly_statement_account,
-                liquidation_token_mint_address.key(),
+                ctx.accounts.liquidation_mint.key(),
                 liquidation_sub_market_owner_address,
                 liquidation_sub_market_index,
                 ctx.accounts.signer.key(),
@@ -1592,7 +1585,8 @@ pub mod lending_protocol
 
         //Repay Liquidati's Debt
         deposit_tokens_into_token_reserve_from_user(
-            repayment_token_mint_address.key(),
+            //repayment_token_mint_address.key(),
+            ctx.accounts.repayment_mint.key(),
             &ctx.accounts.repayment_token_reserve_ata,
             &ctx.accounts.liquidator_repayment_ata,
             &ctx.accounts.repayment_mint,
@@ -1671,7 +1665,7 @@ pub mod lending_protocol
         if send_reward_to_wallet
         {
             withdraw_tokens_from_token_reserve_to_user(
-                liquidation_token_mint_address.key(),
+                ctx.accounts.liquidation_mint.key(),
                 liquidation_token_reserve,
                 &ctx.accounts.liquidation_token_reserve_ata,
                 &ctx.accounts.liquidator_liquidation_ata,
@@ -1731,15 +1725,24 @@ pub mod lending_protocol
         liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = liquidation_token_reserve.last_lending_activity_time_stamp;
         
+        //Save changes to passed in remaining accounts
+        lending_stats.serialize(&mut &mut lending_stats_serialized.data.borrow_mut()[8..])?;
+        repayment_sub_market.serialize(&mut &mut repayment_sub_market_account_serialized.data.borrow_mut()[8..])?;
+        liquidation_sub_market.serialize(&mut &mut liquidation_sub_market_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_repayment_tab_account.serialize(&mut &mut liquidati_repayment_tab_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_liquidation_tab_account.serialize(&mut &mut liquidati_liquidation_tab_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_repayment_monthly_statement_account.serialize(&mut &mut liquidati_repayment_monthly_statement_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_liquidation_monthly_statement_account.serialize(&mut &mut liquidati_liquidation_monthly_statement_account_serialized.data.borrow_mut()[8..])?;
+        
         msg!("{} liquidated {}", ctx.accounts.signer.key(), liquidati_account_owner_address.key());
 
         msg!("Repaid debt at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
-        repayment_token_mint_address.key(),
+        ctx.accounts.repayment_mint.key(),
         repayment_sub_market_owner_address.key(),
         repayment_sub_market_index);
 
         msg!("Liquidated collateral at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
-        liquidation_token_mint_address.key(),
+        ctx.accounts.liquidation_mint.key(),
         liquidation_sub_market_owner_address.key(),
         liquidation_sub_market_index);
 
@@ -1749,7 +1752,7 @@ pub mod lending_protocol
     //You have to call this instruction for all user tab accounts before calling the withdraw, borrow, or liquidate functions in the same transaction.
     //It's recommended to call this refresh function on up to 4 tab sets only at a time.
     //1 set of accounts in remaining accounts for refresh (in this order) Example: LendingUserTabAccount, TokenReserve, Submarket, LendingUserMonthlyStatementAccount, and PriceUpdateV2
-    pub fn refresh_user_health_chunk(ctx: Context<RefreshUserHealthChunk>, user_account_owner_address: Pubkey, user_account_index: u8) -> Result<()> 
+    pub fn refresh_user_health_chunk_and_token_reserves(ctx: Context<RefreshUserHealthChunkAndTokenReserves>, user_account_owner_address: Pubkey, user_account_index: u8) -> Result<()> 
     {
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
@@ -1758,12 +1761,20 @@ pub mod lending_protocol
         let time_stamp = Clock::get()?.unix_timestamp as u64;
         let clock_slot = Clock::get()?.slot;
 
-        //If this is a new slot, reset the accumulator
-        if lending_user_account.last_health_update_clock_slot != clock_slot
+        //Return if User Lending Account is already updated to the current block slot
+        if lending_user_account.last_health_update_clock_slot == clock_slot
+        {
+            return Ok(())
+        }
+
+        //Check if this is an unfinished refresh or a brand new one.
+        //If the block has changed since we started refreshing, we MUST reset.
+        if lending_user_account.refresh_clock_slot != clock_slot
         {
             lending_user_account.temp_deposit_usd_value = 0;
             lending_user_account.temp_borrow_usd_value = 0;
             lending_user_account.next_tab_index_to_refresh = 0;
+            lending_user_account.refresh_clock_slot = clock_slot;
         }
 
         while let Some(tab_account_serialized) = remaining_accounts_iter.next()
@@ -1787,6 +1798,8 @@ pub mod lending_protocol
 
             //You must provide all of the sub user's tab accounts ordered by user_tab_account_index
             require!(lending_user_account.next_tab_index_to_refresh == lending_user_tab_account.user_tab_account_index, InvalidInputError::IncorrectOrderOfTabAccounts);
+            
+            drop(data_ref);
 
             ///////////////////////
             //Token Reserve Account
@@ -1822,7 +1835,7 @@ pub mod lending_protocol
             let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
             let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
             //msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
-
+            
             //Calculate Token Reserve Previously Earned And Accrued Interest
             if token_reserve.last_health_update_clock_slot != clock_slot
             {
@@ -1856,6 +1869,18 @@ pub mod lending_protocol
             lending_user_account.temp_borrow_usd_value += (lending_user_tab_account.borrowed_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
 
             lending_user_account.next_tab_index_to_refresh += 1;
+
+            //1. Save Token Reserve (Skip 8 byte discriminator)
+            token_reserve.serialize(&mut &mut token_reserve_account_serialized.data.borrow_mut()[8..])?;
+
+            //2. Save SubMarket (Skip 8 byte discriminator)
+            sub_market.serialize(&mut &mut sub_market_account_serialized.data.borrow_mut()[8..])?;
+
+            //3. Save User Tab Account (Skip 8 byte discriminator)
+            lending_user_tab_account.serialize(&mut &mut tab_account_serialized.data.borrow_mut()[8..])?;
+
+            //4. Save Monthly Statement (Skip 8 byte discriminator)
+            monthly_statement_account.serialize(&mut &mut monthly_statement_account_serialized.data.borrow_mut()[8..])?;
         }
 
         //Finalize if we've covered all of the Lending User's Tab Accounts
@@ -1874,7 +1899,27 @@ pub mod lending_protocol
         Ok(())
     }
 
-    
+    //This is neccessary with interacting with new Token Reserves. IE: When a user borrows a Token they have never interacted with before
+    pub fn refresh_token_reserve_only(ctx: Context<RefreshTokenReserveOnly>, token_mint_address: Pubkey) -> Result<()> 
+    {
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        let time_stamp = Clock::get()?.unix_timestamp as u64;
+        let clock_slot = Clock::get()?.slot;
+
+        //Return if Token Reserve is already updated to the current block slot
+        if token_reserve.last_health_update_clock_slot == clock_slot
+        {
+            return Ok(())
+        }
+
+        //Calculate Token Reserve Previously Earned And Accrued Interest
+        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, Some(clock_slot))?;
+
+        msg!("Refreshed Token Reserve for Mint Address: {}", token_mint_address);
+
+        Ok(())
+    }
+
     pub fn create_new_monthly_statement(ctx: Context<CreateNewMonthlyStatement>,
         token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
@@ -1942,7 +1987,7 @@ pub mod lending_protocol
             )?;
         }
 
-        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
             initialize_lending_user_tab_account(
@@ -2082,7 +2127,7 @@ pub mod lending_protocol
             )?;
         }
 
-        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if initial_lending_user_tab_account.user_tab_account_added == false
         {
             initialize_lending_user_tab_account(
@@ -2212,7 +2257,6 @@ pub mod lending_protocol
     }
 
     pub fn claim_solvency_insurance_fees(ctx: Context<ClaimSolvencyInsuranceFees>,
-        token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
@@ -2250,14 +2294,14 @@ pub mod lending_protocol
             )?;
         }
 
-        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
                 ctx.bumps.lending_user_tab_account,
-                token_mint_address.key(),
+                ctx.accounts.token_mint.key(),
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
@@ -2274,7 +2318,7 @@ pub mod lending_protocol
                 lending_user_tab_account,
                 lending_protocol,
                 ctx.bumps.lending_user_monthly_statement_account,
-                token_mint_address.key(),
+                ctx.accounts.token_mint.key(),
                 sub_market_owner_address.key(),
                 sub_market_index,
                 ctx.accounts.signer.key(),
@@ -2284,11 +2328,11 @@ pub mod lending_protocol
 
         let amount = token_reserve.uncollected_solvency_insurance_fees_amount as u64;
         withdraw_tokens_from_token_reserve_to_user(
-            token_mint_address.key(),
+            ctx.accounts.token_mint.key(),
             token_reserve,
             &ctx.accounts.token_reserve_ata,
             &ctx.accounts.treasurer_ata,
-            &ctx.accounts.mint,
+            &ctx.accounts.token_mint,
             &ctx.accounts.token_program,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
@@ -2315,7 +2359,7 @@ pub mod lending_protocol
 
         msg!("{} Collected Solvency Insurance Fees at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.signer.key(),
-        token_mint_address.key(),
+        ctx.accounts.token_mint.key(),
         sub_market_owner_address.key(),
         sub_market_index);
 
@@ -2364,7 +2408,7 @@ pub mod lending_protocol
             )?;
         }
 
-        //Populate tab account if being newly initialized. Every token the lending user enteracts with has its own tab account tied to that sub user and their account index.
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
             initialize_lending_user_tab_account(
@@ -2591,7 +2635,6 @@ pub struct UpdateCurrentStatementMonthAndYear<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey)]
 pub struct AddTokenReserve<'info> 
 {
     #[account(
@@ -2608,7 +2651,7 @@ pub struct AddTokenReserve<'info>
     #[account(
         init, 
         payer = signer,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
         bump, 
         space = size_of::<TokenReserve>() + 8)]
     pub token_reserve: Account<'info, TokenReserve>,
@@ -2616,13 +2659,13 @@ pub struct AddTokenReserve<'info>
     #[account(
         init, 
         payer = signer,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = token_reserve,
         associated_token::token_program = token_program
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -2708,7 +2751,7 @@ pub struct EditSubMarket<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct DepositTokens<'info> 
 {
     #[account(
@@ -2724,13 +2767,13 @@ pub struct DepositTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
         bump)]
     pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -2746,7 +2789,7 @@ pub struct DepositTokens<'info>
         init_if_needed,
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -2761,7 +2804,7 @@ pub struct DepositTokens<'info>
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -2773,7 +2816,7 @@ pub struct DepositTokens<'info>
     #[account(
         init_if_needed, //SOL has to be deposited as wSol and the user may or may not have a wSol account already.
         payer = signer,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = signer,
         associated_token::token_program = token_program
     )]
@@ -2781,13 +2824,13 @@ pub struct DepositTokens<'info>
 
     #[account(
         mut,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = token_reserve,
         associated_token::token_program = token_program
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -2819,7 +2862,7 @@ pub struct EditLendingUserAccountName<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct WithdrawTokens<'info> 
 {
     #[account(
@@ -2835,13 +2878,13 @@ pub struct WithdrawTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
         bump)]
     pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -2854,7 +2897,7 @@ pub struct WithdrawTokens<'info>
     #[account(
         mut,
         seeds = [b"lendingUserTabAccount".as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -2867,7 +2910,7 @@ pub struct WithdrawTokens<'info>
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -2878,7 +2921,7 @@ pub struct WithdrawTokens<'info>
     #[account(
         init_if_needed, //SOL has to be withdrawn as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
         payer = signer,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = signer,
         associated_token::token_program = token_program
     )]
@@ -2886,13 +2929,13 @@ pub struct WithdrawTokens<'info>
 
     #[account(
         mut,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = token_reserve,
         associated_token::token_program = token_program
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -2902,7 +2945,7 @@ pub struct WithdrawTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct BorrowTokens<'info> 
 {
     #[account(
@@ -2918,13 +2961,13 @@ pub struct BorrowTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
         bump)]
     pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -2938,7 +2981,7 @@ pub struct BorrowTokens<'info>
         init_if_needed,
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -2953,7 +2996,7 @@ pub struct BorrowTokens<'info>
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -2965,7 +3008,7 @@ pub struct BorrowTokens<'info>
     #[account(
         init_if_needed, //Init ATA account of token being borrowed if it doesn't exist for User
         payer = signer,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = signer,
         associated_token::token_program = token_program
     )]
@@ -2973,13 +3016,13 @@ pub struct BorrowTokens<'info>
 
     #[account(
         mut,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = token_reserve,
         associated_token::token_program = token_program
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -2989,7 +3032,7 @@ pub struct BorrowTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct RepayTokens<'info> 
 {
     #[account(
@@ -3005,13 +3048,13 @@ pub struct RepayTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
         bump)]
     pub token_reserve: Box<Account<'info, TokenReserve>>, 
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -3024,7 +3067,7 @@ pub struct RepayTokens<'info>
     #[account(
         mut,
         seeds = [b"lendingUserTabAccount".as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3037,7 +3080,7 @@ pub struct RepayTokens<'info>
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3048,7 +3091,7 @@ pub struct RepayTokens<'info>
     #[account(
         init_if_needed, //SOL has to be repaid as wSol and the user may or may not have a wSol account already.
         payer = signer,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = signer,
         associated_token::token_program = token_program
     )]
@@ -3056,13 +3099,13 @@ pub struct RepayTokens<'info>
 
     #[account(
         mut,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = token_reserve,
         associated_token::token_program = token_program
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -3072,9 +3115,7 @@ pub struct RepayTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(repayment_token_mint_address: Pubkey,
-    liquidation_token_mint_address: Pubkey,
-    repayment_sub_market_owner_address: Pubkey,
+#[instruction(repayment_sub_market_owner_address: Pubkey,
     repayment_sub_market_index: u16,
     liquidation_sub_market_owner_address: Pubkey,
     liquidation_sub_market_index: u16,
@@ -3090,13 +3131,13 @@ pub struct LiquidateAccount<'info>
 
     #[account(
         mut,
-        seeds = [b"tokenReserve".as_ref(), repayment_token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), repayment_mint.key().as_ref()], 
         bump)]
     pub repayment_token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut,
-        seeds = [b"tokenReserve".as_ref(), liquidation_token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), liquidation_mint.key().as_ref()], 
         bump)]
     pub liquidation_token_reserve: Box<Account<'info, TokenReserve>>,
 
@@ -3118,7 +3159,7 @@ pub struct LiquidateAccount<'info>
         init_if_needed,
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
-        repayment_token_mint_address.key().as_ref(),
+        repayment_mint.key().as_ref(),
         repayment_sub_market_owner_address.key().as_ref(),
         repayment_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3131,7 +3172,7 @@ pub struct LiquidateAccount<'info>
         init_if_needed,
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
-        liquidation_token_mint_address.key().as_ref(),
+        liquidation_mint.key().as_ref(),
         liquidation_sub_market_owner_address.key().as_ref(),
         liquidation_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3146,7 +3187,7 @@ pub struct LiquidateAccount<'info>
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        repayment_token_mint_address.key().as_ref(),
+        repayment_mint.key().as_ref(),
         repayment_sub_market_owner_address.key().as_ref(),
         repayment_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3161,7 +3202,7 @@ pub struct LiquidateAccount<'info>
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        liquidation_token_mint_address.key().as_ref(),
+        liquidation_mint.key().as_ref(),
         liquidation_sub_market_owner_address.key().as_ref(),
         liquidation_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3217,9 +3258,10 @@ pub struct LiquidateAccount<'info>
 
 //The monthly statement accounts have to exists before calling the refresh_user_health_chunk instruction.
 //Use the create_new_monthly_statement function if it's a new month and it doesn't exist yet.
+//This refreshes the Lending User Account and associated Token Reserves
 #[derive(Accounts)]
 #[instruction(user_account_owner_address: Pubkey, user_account_index: u8)]
-pub struct RefreshUserHealthChunk<'info> 
+pub struct RefreshUserHealthChunkAndTokenReserves<'info> 
 {
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
@@ -3231,6 +3273,21 @@ pub struct RefreshUserHealthChunk<'info>
         seeds = [b"lendingUserAccount".as_ref(), user_account_owner_address.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
         bump)]
     pub lending_user_account: Account<'info, LendingUserAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+#[instruction(token_mint_address: Pubkey)]
+pub struct RefreshTokenReserveOnly<'info> 
+{
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        bump)]
+    pub token_reserve: Account<'info, TokenReserve>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -3456,7 +3513,7 @@ pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct ClaimSolvencyInsuranceFees<'info> 
 {
     #[account(
@@ -3477,7 +3534,7 @@ pub struct ClaimSolvencyInsuranceFees<'info>
 
     #[account(
         mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
         bump)]
     pub token_reserve: Box<Account<'info, TokenReserve>>,
 
@@ -3494,7 +3551,7 @@ pub struct ClaimSolvencyInsuranceFees<'info>
         init_if_needed,
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3510,7 +3567,7 @@ pub struct ClaimSolvencyInsuranceFees<'info>
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
-        token_mint_address.key().as_ref(),
+        token_mint.key().as_ref(),
         sub_market_owner_address.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
@@ -3522,7 +3579,7 @@ pub struct ClaimSolvencyInsuranceFees<'info>
     #[account(
         init_if_needed, //SOL has to be claimed as wSOL then converted to SOL for Treasurer. This function also closes wSOL ata if it is empty.
         payer = signer,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = signer,
         associated_token::token_program = token_program
     )]
@@ -3530,13 +3587,13 @@ pub struct ClaimSolvencyInsuranceFees<'info>
 
     #[account(
         mut,
-        associated_token::mint = mint,
+        associated_token::mint = token_mint,
         associated_token::authority = token_reserve,
         associated_token::token_program = token_program
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
@@ -3748,6 +3805,7 @@ pub struct LendingUserAccount
     pub tab_account_count: u16,
     pub total_deposited_usd_value: u128,
     pub total_borrowed_usd_value: u128,
+    pub refresh_clock_slot: u64,
     pub last_health_update_clock_slot: u64,
     pub temp_deposit_usd_value: u128,
     pub temp_borrow_usd_value: u128,

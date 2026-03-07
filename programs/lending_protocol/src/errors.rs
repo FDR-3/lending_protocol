@@ -23,8 +23,6 @@ pub enum InvalidInputError
     InvalidSolvencyInsuranceFeeRate,
     #[msg("You must provide all of the sub user's tab accounts")]
     IncorrectNumberOfTabAccounts,
-    #[msg("You must provide all of the sub user's tab accounts and Pyth price update accounts")]
-    IncorrectNumberOfTabAndPythPriceUpdateAccounts,
     #[msg("You must provide the sub user's tab accounts ordered by user_tab_account_index")]
     IncorrectOrderOfTabAccounts,
     #[msg("Unexpected Lending Stats PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]
