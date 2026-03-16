@@ -644,6 +644,9 @@ pub mod lending_protocol
         lending_protocol.current_statement_month = statement_month;
         lending_protocol.current_statement_year = statement_year;
 
+        let lending_stats = &mut ctx.accounts.lending_stats;
+        lending_stats.bump = ctx.bumps.lending_stats;
+
         msg!("Lending Protocol Initialized");
         msg!("New CEO Address: {}", ceo.address.key());
         msg!("Current Statement Month: {}, Year: {}", lending_protocol.current_statement_month, lending_protocol.current_statement_year);

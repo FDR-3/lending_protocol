@@ -4,25 +4,25 @@ use crate::errors::InvalidInputError;
 
 pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lending_stats_serialized: &AccountInfo<'info>) -> Result<LendingStats>
 {
-  let mut data_slice: &[u8] = &lending_stats_serialized.data.borrow();
+    let mut data_slice: &[u8] = &lending_stats_serialized.data.borrow();
 
-  let lending_stats = LendingStats::try_deserialize(&mut data_slice)?;
+    let lending_stats = LendingStats::try_deserialize(&mut data_slice)?;
 
-  let bump = [lending_stats.bump];
-  let seeds = &
-  [
-      b"lendingStats".as_ref(),//It seems when there is only the string for the seed, you need the .as_ref() on it and the bump
-      &bump.as_ref()
-  ];
+    let bump = [lending_stats.bump];
+    let seeds = &
+    [
+        b"lendingStats".as_ref(),//It seems when there is only the string for the seed, you need the .as_ref() on it and the bump
+        &bump.as_ref()
+    ];
 
-  //Verify Lending User Tab Account PDA is a valid PDA
-  let expected_pda = Pubkey::create_program_address(seeds, &program_id)
-  .map_err(|_| InvalidInputError::UnexpectedLendingStatsAccount)?;
+    //Verify Lending User Tab Account PDA is a valid PDA
+    let expected_pda = Pubkey::create_program_address(seeds, &program_id)
+    .map_err(|_| InvalidInputError::UnexpectedLendingStatsAccount)?;
+        
+    //Verify Lending User Tab Account Address is the expected PDA
+    require_keys_eq!(expected_pda.key(), lending_stats_serialized.key(), InvalidInputError::UnexpectedLendingStatsAccount);
 
-  //Verify Lending User Tab Account Address is the expected PDA
-  require_keys_eq!(expected_pda.key(), lending_stats_serialized.key(), InvalidInputError::UnexpectedLendingStatsAccount);
-
-  Ok(lending_stats)
+    Ok(lending_stats)
 }
 
 pub fn validate_and_return_token_reserve_account<'info>(
