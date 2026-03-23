@@ -195,8 +195,8 @@ describe("lending_protocol", () =>
   const borrowerWalletKeypair = anchor.web3.Keypair.generate()
 
   //Test Settings
-  const borrowWaitTimeInSeconds = 30
-  //const borrowWaitTimeInSeconds = 0
+  //const borrowWaitTimeInSeconds = 30
+  const borrowWaitTimeInSeconds = 0
   const useUSDCFixedBorrowAPY = false
   const runInsolventTest = true
   var solLiquidationPrice: bigint
@@ -420,7 +420,7 @@ describe("lending_protocol", () =>
     }
 
     //Add Lending Protocol and Lending Stats to Address Lookup Table
-    await addAddressToLookUpTable([lendingProtocolPDA, lendingStatsPDA])
+    await addAddressToLookUpTable([lendingProtocolPDA, lendingStatsPDA], "Lending Protocol and Lending Stats")
 
     //Get latest lookup table
     lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
@@ -650,7 +650,7 @@ describe("lending_protocol", () =>
     }
 
     //Add Token Reserve to Address Lookup Table
-    await addAddressToLookUpTable(solTokenReservePDA)
+    await addAddressToLookUpTable(solTokenReservePDA, "SOL Token Reserve")
 
     //Get latest lookup table
     lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
@@ -700,7 +700,7 @@ describe("lending_protocol", () =>
     assert(subMarket.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(subMarket.subMarketIndex == testSubMarketIndex)
 
-    //Populate SOL Sub Market Remaining Account
+    //Populate SOL SubMarket Remaining Account
     const solSubMarketPDA = getSubMarketPDA(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex)
     solSubMarketRemainingAccount = 
     {
@@ -709,8 +709,8 @@ describe("lending_protocol", () =>
       isWritable: true
     }
 
-    //Add Sub Market to Address Lookup Table
-    await addAddressToLookUpTable(solSubMarketPDA)
+    //Add SubMarket to Address Lookup Table
+    await addAddressToLookUpTable(solSubMarketPDA, "SOL SubMarket")
 
     //Get latest lookup table
     lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
@@ -1105,7 +1105,7 @@ describe("lending_protocol", () =>
     }
 
     //Add Token Reserve to Address Lookup Table
-    await addAddressToLookUpTable(usdcTokenReservePDA)
+    await addAddressToLookUpTable(usdcTokenReservePDA, "USDC Token Reserve")
 
     //Get latest lookup table
     lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
@@ -1122,7 +1122,7 @@ describe("lending_protocol", () =>
     assert(subMarket.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(subMarket.subMarketIndex == testSubMarketIndex)
 
-    //Populate USDC Sub Market Remaining Account
+    //Populate USDC SubMarket Remaining Account
     const usdcSubMarketPDA = getSubMarketPDA(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex)
     usdcSubMarketRemainingAccount = 
     {
@@ -1131,8 +1131,8 @@ describe("lending_protocol", () =>
       isWritable: true
     }
 
-    //Add Sub Market to Address Lookup Table
-    await addAddressToLookUpTable(usdcSubMarketPDA)
+    //Add SubMarket to Address Lookup Table
+    await addAddressToLookUpTable(usdcSubMarketPDA, "USDC SubMarket")
 
     //Get latest lookup table
     lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
@@ -1363,7 +1363,7 @@ describe("lending_protocol", () =>
     assert(errorMessage == unexpectedTokenReserveErrorMsg)
   })
 
-  it("Verifies you Can't Refresh User's Health Without the Right Sub Market", async () => 
+  it("Verifies you Can't Refresh User's Health Without the Right SubMarket", async () => 
   {
     var errorMessage = ""
 
@@ -1602,7 +1602,9 @@ describe("lending_protocol", () =>
     try
     {
       const transaction = new Transaction()
-
+      //const { blockhash } = await program.provider.connection.getLatestBlockhash()
+      //transaction.recentBlockhash = blockhash
+        
       const refreshingRemainingAccounts = 
       [
         borrowerSOLLendingUserTabRemainingAccount,
@@ -1642,6 +1644,7 @@ describe("lending_protocol", () =>
       transaction.add(withdrawInstruction)
 
       await program.provider.sendAndConfirm(transaction, [borrowerWalletKeypair])
+
     }
     catch(error)
     {
@@ -1652,11 +1655,7 @@ describe("lending_protocol", () =>
       }
       else
       {
-        const errorInstance = error//The string wasn't presisting unless I did this or console.log(error.message) for some reason
-        const errorString = errorInstance.message
-        const errorMatch = errorString.match(/"Custom":(\d+)/)
-        console.log(errorMatch)
-        console.log(errorMatch[1])
+        const errorMatch = error.message.match(/"Custom":(\d+)/)
         const idlError = program.idl.errors.find(error => error.code === parseInt(errorMatch[1]))
         errorMessage = idlError.msg
       }
@@ -2292,7 +2291,7 @@ describe("lending_protocol", () =>
     console.log("Liquidation Token Reserve Deposited Amount Before Liquidation", Number(liquidationTokenReserve.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidation Token Reserve Liquidated Amount Before Liquidation", Number(liquidationTokenReserve.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidation Token Reserve Liquidation Fees Generated Amount Before Liquidation", Number(liquidationTokenReserve.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
-    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amopunt Before Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amount Before Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidation Token Reserve Wallet Balance Before Liquidation", liquidationTokenReserveUSDCATABalance.value.uiAmount, "SOL", "\n")
 
     var liquidatiRepaymentLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
@@ -2428,7 +2427,7 @@ describe("lending_protocol", () =>
     console.log("Liquidation Token Reserve Deposited Amount After Liquidation", Number(liquidationTokenReserve.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidation Token Reserve Liquidated Amount After Liquidation", Number(liquidationTokenReserve.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidation Token Reserve Liquidation Fees Generated Amount After Liquidation", Number(liquidationTokenReserve.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
-    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amopunt After Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
+    console.log("Liquidation Token Reserve Uncollected Liquidation Fee Amount After Liquidation", Number(liquidationTokenReserve.uncollectedLiquidationFeesAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidation Token Reserve Wallet Balance After Liquidation", liquidationTokenReserveSOLATABalance.value.uiAmount, "SOL", "\n")
 
     const liquidatorLendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
@@ -2522,14 +2521,8 @@ describe("lending_protocol", () =>
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotBalanceAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
   })
-
-  it("", async () => 
-  {
-    //Refresh Token Reserve and User Health
-    
-  })
  
-  it("Refreshes Supplier's and Borrower's Health Status", async () => 
+  it("Refreshes Token Reserves and Supplier's/Borrower's Health Status", async () => 
   {
     //Refresh Supplier
     const refreshingSupplierRemainingAccounts = 
@@ -3274,9 +3267,9 @@ describe("lending_protocol", () =>
     }
 
     //Add Token Reserves to Address Lookup Table
-    await addAddressToLookUpTable(daiTokenReservePDA)
-    await addAddressToLookUpTable(wethTokenReservePDA)
-    await addAddressToLookUpTable(wbtcTokenReservePDA)
+    await addAddressToLookUpTable(daiTokenReservePDA, "DAI Token Reserve")
+    await addAddressToLookUpTable(wethTokenReservePDA, "WEth Token Reserve")
+    await addAddressToLookUpTable(wbtcTokenReservePDA, "WBtc Token Reserve")
 
     //Get latest lookup table
     lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
@@ -3309,7 +3302,7 @@ describe("lending_protocol", () =>
     assert(wbtcSubMarket.tokenMintAddress.toBase58() == wbtcMint.publicKey.toBase58())
     assert(wbtcSubMarket.subMarketIndex == testSubMarketIndex)
 
-    //Populate DAI Sub Market Remaining Account
+    //Populate DAI SubMarket Remaining Account
     const daiSubMarketPDA = getSubMarketPDA(daiMint.publicKey, program.provider.publicKey, testSubMarketIndex)
     daiSubMarketRemainingAccount = 
     {
@@ -3318,7 +3311,7 @@ describe("lending_protocol", () =>
       isWritable: true
     }
 
-    //Populate WEth Sub Market Remaining Account
+    //Populate WEth SubMarket Remaining Account
     const wethSubMarketPDA = getSubMarketPDA(wethMint.publicKey, program.provider.publicKey, testSubMarketIndex)
     wethSubMarketRemainingAccount = 
     {
@@ -3327,7 +3320,7 @@ describe("lending_protocol", () =>
       isWritable: true
     }
 
-    //Populate WBtc Sub Market Remaining Account
+    //Populate WBtc SubMarket Remaining Account
     const wbtcSubMarketPDA = getSubMarketPDA(wbtcMint.publicKey, program.provider.publicKey, testSubMarketIndex)
     wbtcSubMarketRemainingAccount = 
     {
@@ -3336,10 +3329,10 @@ describe("lending_protocol", () =>
       isWritable: true
     }
 
-    //Add Sub Markets to Address Lookup Table
-    await addAddressToLookUpTable(daiSubMarketPDA)
-    await addAddressToLookUpTable(wethSubMarketPDA)
-    await addAddressToLookUpTable(wbtcSubMarketPDA)
+    //Add SubMarkets to Address Lookup Table
+    await addAddressToLookUpTable(daiSubMarketPDA, "DAI SubMarket")
+    await addAddressToLookUpTable(wethSubMarketPDA, "WEth SubMarket")
+    await addAddressToLookUpTable(wbtcSubMarketPDA, "WBtc SubMarket")
 
     //Get latest lookup table
     lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
@@ -4090,9 +4083,9 @@ describe("lending_protocol", () =>
     await timeOutFunction(1)
   }
 
-  async function addAddressToLookUpTable(input: PublicKey | PublicKey[])
+  async function addAddressToLookUpTable(input: PublicKey | PublicKey[], accountDescription: string)
   {
-    console.log("Adding Address to Lookup Table")
+    console.log(`Adding ${accountDescription} Address to Lookup Table`)
 
     const addressesToAdd = Array.isArray(input) ? input : [input]
 

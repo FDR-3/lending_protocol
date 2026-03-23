@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use crate::*;
-use crate::errors::InvalidInputError;
+use crate::errors::LendingError;
 
 pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lending_stats_serialized: &AccountInfo<'info>) -> Result<LendingStats>
 {
@@ -17,10 +17,10 @@ pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lend
 
     //Verify Lending User Tab Account PDA is a valid PDA
     let expected_pda = Pubkey::create_program_address(seeds, &program_id)
-    .map_err(|_| InvalidInputError::UnexpectedLendingStatsAccount)?;
+    .map_err(|_| LendingError::UnexpectedLendingStatsAccount)?;
         
     //Verify Lending User Tab Account Address is the expected PDA
-    require_keys_eq!(expected_pda.key(), lending_stats_serialized.key(), InvalidInputError::UnexpectedLendingStatsAccount);
+    require_keys_eq!(expected_pda.key(), lending_stats_serialized.key(), LendingError::UnexpectedLendingStatsAccount);
 
     Ok(lending_stats)
 }
@@ -43,10 +43,10 @@ pub fn validate_and_return_token_reserve_account<'info>(
 
     //Verify SubMarket PDA is a valid PDA
     let expected_pda = Pubkey::create_program_address(seeds, &program_id)
-    .map_err(|_| InvalidInputError::UnexpectedTokenReserveAccount)?;
+    .map_err(|_| LendingError::UnexpectedTokenReserveAccount)?;
 
     //Verify SubMarket Address is the expected PDA
-    require_keys_eq!(expected_pda.key(), token_reserve_account_serialized.key(), InvalidInputError::UnexpectedTokenReserveAccount);
+    require_keys_eq!(expected_pda.key(), token_reserve_account_serialized.key(), LendingError::UnexpectedTokenReserveAccount);
 
     Ok(token_reserve)
 }
@@ -74,10 +74,10 @@ pub fn validate_and_return_sub_market_account<'info>(
 
     //Verify SubMarket PDA is a valid PDA
     let expected_pda = Pubkey::create_program_address(seeds, &program_id)
-    .map_err(|_| InvalidInputError::UnexpectedSubMarketAccount)?;
+    .map_err(|_| LendingError::UnexpectedSubMarketAccount)?;
 
     //Verify SubMarket Address is the expected PDA
-    require_keys_eq!(expected_pda.key(), sub_market_account_serialized.key(), InvalidInputError::UnexpectedSubMarketAccount);
+    require_keys_eq!(expected_pda.key(), sub_market_account_serialized.key(), LendingError::UnexpectedSubMarketAccount);
 
     Ok(sub_market)
 }
@@ -110,10 +110,10 @@ pub fn validate_and_return_lending_user_tab_account<'info>(
 
     //Verify Lending User Tab Account PDA is a valid PDA
     let expected_pda = Pubkey::create_program_address(seeds, &program_id)
-    .map_err(|_| InvalidInputError::UnexpectedTabAccount)?;
+    .map_err(|_| LendingError::UnexpectedTabAccount)?;
 
     //Verify Lending User Tab Account Address is the expected PDA
-    require_keys_eq!(expected_pda.key(), tab_account_serialized.key(), InvalidInputError::UnexpectedTabAccount);
+    require_keys_eq!(expected_pda.key(), tab_account_serialized.key(), LendingError::UnexpectedTabAccount);
 
     Ok(lending_user_tab_account)
 }
@@ -152,10 +152,10 @@ pub fn validate_and_return_lending_user_monthly_state_account<'info>(
 
     //Verify Monthly Statement Account PDA is a valid PDA
     let expected_pda = Pubkey::create_program_address(seeds, &program_id)
-    .map_err(|_| InvalidInputError::UnexpectedMonthlyStatementAccount)?;
+    .map_err(|_| LendingError::UnexpectedMonthlyStatementAccount)?;
 
     //Verify Monthly Statement Account Address is the expected PDA
-    require_keys_eq!(expected_pda.key(), monthly_statement_account_serialized.key(), InvalidInputError::UnexpectedMonthlyStatementAccount);
+    require_keys_eq!(expected_pda.key(), monthly_statement_account_serialized.key(), LendingError::UnexpectedMonthlyStatementAccount);
 
     Ok(monthly_statement_account)
 }

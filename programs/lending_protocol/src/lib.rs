@@ -11,7 +11,7 @@ use hex;
 pub mod validation;
 pub mod errors;
 use crate::validation::*;
-use crate::errors::*;
+use crate::errors::LendingError;
 
 declare_id!("SYcBiQtCfjAia7DkkXYubztiQ1e5AGjKPKsM9iJz8od");
 
@@ -339,7 +339,7 @@ fn update_user_previous_interest_accrued<'info>(
 fn get_token_pyth_usd_value<'info>(price_update_account_serialized: &AccountInfo<'info>, pyth_feed_id: [u8; 32]) -> Result<u128>
 {
     //Validate Price Update Account
-    require_keys_eq!(*price_update_account_serialized.owner, PYTH_PROGRAM_ID, InvalidInputError::UnexpectedPythPriceUpdateAccount);
+    require_keys_eq!(*price_update_account_serialized.owner, PYTH_PROGRAM_ID, LendingError::UnexpectedPythPriceUpdateAccount);
 
     let mut data_slice: &[u8] = &price_update_account_serialized.data.borrow();
 
@@ -411,7 +411,7 @@ fn initialize_lending_user_account<'info>(lending_user_account: &mut LendingUser
 ) -> Result<()>
 {
     //Account Name string must not be longer than 25 characters
-    require!(account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
+    require!(account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, LendingError::LendingUserAccountNameTooLong);
 
     lending_user_account.owner = user_account_owner;
     lending_user_account.user_account_index = user_account_index;
@@ -629,7 +629,7 @@ pub mod lending_protocol
     pub fn initialize_lending_protocol(ctx: Context<InitializeLendingProtocol>, statement_month: u8, statement_year: u16) -> Result<()> 
     {
         //Only the initial CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), INITIAL_CEO_ADDRESS, AuthorizationError::NotCEO);
+        require_keys_eq!(ctx.accounts.signer.key(), INITIAL_CEO_ADDRESS, LendingError::NotCEO);
 
         let ceo = &mut ctx.accounts.ceo;
         ceo.address = INITIAL_CEO_ADDRESS;
@@ -658,7 +658,7 @@ pub mod lending_protocol
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
         msg!("The Lending Protocol CEO has passed on the title to a new CEO");
         msg!("New CEO: {}", new_ceo_address.key());
@@ -672,7 +672,7 @@ pub mod lending_protocol
     {
         let solvency_treasurer = &mut ctx.accounts.solvency_treasurer;
         //Only the Treasurer can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), solvency_treasurer.address.key(), AuthorizationError::NotSolvencyTreasurer);
+        require_keys_eq!(ctx.accounts.signer.key(), solvency_treasurer.address.key(), LendingError::NotSolvencyTreasurer);
 
         msg!("The Solvency Treasurer has passed on the title to a new Treasurer");
         msg!("New Treasurer: {}", new_treasurer_address.key());
@@ -686,7 +686,7 @@ pub mod lending_protocol
     {
         let liquidation_treasurer = &mut ctx.accounts.liquidation_treasurer;
         //Only the Treasurer can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), liquidation_treasurer.address.key(), AuthorizationError::NotLiquidationTreasurer);
+        require_keys_eq!(ctx.accounts.signer.key(), liquidation_treasurer.address.key(), LendingError::NotLiquidationTreasurer);
 
         msg!("The Liquidation Treasurer has passed on the title to a new Treasurer");
         msg!("New Treasurer: {}", new_treasurer_address.key());
@@ -700,7 +700,7 @@ pub mod lending_protocol
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
         let lending_protocol = &mut ctx.accounts.lending_protocol;
         lending_protocol.current_statement_month = statement_month;
@@ -721,10 +721,10 @@ pub mod lending_protocol
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
         //Solvency Insurance Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(solvency_insurance_fee_rate <= 10_000, InvalidInputError::InvalidSolvencyInsuranceFeeRate);
+        require!(solvency_insurance_fee_rate <= 10_000, LendingError::InvalidSolvencyInsuranceFeeRate);
 
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -765,10 +765,10 @@ pub mod lending_protocol
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), AuthorizationError::NotCEO);
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
         //Solvency Insurance Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(solvency_insurance_fee_rate <= 10_000, InvalidInputError::InvalidSolvencyInsuranceFeeRate);
+        require!(solvency_insurance_fee_rate <= 10_000, LendingError::InvalidSolvencyInsuranceFeeRate);
 
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -806,7 +806,7 @@ pub mod lending_protocol
     ) -> Result<()> 
     {
         //SubMarket Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(fee_on_interest_earned_rate <= 10_000, InvalidInputError::InvalidSubMarketFeeRate);
+        require!(fee_on_interest_earned_rate <= 10_000, LendingError::InvalidSubMarketFeeRate);
 
         let sub_market = &mut ctx.accounts.sub_market;
         sub_market.bump = ctx.bumps.sub_market;
@@ -838,7 +838,7 @@ pub mod lending_protocol
     ) -> Result<()> 
     {
         //SubMarket Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(fee_on_interest_earned_rate <= 10_000, InvalidInputError::InvalidSubMarketFeeRate);
+        require!(fee_on_interest_earned_rate <= 10_000, LendingError::InvalidSubMarketFeeRate);
 
         let sub_market = &mut ctx.accounts.sub_market;
         sub_market.fee_collector_address = fee_collector_address.key();
@@ -875,7 +875,7 @@ pub mod lending_protocol
 
         let new_token_reserve_deposited_amount = amount as u128 + token_reserve.deposited_amount;
         //You can't deposit more than the global limit
-        require!(new_token_reserve_deposited_amount <= token_reserve.global_limit, InvalidInputError::GlobalLimitExceeded);
+        require!(new_token_reserve_deposited_amount <= token_reserve.global_limit, LendingError::GlobalLimitExceeded);
 
         //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
         if lending_user_account.lending_user_account_added == false
@@ -997,7 +997,7 @@ pub mod lending_protocol
     ) -> Result<()> 
     {
         //Account Name string must not be longer than 25 characters
-        require!(account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, InvalidInputError::LendingUserAccountNameTooLong);
+        require!(account_name.len() <= MAX_ACCOUNT_NAME_LENGTH, LendingError::LendingUserAccountNameTooLong);
 
         let lending_user_account = &mut ctx.accounts.lending_user_account;
         lending_user_account.account_name = account_name.clone();
@@ -1800,7 +1800,7 @@ pub mod lending_protocol
                 user_account_index)?;
 
             //You must provide all of the sub user's tab accounts ordered by user_tab_account_index
-            require!(lending_user_account.next_tab_index_to_refresh == lending_user_tab_account.user_tab_account_index, InvalidInputError::IncorrectOrderOfTabAccounts);
+            require!(lending_user_account.next_tab_index_to_refresh == lending_user_tab_account.user_tab_account_index, LendingError::IncorrectOrderOfTabAccounts);
             
             drop(data_ref);
 
@@ -1961,7 +1961,7 @@ pub mod lending_protocol
     {
         let sub_market = &mut ctx.accounts.sub_market;
         //Only the Fee Collector can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), sub_market.fee_collector_address.key(), AuthorizationError::NotFeeCollector);
+        require_keys_eq!(ctx.accounts.signer.key(), sub_market.fee_collector_address.key(), LendingError::NotFeeCollector);
 
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -2093,7 +2093,7 @@ pub mod lending_protocol
     {
         let initial_sub_market = &mut ctx.accounts.initial_sub_market;
         //Only the Fee Collector can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), initial_sub_market.fee_collector_address.key(), AuthorizationError::NotFeeCollector);
+        require_keys_eq!(ctx.accounts.signer.key(), initial_sub_market.fee_collector_address.key(), LendingError::NotFeeCollector);
                 
         //Duplicate SubMarket Detected
         //When accounts are the exact same, it can lead to unexpected behavior where only one of them gets updated and would require extra steps
@@ -2268,7 +2268,7 @@ pub mod lending_protocol
     {
         let solvency_treasurer = &ctx.accounts.solvency_treasurer;
         //Only the Treasurer can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), solvency_treasurer.address.key(), AuthorizationError::NotSolvencyTreasurer);
+        require_keys_eq!(ctx.accounts.signer.key(), solvency_treasurer.address.key(), LendingError::NotSolvencyTreasurer);
 
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -2381,7 +2381,7 @@ pub mod lending_protocol
     {
         let liquidation_treasurer = &ctx.accounts.liquidation_treasurer;
         //Only the Treasurer can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), liquidation_treasurer.address.key(), AuthorizationError::NotLiquidationTreasurer);
+        require_keys_eq!(ctx.accounts.signer.key(), liquidation_treasurer.address.key(), LendingError::NotLiquidationTreasurer);
 
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
