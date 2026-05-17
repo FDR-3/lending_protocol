@@ -5,8 +5,8 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-lending_protocol = "SYcBiQtCfjAia7DkkXYubztiQ1e5AGjKPKsM9iJz8od"
-pyth-mock = "9NjP3rtyDtirKvYMwuyrHigznPTCmjwgbmc9MLLJvtWd"
+lending_protocol = "6CHAJ1oZfAYJaA3FHHyU1DZp1mJiVT1AERAJURCKdXfT"
+pyth-mock = "6mKmsFHwphqQ8ifGzXDdDkdXHbQordg9GX4ne6zbJdtC"
 
 [registry]
 url = "https://api.apr.dev"

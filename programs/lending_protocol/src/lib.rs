@@ -13,7 +13,7 @@ pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
 
-declare_id!("SYcBiQtCfjAia7DkkXYubztiQ1e5AGjKPKsM9iJz8od");
+declare_id!("6CHAJ1oZfAYJaA3FHHyU1DZp1mJiVT1AERAJURCKdXfT");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -31,7 +31,7 @@ const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNra
 #[cfg(feature = "dev")] 
 const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6zgxNa8F4nY3kfDpdRJsT8HdPU");
 #[cfg(feature = "dev")] 
-const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("9BRgCdmwyP5wGVTvKAUDjSwucpqGncurVa35DjaWqSsC");
+const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("9BRgCdmwyP5wGVTvKAUDjSwucpqGncurVa35DjaWqSsC");//Also the HodlTreasury
 #[cfg(feature = "dev")]
 use pyth_solana_receiver_sdk::ID as PYTH_RECEIVER_ID;
 #[cfg(feature = "dev")]
@@ -44,7 +44,7 @@ const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUe
 #[cfg(feature = "local")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
-const PYTH_PROGRAM_ID: Pubkey = pubkey!("9NjP3rtyDtirKvYMwuyrHigznPTCmjwgbmc9MLLJvtWd");
+const PYTH_PROGRAM_ID: Pubkey = pubkey!("6mKmsFHwphqQ8ifGzXDdDkdXHbQordg9GX4ne6zbJdtC");//This comes from pyth-mock/lib.rs
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -407,7 +407,8 @@ fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
 fn initialize_lending_user_account<'info>(lending_user_account: &mut LendingUserAccount,
     user_account_owner: Pubkey,
     user_account_index: u8,
-    account_name: String
+    account_name: String,
+    look_up_table_address: Pubkey
 ) -> Result<()>
 {
     //Account Name string must not be longer than 25 characters
@@ -416,9 +417,11 @@ fn initialize_lending_user_account<'info>(lending_user_account: &mut LendingUser
     lending_user_account.owner = user_account_owner;
     lending_user_account.user_account_index = user_account_index;
     lending_user_account.account_name = account_name.clone();
+    lending_user_account.look_up_table_address = look_up_table_address;
     lending_user_account.lending_user_account_added = true;
 
     msg!("Created Lending User Account Named: {}", account_name);
+    msg!("Updated Lending User Look Up Table Address: {}", lending_user_account.look_up_table_address);
 
     Ok(())
 }
@@ -626,7 +629,7 @@ pub mod lending_protocol
 {
     use super::*;
 
-    pub fn initialize_lending_protocol(ctx: Context<InitializeLendingProtocol>, statement_month: u8, statement_year: u16) -> Result<()> 
+    pub fn initialize_lending_protocol(ctx: Context<InitializeLendingProtocol>, statement_month: u8, statement_year: u16, look_up_table_address: Pubkey) -> Result<()> 
     {
         //Only the initial CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), INITIAL_CEO_ADDRESS, LendingError::NotCEO);
@@ -643,6 +646,7 @@ pub mod lending_protocol
         let lending_protocol = &mut ctx.accounts.lending_protocol;
         lending_protocol.current_statement_month = statement_month;
         lending_protocol.current_statement_year = statement_year;
+        lending_protocol.look_up_table_address = look_up_table_address;
 
         let lending_stats = &mut ctx.accounts.lending_stats;
         lending_stats.bump = ctx.bumps.lending_stats;
@@ -650,6 +654,7 @@ pub mod lending_protocol
         msg!("Lending Protocol Initialized");
         msg!("New CEO Address: {}", ceo.address.key());
         msg!("Current Statement Month: {}, Year: {}", lending_protocol.current_statement_month, lending_protocol.current_statement_year);
+        msg!("Lending Protocol Look Up Table: {}", lending_protocol.look_up_table_address);
 
         Ok(())
     }
@@ -802,7 +807,8 @@ pub mod lending_protocol
         token_mint_address: Pubkey,
         sub_market_index: u16,
         fee_collector_address: Pubkey,
-        fee_on_interest_earned_rate: u16
+        fee_on_interest_earned_rate: u16,
+        look_up_table_address: Option<Pubkey> //Needed when a user creates their first Sub Market
     ) -> Result<()> 
     {
         //SubMarket Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
@@ -827,6 +833,17 @@ pub mod lending_protocol
         msg!("Fee Collector Address: {}", fee_collector_address.key());
         msg!("Fee On Interest Earned Rate: {:.2}%", fee_on_interest_earned_rate as f64 / 100.0); //convert from fixed point notation with 4 decimal places back to decimal for logging
         
+        //Add Look Up Table Address to account if being newly initialized.
+        let sub_market_owner_look_up_table = &mut ctx.accounts.sub_market_owner_look_up_table;
+        if sub_market_owner_look_up_table.look_up_table_added == false
+        {
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingSubMarketLookUpTable)?;
+
+            sub_market_owner_look_up_table.look_up_table_address = lut_address;
+            sub_market_owner_look_up_table.look_up_table_added = true;
+            msg!("Created Sub Market Owner Look Up Table: {}", sub_market_owner_look_up_table.look_up_table_address.key());
+        }
+
         Ok(())
     }
 
@@ -857,12 +874,23 @@ pub mod lending_protocol
         Ok(())
     }
 
+    pub fn update_lending_user_look_up_table_address(ctx: Context<UpdateLendingUserLookUpTableAddress>, look_up_table_address: Pubkey) -> Result<()> 
+    {
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
+        lending_user_account.look_up_table_address = look_up_table_address;
+
+        msg!("Updated Lending User Look Up Table Address: {}", lending_user_account.look_up_table_address);
+
+        Ok(())
+    }
+
     pub fn deposit_tokens(ctx: Context<DepositTokens>,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
         amount: u64,
-        account_name: Option<String> //Optional variable. Use null on front end when not needed
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()> 
     {
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -889,11 +917,14 @@ pub mod lending_protocol
                 }
             }
 
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
             initialize_lending_user_account(
                 lending_user_account,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                new_account_name_to_use
+                new_account_name_to_use,
+                lut_address
             )?;
         }
         
@@ -1010,6 +1041,7 @@ pub mod lending_protocol
         Ok(()) 
     }
 
+    //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
     pub fn withdraw_tokens(ctx: Context<WithdrawTokens>,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
@@ -1028,7 +1060,7 @@ pub mod lending_protocol
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let clock_slot = Clock::get()?.slot;
 
-        //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
+        //This withdraw_tokens function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
         require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
         require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
 
@@ -1112,6 +1144,7 @@ pub mod lending_protocol
         Ok(())
     }
 
+    //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
     pub fn borrow_tokens(ctx: Context<BorrowTokens>,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
@@ -1129,7 +1162,7 @@ pub mod lending_protocol
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let clock_slot = Clock::get()?.slot;
 
-        //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
+        //The borrow_tokens function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
         require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
         require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
 
@@ -1149,6 +1182,7 @@ pub mod lending_protocol
             )?;
         }
         //This is for when a user is borrowing a token they have never interacted with before
+        //You won't be able to use the create_new_monthly_statement until after the lending_user_tab_account exists
         if lending_user_monthly_statement_account.monthly_statement_account_added == false
         {
             let lending_protocol = &ctx.accounts.lending_protocol;
@@ -1340,7 +1374,8 @@ pub mod lending_protocol
         repay_max: bool,
         paying_off_insolvent_account: bool,
         send_reward_to_wallet: bool,
-        account_name: Option<String> //Optional variable. Use null on front end when not needed
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
@@ -1505,11 +1540,14 @@ pub mod lending_protocol
                 }
             }
 
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
             initialize_lending_user_account(
                 liquidator_lending_account,
                 ctx.accounts.signer.key(),
                 liquidator_account_index,
-                new_account_name_to_use
+                new_account_name_to_use,
+                lut_address
             )?;
         }
 
@@ -1571,20 +1609,22 @@ pub mod lending_protocol
             )?;
         }
 
-        //Update interest earned and accrued for the liquidator
-        //This is done incase the liquidator decides to deposit their rewards to the protocol, in their liquidation tab account in this case
-        update_user_previous_interest_earned(
-            liquidation_token_reserve,
-            &mut liquidation_sub_market,
-            liquidator_liquidation_tab_account,
-            liquidator_liquidation_monthly_statement_account
-        )?;
-        update_user_previous_interest_accrued(
-            liquidation_token_reserve,
-            &mut liquidation_sub_market,
-            liquidator_liquidation_tab_account,
-            liquidator_liquidation_monthly_statement_account
-        )?;
+        //Update interest earned and accrued for the liquidator before hand if they are depositing their liquidation
+        if !send_reward_to_wallet
+        {
+            update_user_previous_interest_earned(
+                liquidation_token_reserve,
+                &mut liquidation_sub_market,
+                liquidator_liquidation_tab_account,
+                liquidator_liquidation_monthly_statement_account
+            )?;
+            update_user_previous_interest_accrued(
+                liquidation_token_reserve,
+                &mut liquidation_sub_market,
+                liquidator_liquidation_tab_account,
+                liquidator_liquidation_monthly_statement_account
+            )?;
+        }
 
         //Repay Liquidati's Debt
         deposit_tokens_into_token_reserve_from_user(
@@ -1932,7 +1972,7 @@ pub mod lending_protocol
     ) -> Result<()> 
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
-        let lending_user_tab_account = &mut ctx.accounts.lending_user_tab_account;
+        let lending_user_tab_account = &ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
 
         initialize_lending_user_monthly_statement_account(
@@ -1950,13 +1990,13 @@ pub mod lending_protocol
         Ok(())
     }
 
-
     pub fn claim_sub_market_fees(ctx: Context<ClaimSubMarketFees>,
         token_mint_address: Pubkey,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
-        account_name: Option<String> //Optional variable. Use null on front end when not needed
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()> 
     {
         let sub_market = &mut ctx.accounts.sub_market;
@@ -1982,11 +2022,14 @@ pub mod lending_protocol
                 }
             }
 
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
             initialize_lending_user_account(
                 lending_user_account,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                new_account_name_to_use
+                new_account_name_to_use,
+                lut_address
             )?;
         }
 
@@ -2088,7 +2131,8 @@ pub mod lending_protocol
         destination_sub_market_owner_address: Pubkey,
         destination_sub_market_index: u16,
         user_account_index: u8,
-        account_name: Option<String> //Optional variable. Use null on front end when not needed
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()> 
     {
         let initial_sub_market = &mut ctx.accounts.initial_sub_market;
@@ -2122,11 +2166,14 @@ pub mod lending_protocol
                 }
             }
 
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
             initialize_lending_user_account(
                 lending_user_account,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                new_account_name_to_use
+                new_account_name_to_use,
+                lut_address
             )?;
         }
 
@@ -2263,7 +2310,8 @@ pub mod lending_protocol
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
-        account_name: Option<String> //Optional variable. Use null on front end when not needed
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()> 
     {
         let solvency_treasurer = &ctx.accounts.solvency_treasurer;
@@ -2289,11 +2337,14 @@ pub mod lending_protocol
                 }
             }
 
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
             initialize_lending_user_account(
                 lending_user_account,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                new_account_name_to_use
+                new_account_name_to_use,
+                lut_address
             )?;
         }
 
@@ -2376,7 +2427,8 @@ pub mod lending_protocol
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
-        account_name: Option<String> //Optional variable. Use null on front end when not needed
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()> 
     {
         let liquidation_treasurer = &ctx.accounts.liquidation_treasurer;
@@ -2403,11 +2455,14 @@ pub mod lending_protocol
                 }
             }
 
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
             initialize_lending_user_account(
                 lending_user_account,
                 ctx.accounts.signer.key(),
                 user_account_index,
-                new_account_name_to_use
+                new_account_name_to_use,
+                lut_address
             )?;
         }
 
@@ -2721,6 +2776,14 @@ pub struct CreateSubMarket<'info>
         space = size_of::<SubMarket>() + 8)]
     pub sub_market: Account<'info, SubMarket>,
 
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"subMarketOwnerLookUpTable".as_ref(), signer.key().as_ref()], 
+        bump, 
+        space = size_of::<SubMarketOwnerLookUpTable>() + 8)]
+    pub sub_market_owner_look_up_table: Account<'info, SubMarketOwnerLookUpTable>,
+
     //The Token Reserve must exist to create a SubMarket. Only the ceo can create a Token Reserve.
     #[account(
         seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
@@ -2754,13 +2817,28 @@ pub struct EditSubMarket<'info>
 }
 
 #[derive(Accounts)]
+#[instruction(user_account_index: u8)]
+pub struct UpdateLendingUserLookUpTableAddress<'info> 
+{
+    #[account(
+        mut,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
+        bump)]
+    pub lending_user_account: Account<'info, LendingUserAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
 #[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
 pub struct DepositTokens<'info> 
 {
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
+    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
 
     #[account(
         mut, 
@@ -2877,7 +2955,7 @@ pub struct WithdrawTokens<'info>
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Account<'info, LendingStats>,
+    pub lending_stats: Box<Account<'info, LendingStats>>,
 
     #[account(
         mut,
@@ -2895,7 +2973,7 @@ pub struct WithdrawTokens<'info>
         mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_account: Account<'info, LendingUserAccount>,
+    pub lending_user_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
         mut,
@@ -2960,7 +3038,7 @@ pub struct BorrowTokens<'info>
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Account<'info, LendingStats>,
+    pub lending_stats: Box<Account<'info, LendingStats>>,
 
     #[account(
         mut,
@@ -2978,7 +3056,7 @@ pub struct BorrowTokens<'info>
         mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_account: Account<'info, LendingUserAccount>,
+    pub lending_user_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
         init_if_needed,
@@ -3041,13 +3119,13 @@ pub struct RepayTokens<'info>
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
+    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
 
     #[account(
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Account<'info, LendingStats>,
+    pub lending_stats: Box<Account<'info, LendingStats>>,
 
     #[account(
         mut,
@@ -3065,7 +3143,7 @@ pub struct RepayTokens<'info>
         mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_account: Account<'info, LendingUserAccount>,
+    pub lending_user_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
         mut,
@@ -3076,7 +3154,7 @@ pub struct RepayTokens<'info>
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+    pub lending_user_tab_account: Box<Account<'info, LendingUserTabAccount>>,
 
     #[account(
         mut,
@@ -3359,7 +3437,7 @@ pub struct ClaimSubMarketFees<'info>
         mut,
         seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
         bump)]
-    pub token_reserve: Account<'info, TokenReserve>,
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut,
@@ -3522,7 +3600,7 @@ pub struct ClaimSolvencyInsuranceFees<'info>
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
+    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
 
     #[account(
         mut, 
@@ -3618,7 +3696,7 @@ pub struct ClaimLiquidationFees<'info>
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Account<'info, LendingStats>,
+    pub lending_stats: Box<Account<'info, LendingStats>>,
 
     #[account(
         seeds = [b"liquidationTreasurer".as_ref()],
@@ -3629,7 +3707,7 @@ pub struct ClaimLiquidationFees<'info>
         mut,
         seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
         bump)]
-    pub token_reserve: Account<'info, TokenReserve>,
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
         mut,
@@ -3701,7 +3779,8 @@ pub struct LiquidationTreasurer
 pub struct LendingProtocol
 {
     pub current_statement_month: u8,
-    pub current_statement_year: u16
+    pub current_statement_year: u16,
+    pub look_up_table_address: Pubkey
 }
 
 #[account]
@@ -3799,6 +3878,14 @@ pub struct SubMarket
 }
 
 #[account]
+pub struct SubMarketOwnerLookUpTable
+{
+    pub owner: Pubkey,
+    pub look_up_table_address: Pubkey,
+    pub look_up_table_added: bool
+}
+
+#[account]
 pub struct LendingUserAccount
 {
     pub owner: Pubkey,
@@ -3812,7 +3899,8 @@ pub struct LendingUserAccount
     pub last_health_update_clock_slot: u64,
     pub temp_deposit_usd_value: u128,
     pub temp_borrow_usd_value: u128,
-    pub next_tab_index_to_refresh: u16
+    pub next_tab_index_to_refresh: u16,
+    pub look_up_table_address: Pubkey
 }
 
 #[account]

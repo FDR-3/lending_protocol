@@ -21,7 +21,7 @@ pub enum AuthorizationError
 #[error_code]
 pub enum InvalidInputError
 {
-    #[msg("The submarket fee on interest earned rate can't be greater than 100%")]
+    #[msg("The Sub Market fee on interest earned rate can't be greater than 100%")]
     InvalidSubMarketFeeRate,
     #[msg("The solvency insurance fee on interest earned rate can't be greater than 100%")]
     InvalidSolvencyInsuranceFeeRate,
@@ -92,12 +92,16 @@ pub enum LendingError
     NotLiquidationTreasurer,
     #[msg("Only the Fee Collector can claim the fees")]
     NotFeeCollector,
-    #[msg("The submarket fee on interest earned rate can't be greater than 100%")]
+    #[msg("You must include a Look Up Table Address when a user creates their first Sub Market")]
+    MissingSubMarketLookUpTable,
+    #[msg("The Sub Market fee on interest earned rate can't be greater than 100%")]
     InvalidSubMarketFeeRate,
     #[msg("The solvency insurance fee on interest earned rate can't be greater than 100%")]
     InvalidSolvencyInsuranceFeeRate,
     #[msg("You must provide all of the sub user's tab accounts")]
     IncorrectNumberOfTabAccounts,
+    #[msg("You must include a Look Up Table Address when a user initializes their Lending User Account")]
+    MissingLendingUserLookUpTable,
     #[msg("You must provide the sub user's tab accounts ordered by user_tab_account_index")]
     IncorrectOrderOfTabAccounts,
     #[msg("Unexpected Lending Stats PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]

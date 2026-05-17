@@ -32,9 +32,10 @@ describe("lending_protocol", () =>
   const notCEOErrorMsg = "Only the CEO can call this function"
   const notSolvencyTreasurerErrorMsg = "Only the Solvency Treasurer can call this function"
   const notLiquidationTreasurerErrorMsg = "Only the Liquidation Treasurer can call this function"
-  const solvencyInsuranceFeeOnInterestEarnedRateTooHighMsg = "The solvency insurance fee on interest earned rate can't be greater than 100%"
-  const subMarketFeeOnInterestEarnedRateTooHighMsg = "The submarket fee on interest earned rate can't be greater than 100%"
-  const feeOnInterestEarnedRateTooLowMsg = "ERR_OUT_OF_RANGE"
+  const solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg = "The solvency insurance fee on interest earned rate can't be greater than 100%"
+  const outOfRangeError = "ERR_OUT_OF_RANGE"
+  const subMarketFeeOnInterestEarnedRateTooHighErrorMsg = "The Sub Market fee on interest earned rate can't be greater than 100%"
+  const subMarketOwnerLookUpTableMissingErrorMsg = "You must include a Look Up Table Address when a user creates their first Sub Market"
   const globalLimitExceededErrorMsg = "You can't deposit more than the global limit"
   const expectedThisAccountToExistErrorMsg = "The program expected this account to be already initialized"
   const insufficientFundsErrorMsg = "You can't withdraw more funds than you've deposited"
@@ -58,9 +59,16 @@ describe("lending_protocol", () =>
   const notFeeCollectorErrorMsg = "Only the Fee Collector can claim the fees"
   const staleTokenReserveErrorMsg = "The token reserve was stale"
   
-  var lookUpTableAddress: PublicKey
-  var lookUpTableInstance: anchor.web3.TransactionInstruction
-  var lookUpTableAccount: anchor.web3.AddressLookupTableAccount
+  var protocolLookUpTableAddress: PublicKey
+  var protocolLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
+  var mainSubMarketOwnerLookUpTableAddress: PublicKey
+  var mainSubMarketOwnerLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
+  var supplierLookUpTableAddress: PublicKey
+  var supplierLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
+  var borrowerLookUpTableAddress: PublicKey
+  var borrowerLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
+  var liquidatorLookUpTableAddress: PublicKey
+  var liquidatorLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
 
   var lendingStatsRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
@@ -87,7 +95,7 @@ describe("lending_protocol", () =>
   
   const mintAmount = 10_000_000_000
 
-  var usdcMint = undefined
+  var usdcMint: Token
   const usdcPythFeedIDBuffer = Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", "hex")
   const usdcPythFeedIDArray = Array.from(Buffer.from("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", "hex"))
   const usdcTokenDecimalAmount = 6
@@ -109,7 +117,7 @@ describe("lending_protocol", () =>
   var borrowerUSDCMonthlyStatementRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
-  var daiMint = undefined
+  var daiMint: Token
   const daiPythFeedIDBuffer = Buffer.from("b0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e833f70dabfd", "hex")
   const daiPythFeedIDArray = Array.from(Buffer.from("b0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e833f70dabfd", "hex"))
   const daiTokenDecimalAmount = 8
@@ -126,7 +134,7 @@ describe("lending_protocol", () =>
   var borrowerDAIMonthlyStatementRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var daiPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
-  var wethMint = undefined
+  var wethMint: Token
   const wethPythFeedIDBuffer = Buffer.from("9d4294bbcd1174d6f2003ec365831e64cc31d9f6f15a2b85399db8d5000960f6", "hex")
   const wethPythFeedIDArray = Array.from(Buffer.from("9d4294bbcd1174d6f2003ec365831e64cc31d9f6f15a2b85399db8d5000960f6", "hex"))
   const wethTokenDecimalAmount = 8
@@ -143,7 +151,7 @@ describe("lending_protocol", () =>
   var borrowerWEthMonthlyStatementRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var wethPythPriceUpdateRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
-  var wbtcMint = undefined
+  var wbtcMint: Token
   const wbtcPythFeedIDBuffer = Buffer.from("c9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", "hex")
   const wbtcPythFeedIDArray = Array.from(Buffer.from("c9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", "hex"))
   const wbtcTokenDecimalAmount = 8
@@ -198,7 +206,7 @@ describe("lending_protocol", () =>
   //const borrowWaitTimeInSeconds = 30
   const borrowWaitTimeInSeconds = 0
   const useUSDCFixedBorrowAPY = false
-  const runInsolventTest = true
+  const runInsolventTest = false
   var solLiquidationPrice: bigint
 
   if(!runInsolventTest)
@@ -393,14 +401,14 @@ describe("lending_protocol", () =>
       isWritable: true
     }
 
-    await initLookUpTable()
-
     console.log("Setup Complete")
   })
 
   it("Initializes Lending Protocol", async () => 
   {
-    await program.methods.initializeLendingProtocol(statementMonth, statementYear).rpc()
+    protocolLookUpTableAddress = await initLookUpTable()
+
+    await program.methods.initializeLendingProtocol(statementMonth, statementYear, protocolLookUpTableAddress).rpc()
 
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOPDA())
     assert(ceoAccount.address.toBase58() == program.provider.publicKey.toBase58())
@@ -420,10 +428,10 @@ describe("lending_protocol", () =>
     }
 
     //Add Lending Protocol and Lending Stats to Address Lookup Table
-    await addAddressToLookUpTable([lendingProtocolPDA, lendingStatsPDA], "Lending Protocol and Lending Stats")
+    await addAddressToLookUpTable(protocolLookUpTableAddress, [lendingProtocolPDA, lendingStatsPDA], "Lending Protocol and Lending Stats")
 
     //Get latest lookup table
-    lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
+    protocolLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(protocolLookUpTableAddress)).value
   })
 
   it("Verifies That Only the CEO Can Pass On Account", async () => 
@@ -603,7 +611,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == solvencyInsuranceFeeOnInterestEarnedRateTooHighMsg)
+    assert(errorMessage == solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg)
   })
 
   it("Verifies That a Token Reserve Can't be Created With a Solvency Insurance Fee on Interest Rate Below 0%", async () => 
@@ -621,7 +629,7 @@ describe("lending_protocol", () =>
       errorMessage = error.code
     }
 
-    assert(errorMessage == feeOnInterestEarnedRateTooLowMsg)
+    assert(errorMessage == outOfRangeError)
   })
   
   it("Adds a wSOL Token Reserve", async () => 
@@ -650,10 +658,10 @@ describe("lending_protocol", () =>
     }
 
     //Add Token Reserve to Address Lookup Table
-    await addAddressToLookUpTable(solTokenReservePDA, "SOL Token Reserve")
+    await addAddressToLookUpTable(protocolLookUpTableAddress, solTokenReservePDA, "SOL Token Reserve")
 
     //Get latest lookup table
-    lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
+    protocolLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(protocolLookUpTableAddress)).value
   })
 
   it("Verifies That a SubMarket Can't be Created With a Fee on Interest Rate Higher than 100%", async () => 
@@ -662,14 +670,14 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, program.provider.publicKey, subMarketFeeRateAbove100Percent).rpc()
+      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, program.provider.publicKey, subMarketFeeRateAbove100Percent, null).rpc()
     }
     catch(error)
     {
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == subMarketFeeOnInterestEarnedRateTooHighMsg)
+    assert(errorMessage == subMarketFeeOnInterestEarnedRateTooHighErrorMsg)
   })
 
   it("Verifies That a SubMarket Can't be Created With a Fee on Interest Rate Below 0%", async () => 
@@ -678,19 +686,37 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, program.provider.publicKey, subMarketFeeRateBelove0Percent).rpc()
+      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, program.provider.publicKey, subMarketFeeRateBelove0Percent, null).rpc()
     }
     catch(error)
     {
       errorMessage = error.code
     }
 
-    assert(errorMessage == feeOnInterestEarnedRateTooLowMsg)
+    assert(errorMessage == outOfRangeError)
+  })
+
+  it("Verifies That a Look Up Table Address is Required when a Sub Market Owner Creates Their First Sub Market", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent, null).rpc()
+    }
+    catch(error)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == subMarketOwnerLookUpTableMissingErrorMsg)
   })
 
   it("Creates a wSOL SubMarket", async () => 
   {
-    await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
+    mainSubMarketOwnerLookUpTableAddress = await initLookUpTable()
+    
+    await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent, mainSubMarketOwnerLookUpTableAddress).rpc()
 
     const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTokenMintAddress, program.provider.publicKey, testSubMarketIndex))
     
@@ -710,10 +736,10 @@ describe("lending_protocol", () =>
     }
 
     //Add SubMarket to Address Lookup Table
-    await addAddressToLookUpTable(solSubMarketPDA, "SOL SubMarket")
+    await addAddressToLookUpTable(mainSubMarketOwnerLookUpTableAddress, solSubMarketPDA, "SOL SubMarket")
 
     //Get latest lookup table
-    lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
+    mainSubMarketOwnerLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(mainSubMarketOwnerLookUpTableAddress)).value
   })
 
   it("Edits a wSOL SubMarket", async () => 
@@ -729,7 +755,7 @@ describe("lending_protocol", () =>
     assert(subMarket.subMarketIndex == testSubMarketIndex)
   })
 
-  //Because the SubMarket account is derived from the signer calling the function (and not passed into the function on trust), it's never possible to even try to edit someone else's submarket
+  //Because the SubMarket account is derived from the signer calling the function (and not passed into the function based on trust), it's never possible to even try to edit someone else's Sub Market
   it("Verifies That a SubMarket Can Only be Edited by the Owner", async () => 
   {
     var errorMessage = ""
@@ -755,7 +781,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
+      await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName, null)
       .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -799,7 +825,9 @@ describe("lending_protocol", () =>
 
   it("Deposits wSOL Into the Token Reserve", async () => 
   {
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
+    supplierLookUpTableAddress = await initLookUpTable()
+
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName, supplierLookUpTableAddress)
     .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
@@ -887,6 +915,12 @@ describe("lending_protocol", () =>
       isSigner: false,
       isWritable: true
     }
+
+    //Add Lending User Tab and Monthly Statment Accounts to Address Lookup Table
+    await addAddressToLookUpTable(supplierLookUpTableAddress, [successorSOLLendingUserTabAccountPDA, supplierSOLMonthlyStatementPDA], "Lending User Tab and Monthly Statement")
+
+    //Get latest lookup table
+    supplierLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(supplierLookUpTableAddress)).value
   })
 
   it("Verifies a User Can't Have an Account Name Longer Than 25 Characters", async () => 
@@ -1105,15 +1139,15 @@ describe("lending_protocol", () =>
     }
 
     //Add Token Reserve to Address Lookup Table
-    await addAddressToLookUpTable(usdcTokenReservePDA, "USDC Token Reserve")
+    await addAddressToLookUpTable(protocolLookUpTableAddress, usdcTokenReservePDA, "USDC Token Reserve")
 
     //Get latest lookup table
-    lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
+    protocolLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(protocolLookUpTableAddress)).value
   })
 
   it("Creates a USDC SubMarket", async () => 
   {
-    await program.methods.createSubMarket(usdcMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
+    await program.methods.createSubMarket(usdcMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent, null).rpc()
 
     const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcMint.publicKey, program.provider.publicKey, testSubMarketIndex))
     assert(subMarket.owner.toBase58() == program.provider.publicKey.toBase58())
@@ -1132,15 +1166,15 @@ describe("lending_protocol", () =>
     }
 
     //Add SubMarket to Address Lookup Table
-    await addAddressToLookUpTable(usdcSubMarketPDA, "USDC SubMarket")
+    await addAddressToLookUpTable(mainSubMarketOwnerLookUpTableAddress, usdcSubMarketPDA, "USDC SubMarket")
 
     //Get latest lookup table
-    lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
+    mainSubMarketOwnerLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(mainSubMarketOwnerLookUpTableAddress)).value
   })
 
   it("Deposits USDC Into the Token Reserve", async () => 
   {
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, supplierUSDCAmount, null)
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, supplierUSDCAmount, null, null)
     .accounts({ tokenMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
@@ -1232,8 +1266,10 @@ describe("lending_protocol", () =>
 
   it("Deposits 1 SOL as Collateral", async () => 
   {
+    borrowerLookUpTableAddress = await initLookUpTable()
+
     //Depositing 1 Sol as Collateral
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, oneSol, accountName)
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, oneSol, accountName, borrowerLookUpTableAddress)
     .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: borrowerWalletKeypair.publicKey })
     .signers([borrowerWalletKeypair])
     .rpc()
@@ -1305,6 +1341,21 @@ describe("lending_protocol", () =>
       isSigner: false,
       isWritable: true
     }
+ 
+    //Add Lending User Tab and Monthly Statment Accounts to Address Lookup Table
+    await addAddressToLookUpTable
+    (
+      borrowerLookUpTableAddress,
+      [borrowerSOLLendingUserTabAccountPDA,
+        borrowerUSDCLendingUserTabAccountPDA,
+        borrowerSOLMonthlyStatementPDA,
+        borrowerUSDCMonthlyStatementPDA
+      ],
+      "Lending User Tab and Monthly Statement"
+      )
+
+    //Get latest lookup table
+    borrowerLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(borrowerLookUpTableAddress)).value
   })
 
   it("Verifies you Can't Refresh User's Health Without Their Tab Account", async () => 
@@ -1873,31 +1924,12 @@ describe("lending_protocol", () =>
         true,
         false,
         false,
+        null,
         null
       )
       .accounts({ repaymentMint: usdcMint.publicKey, liquidationMint: solTokenMintAddress, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID, liquidationTokenProgram: TOKEN_PROGRAM_ID })
       .remainingAccounts(liquidationRemainingAccounts)
       .instruction()
-
-      /*await program.methods.liquidateAccount(
-        program.provider.publicKey,
-        testSubMarketIndex,
-        program.provider.publicKey,
-        testSubMarketIndex,
-        borrowerWalletKeypair.publicKey,
-        testUserAccountIndex,
-        testUserAccountIndex,
-        halfBorrowerUSDCAmount,
-        true,
-        false,
-        false,
-        null
-      )
-      .accounts({ repaymentMint: usdcMint.publicKey, liquidationMint: solTokenMintAddress, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID, liquidationTokenProgram: TOKEN_PROGRAM_ID })
-      .remainingAccounts(liquidationRemainingAccounts)
-      .rpc()*/
-
-      //transaction.add(liquidateInstruction)
 
       const { blockhash } = await program.provider.connection.getLatestBlockhash()
 
@@ -1906,7 +1938,7 @@ describe("lending_protocol", () =>
         payerKey: program.provider.publicKey,
         recentBlockhash: blockhash,
         instructions: [refreshUserHealthAndTokenReservesInstruction, liquidateInstruction]
-      }).compileToV0Message([lookUpTableAccount])
+      }).compileToV0Message([protocolLookUpTableAccount])
 
       // Create and sign the Versioned Transaction
       const transaction = new VersionedTransaction(messageV0)
@@ -1980,6 +2012,7 @@ describe("lending_protocol", () =>
         false,
         true,
         false,
+        null,
         null
       )
       .accounts({ repaymentMint: usdcMint.publicKey, liquidationMint: solTokenMintAddress, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID, liquidationTokenProgram: TOKEN_PROGRAM_ID })
@@ -1993,7 +2026,7 @@ describe("lending_protocol", () =>
         payerKey: program.provider.publicKey,
         recentBlockhash: blockhash,
         instructions: [refreshUserHealthAndTokenReservesInstruction, liquidateInstruction]
-      }).compileToV0Message([lookUpTableAccount])
+      }).compileToV0Message([protocolLookUpTableAccount])
 
       //Create Versioned Transaction
       const transaction = new VersionedTransaction(messageV0)
@@ -2082,6 +2115,7 @@ describe("lending_protocol", () =>
         false,
         false,
         false,
+        null,
         null
       )
       .accounts({ repaymentMint: usdcMint.publicKey, liquidationMint: solTokenMintAddress, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID, liquidationTokenProgram: TOKEN_PROGRAM_ID })
@@ -2095,7 +2129,7 @@ describe("lending_protocol", () =>
         payerKey: program.provider.publicKey,
         recentBlockhash: blockhash,
         instructions: [refreshUserHealthAndTokenReservesInstruction, liquidateInstruction]
-      }).compileToV0Message([lookUpTableAccount])
+      }).compileToV0Message([protocolLookUpTableAccount])
 
       //Create Versioned Transaction
       const transaction = new VersionedTransaction(messageV0)
@@ -2237,6 +2271,7 @@ describe("lending_protocol", () =>
         false,
         false,
         false,
+        null,
         null
       )
       .accounts({ repaymentMint: usdcMint.publicKey, liquidationMint: solTokenMintAddress, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID, liquidationTokenProgram: TOKEN_PROGRAM_ID })
@@ -2250,7 +2285,7 @@ describe("lending_protocol", () =>
         payerKey: program.provider.publicKey,
         recentBlockhash: blockhash,
         instructions: [refreshUserHealthAndTokenReservesInstruction, liquidateInstruction]
-      }).compileToV0Message([lookUpTableAccount])
+      }).compileToV0Message([protocolLookUpTableAccount])
 
       //Create Versioned Transaction
       const transaction = new VersionedTransaction(messageV0)
@@ -2272,6 +2307,8 @@ describe("lending_protocol", () =>
   //Liquidation test type controlled by "runInsolventTest" variable
   it("Liquidates or Zero's out insolvent Account whose Debt Value is 100% or more of their Collateral Value", async () => 
   {
+    liquidatorLookUpTableAddress = await initLookUpTable()
+    
     console.log("\n", "<-- Before Liquidation -->")
 
     var lendingStats = await program.account.lendingStats.fetch(getLendingStatsPDA())
@@ -2359,7 +2396,8 @@ describe("lending_protocol", () =>
       true,
       runInsolventTest,
       false,
-      null
+      null,
+      liquidatorLookUpTableAddress
     )
     .accounts({ repaymentMint: usdcMint.publicKey, liquidationMint: solTokenMintAddress, repaymentTokenProgram: TOKEN_2022_PROGRAM_ID, liquidationTokenProgram: TOKEN_PROGRAM_ID })
     .remainingAccounts(liquidationRemainingAccounts)
@@ -2372,7 +2410,7 @@ describe("lending_protocol", () =>
       payerKey: program.provider.publicKey,
       recentBlockhash: blockhash,
       instructions: [refreshUserHealthAndTokenReservesInstruction, liquidateInstruction]
-    }).compileToV0Message([lookUpTableAccount])
+    }).compileToV0Message([protocolLookUpTableAccount])
 
     //Create Versioned Transaction
     const transaction = new VersionedTransaction(messageV0)
@@ -2438,14 +2476,15 @@ describe("lending_protocol", () =>
     assert(liquidatorLendingUserAccount.accountName == "Generic Liquidator")
     assert(liquidatorLendingUserAccount.tabAccountCount == 2)
 
-    const liquidatorLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
+    const liquidatorLiquidationLendingUserTabPDA = getLendingUserTabAccountPDA
     (
       solTokenMintAddress,
       program.provider.publicKey,
       testSubMarketIndex,
       program.provider.publicKey,
       testUserAccountIndex
-    ))
+    )
+    const liquidatorLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(liquidatorLiquidationLendingUserTabPDA)
     console.log("Liquidator Liquidation Amount After Liquidation", Number(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidator Solvency Fee Generated Amount After Liquidation", Number(liquidatorLiquidationLendingUserTabAccount.liquidationFeesGeneratedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
     assert(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount.gt(bnZero))
@@ -2503,8 +2542,8 @@ describe("lending_protocol", () =>
     console.log("Liquidati SnapShot Deposit Balance Amount After Liquidation", Number(liquidatiLiquidationMonthlyStatementAccount.snapShotBalanceAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidati SnapShot Liquidated Amount After Liquidation", Number(liquidatiLiquidationMonthlyStatementAccount.snapShotLiquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
     assert(liquidatiLiquidationMonthlyStatementAccount.snapShotBalanceAmount.eq(oneSol.sub(liquidatiLiquidationMonthlyStatementAccount.monthlyLiquidatedAmount)))
-
-    const liquidatorLiquidationMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(getlendingUserMonthlyStatementAccountPDA
+ 
+    const liquidatorLiquidationMonthlyStatementPDA = getlendingUserMonthlyStatementAccountPDA
     (
       newStatementMonth,
       newStatementYear,
@@ -2513,13 +2552,25 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       program.provider.publicKey,
       testUserAccountIndex
-    ))
+    )
+    const liquidatorLiquidationMonthlyStatementAccount = await program.account.lendingUserMonthlyStatementAccount.fetch(liquidatorLiquidationMonthlyStatementPDA)
     console.log("Liquidator Monthly Statement Liquidated Amount After Liquidation", Number(liquidatorLiquidationMonthlyStatementAccount.monthlyLiquidatorAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidator SnapShot Deposit Balance Amount After Liquidation", Number(liquidatorLiquidationMonthlyStatementAccount.snapShotBalanceAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidator SnapShot Liquidator Amount After Liquidation", Number(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
     assert(liquidatorLiquidationMonthlyStatementAccount.monthlyLiquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotBalanceAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
     assert(liquidatorLiquidationMonthlyStatementAccount.snapShotLiquidatorAmount.eq(liquidatorLiquidationLendingUserTabAccount.liquidatorAmount))
+
+    //Add Lending User Tab and Monthly Statment Accounts to Address Lookup Table
+    await addAddressToLookUpTable
+    (
+      liquidatorLookUpTableAddress,
+      [liquidatorLiquidationLendingUserTabPDA, liquidatorLiquidationMonthlyStatementPDA],
+      "Liquidator Lending User Tab and Monthly Statement"
+    )
+
+    //Get latest lookup table
+    liquidatorLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(liquidatorLookUpTableAddress)).value
   })
  
   it("Refreshes Token Reserves and Supplier's/Borrower's Health Status", async () => 
@@ -3045,6 +3096,7 @@ describe("lending_protocol", () =>
       program.provider.publicKey,
       testSubMarketIndex,
       testUserAccountIndex,
+      null,
       null
       )
       .accounts({ signer: successorWalletKeypair.publicKey })
@@ -3066,6 +3118,7 @@ describe("lending_protocol", () =>
     program.provider.publicKey,
     testSubMarketIndex,
     testUserAccountIndex,
+    null,
     null
     )
     .rpc()
@@ -3100,6 +3153,7 @@ describe("lending_protocol", () =>
       program.provider.publicKey,
       testSubMarketIndex,
       testUserAccountIndex,
+      null,
       null
       )
       .accounts({ tokenMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
@@ -3120,6 +3174,7 @@ describe("lending_protocol", () =>
     program.provider.publicKey,
     testSubMarketIndex,
     testUserAccountIndex,
+    null,
     null
     )
     .accounts({ tokenMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
@@ -3154,6 +3209,7 @@ describe("lending_protocol", () =>
       program.provider.publicKey,
       testSubMarketIndex,
       testUserAccountIndex,
+      null,
       null
       )
       .accounts({ signer: successorWalletKeypair.publicKey })
@@ -3175,6 +3231,7 @@ describe("lending_protocol", () =>
     program.provider.publicKey,
     testSubMarketIndex,
     testUserAccountIndex,
+    null,
     null
     )
     .rpc()
@@ -3267,19 +3324,19 @@ describe("lending_protocol", () =>
     }
 
     //Add Token Reserves to Address Lookup Table
-    await addAddressToLookUpTable(daiTokenReservePDA, "DAI Token Reserve")
-    await addAddressToLookUpTable(wethTokenReservePDA, "WEth Token Reserve")
-    await addAddressToLookUpTable(wbtcTokenReservePDA, "WBtc Token Reserve")
+    await addAddressToLookUpTable(protocolLookUpTableAddress, daiTokenReservePDA, "DAI Token Reserve")
+    await addAddressToLookUpTable(protocolLookUpTableAddress, wethTokenReservePDA, "WEth Token Reserve")
+    await addAddressToLookUpTable(protocolLookUpTableAddress, wbtcTokenReservePDA, "WBtc Token Reserve")
 
     //Get latest lookup table
-    lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
+    protocolLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(protocolLookUpTableAddress)).value
   })
 
   it("Creates a DAI, WEth, and WBtc SubMarket", async () => 
   {
-    await program.methods.createSubMarket(daiMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
-    await program.methods.createSubMarket(wethMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
-    await program.methods.createSubMarket(wbtcMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent).rpc()
+    await program.methods.createSubMarket(daiMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent, null).rpc()
+    await program.methods.createSubMarket(wethMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent, null).rpc()
+    await program.methods.createSubMarket(wbtcMint.publicKey, testSubMarketIndex, program.provider.publicKey, subMarketFeeRate8Percent, null).rpc()
 
     const daiSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(daiMint.publicKey, program.provider.publicKey, testSubMarketIndex))
     assert(daiSubMarket.owner.toBase58() == program.provider.publicKey.toBase58())
@@ -3330,37 +3387,37 @@ describe("lending_protocol", () =>
     }
 
     //Add SubMarkets to Address Lookup Table
-    await addAddressToLookUpTable(daiSubMarketPDA, "DAI SubMarket")
-    await addAddressToLookUpTable(wethSubMarketPDA, "WEth SubMarket")
-    await addAddressToLookUpTable(wbtcSubMarketPDA, "WBtc SubMarket")
+    await addAddressToLookUpTable(mainSubMarketOwnerLookUpTableAddress, daiSubMarketPDA, "DAI SubMarket")
+    await addAddressToLookUpTable(mainSubMarketOwnerLookUpTableAddress, wethSubMarketPDA, "WEth SubMarket")
+    await addAddressToLookUpTable(mainSubMarketOwnerLookUpTableAddress, wbtcSubMarketPDA, "WBtc SubMarket")
 
     //Get latest lookup table
-    lookUpTableAccount = (await program.provider.connection.getAddressLookupTable(lookUpTableAddress)).value
+    mainSubMarketOwnerLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(mainSubMarketOwnerLookUpTableAddress)).value
   })
 
   it("Deposits SOL, USDC, DAI, WEth, BTC into Token Reserve", async () => 
   {
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, accountName)
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, twoSol, null, null)
     .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
     
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, supplierUSDCAmount, null)
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, supplierUSDCAmount, null, null)
     .accounts({ tokenMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
 
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, daiDepositAmount, null)
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, daiDepositAmount, null, null)
     .accounts({ tokenMint: daiMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
 
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, wethDepositAmount, null)
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, wethDepositAmount, null, null)
     .accounts({ tokenMint: wethMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
 
-    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, wbtcDepositAmount, null)
+    await program.methods.depositTokens(program.provider.publicKey, testSubMarketIndex, testUserAccountIndex, wbtcDepositAmount, null, null)
     .accounts({ tokenMint: wbtcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
@@ -3619,21 +3676,21 @@ describe("lending_protocol", () =>
       payerKey: program.provider.publicKey,
       recentBlockhash: blockhash,
       instructions: [refreshUserHealthAndTokenReservesInstruction, withdrawDAIInstruction]
-    }).compileToV0Message([lookUpTableAccount])
+    }).compileToV0Message([protocolLookUpTableAccount, mainSubMarketOwnerLookUpTableAccount, supplierLookUpTableAccount])
 
     const messageV0WithdrawWEth = new TransactionMessage(
     {
       payerKey: program.provider.publicKey,
       recentBlockhash: blockhash,
       instructions: [refreshUserHealthAndTokenReservesInstruction, withdrawWEthInstruction]
-    }).compileToV0Message([lookUpTableAccount])
+    }).compileToV0Message([protocolLookUpTableAccount, mainSubMarketOwnerLookUpTableAccount, supplierLookUpTableAccount])
 
     const messageV0WithdrawWBtc = new TransactionMessage(
     {
       payerKey: program.provider.publicKey,
       recentBlockhash: blockhash,
       instructions: [refreshUserHealthAndTokenReservesInstruction, withdrawWBtcInstruction]
-    }).compileToV0Message([lookUpTableAccount])
+    }).compileToV0Message([protocolLookUpTableAccount, mainSubMarketOwnerLookUpTableAccount, supplierLookUpTableAccount])
 
     //Create Versioned Transaction
     const withdrawDAITransaction = new VersionedTransaction(messageV0WithdrawDAI)
@@ -4071,23 +4128,26 @@ describe("lending_protocol", () =>
   {
     console.log("Creating Lookup Table")
 
-    const slot = await program.provider.connection.getSlot();
+    const slot = await program.provider.connection.getSlot("finalized")
 
-    ([lookUpTableInstance, lookUpTableAddress] = 
+    const [createInstruction, lookUpTableAddress] = 
     AddressLookupTableProgram.createLookupTable({
       authority: program.provider.publicKey,
       payer: program.provider.publicKey,
       recentSlot: slot,
-    }))
+    });
 
+    await program.provider.sendAndConfirm(new Transaction().add(createInstruction), [])
     await timeOutFunction(1)
+
+    return lookUpTableAddress
   }
 
-  async function addAddressToLookUpTable(input: PublicKey | PublicKey[], accountDescription: string)
+  async function addAddressToLookUpTable(lookUpTableAddress: PublicKey, newAddresses: PublicKey | PublicKey[], accountDescription: string)
   {
-    console.log(`Adding ${accountDescription} Address to Lookup Table`)
+    console.log(`Adding ${accountDescription} Address(s) to Lookup Table`)
 
-    const addressesToAdd = Array.isArray(input) ? input : [input]
+    const addressesToAdd = Array.isArray(newAddresses) ? newAddresses : [newAddresses]
 
     const extendInstruction = AddressLookupTableProgram.extendLookupTable(
     {
@@ -4097,7 +4157,7 @@ describe("lending_protocol", () =>
       addresses: addressesToAdd
     })
 
-    await program.provider.sendAndConfirm(new Transaction().add(lookUpTableInstance, extendInstruction))
+    await program.provider.sendAndConfirm(new Transaction().add(extendInstruction))
 
     await timeOutFunction(1)
   }
