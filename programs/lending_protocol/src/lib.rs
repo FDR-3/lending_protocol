@@ -1062,7 +1062,7 @@ pub mod lending_protocol
             let user_deposited_usd_value_x_70 = new_user_deposited_usd_value * 70;
             let seventy_percent_of_new_deposited_usd_value = user_deposited_usd_value_x_70 / 100;
 
-            //You can't borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
+            //You can't withdraw an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
             require!(seventy_percent_of_new_deposited_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
         }
 
