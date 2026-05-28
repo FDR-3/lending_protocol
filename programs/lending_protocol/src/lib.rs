@@ -13,12 +13,12 @@ pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
 
-declare_id!("6CHAJ1oZfAYJaA3FHHyU1DZp1mJiVT1AERAJURCKdXfT");
+declare_id!("AyjtTAkQUQyCBJAHntC97ZiVEmhCJTx3zH4TidivSEKZ");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
 {
-    name: "Lending Protocol",
+    name: "M4A Lending Protocol",
     project_url: "https://m4a.io",
     contacts: "email fdr3@m4a.io",
     preferred_languages: "en",
@@ -44,7 +44,7 @@ const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUe
 #[cfg(feature = "local")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
-const PYTH_PROGRAM_ID: Pubkey = pubkey!("6mKmsFHwphqQ8ifGzXDdDkdXHbQordg9GX4ne6zbJdtC");//This comes from pyth-mock/lib.rs
+const PYTH_PROGRAM_ID: Pubkey = pubkey!("C1W9tfmWFn6R5Pr54gaMQkEoyvc6NfAQAQuz4CZnCAEe");//This comes from pyth-mock/lib.rs
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -839,6 +839,7 @@ pub mod lending_protocol
         {
             let lut_address = look_up_table_address.ok_or(LendingError::MissingSubMarketLookUpTable)?;
 
+            sub_market_owner_look_up_table.owner = ctx.accounts.signer.key();
             sub_market_owner_look_up_table.look_up_table_address = lut_address;
             sub_market_owner_look_up_table.look_up_table_added = true;
             msg!("Created Sub Market Owner Look Up Table: {}", sub_market_owner_look_up_table.look_up_table_address.key());
@@ -1163,7 +1164,14 @@ pub mod lending_protocol
         let clock_slot = Clock::get()?.slot;
 
         //The borrow_tokens function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-        require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
+        if token_reserve.last_health_update_clock_slot != clock_slot
+        {
+            let time_stamp = Clock::get()?.unix_timestamp as u64;
+            
+            //When a user is borrowing from a token reserve they have never interacted with before, it won't get refreshed by refresh_user_health_chunk, so doing it here
+            update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, Some(clock_slot))?;
+        }
+        
         require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
@@ -1660,7 +1668,7 @@ pub mod lending_protocol
         //Take a 1% liquidation fee
         let mut liquidation_fee_amount = amount_to_be_liquidated / 100;
 
-        //Check for underflow
+        //Check for underflow if liquidation isn't profitable
         if liquidati_liquidation_tab_account.deposited_amount < liquidation_amount_with_7_percent_bonus + liquidation_fee_amount
         {
             //Take a 1% liquidation fee
@@ -1938,27 +1946,6 @@ pub mod lending_protocol
             user_account_owner_address.key(),
             user_account_index);
         }
-
-        Ok(())
-    }
-
-    //This is neccessary with interacting with new Token Reserves. IE: When a user borrows a Token they have never interacted with before
-    pub fn refresh_token_reserve_only(ctx: Context<RefreshTokenReserveOnly>, token_mint_address: Pubkey) -> Result<()> 
-    {
-        let token_reserve = &mut ctx.accounts.token_reserve;
-        let time_stamp = Clock::get()?.unix_timestamp as u64;
-        let clock_slot = Clock::get()?.slot;
-
-        //Return if Token Reserve is already updated to the current block slot
-        if token_reserve.last_health_update_clock_slot == clock_slot
-        {
-            return Ok(())
-        }
-
-        //Calculate Token Reserve Previously Earned And Accrued Interest
-        update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, Some(clock_slot))?;
-
-        msg!("Refreshed Token Reserve for Mint Address: {}", token_mint_address);
 
         Ok(())
     }
@@ -3354,21 +3341,6 @@ pub struct RefreshUserHealthChunkAndTokenReserves<'info>
         seeds = [b"lendingUserAccount".as_ref(), user_account_owner_address.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
         bump)]
     pub lending_user_account: Account<'info, LendingUserAccount>,
-
-    #[account(mut)]
-    pub signer: Signer<'info>,
-    pub system_program: Program<'info, System>
-}
-
-#[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey)]
-pub struct RefreshTokenReserveOnly<'info> 
-{
-    #[account(
-        mut,
-        seeds = [b"tokenReserve".as_ref(), token_mint_address.key().as_ref()], 
-        bump)]
-    pub token_reserve: Account<'info, TokenReserve>,
 
     #[account(mut)]
     pub signer: Signer<'info>,

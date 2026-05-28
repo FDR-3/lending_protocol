@@ -58,6 +58,7 @@ describe("lending_protocol", () =>
   const unexpectedPythAccountFeedIDOrStalePriceErrorMsg = "The price data was stale or the feed id was incorrect"
   const notFeeCollectorErrorMsg = "Only the Fee Collector can claim the fees"
   const staleTokenReserveErrorMsg = "The token reserve was stale"
+  const staleLendingUserErrorMsg = "The lending user health data was stale"
   
   var protocolLookUpTableAddress: PublicKey
   var protocolLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
@@ -1498,7 +1499,7 @@ describe("lending_protocol", () =>
     assert(errorMessage == unexpectedPythAccountFeedIDOrStalePriceErrorMsg)
   })
 
-  it("Verifies a User Can't Borrow When the Token Reserve is Stale", async () => 
+  it("Verifies a User Can't Borrow When the Lending User's Health Data is Stale", async () => 
   {
     var errorMessage = ""
 
@@ -1521,7 +1522,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == staleTokenReserveErrorMsg)
+    assert(errorMessage == staleLendingUserErrorMsg)
   })
 
   it("Verifies that you can't Borrow More than 70% of the Value of your Collateral", async () => 
@@ -1548,14 +1549,6 @@ describe("lending_protocol", () =>
       .instruction()
 
       transaction.add(refreshUserHealthAndTokenReservesInstruction)
-
-      //The user is borrowing from a Token Reserve they have never interacted with before in this case
-      const refreshTokenReserveInstruction = await program.methods.refreshTokenReserveOnly(usdcMint.publicKey)
-      .accounts({ signer: borrowerWalletKeypair.publicKey })
-      .signers([borrowerWalletKeypair])
-      .instruction()
-
-      transaction.add(refreshTokenReserveInstruction)
 
       const borrowRemainingAccounts = [usdcPythPriceUpdateRemainingAccount]
       const borrowInstruction = await program.methods.borrowTokens(
@@ -1603,14 +1596,6 @@ describe("lending_protocol", () =>
 
     transaction.add(refreshUserHealthAndTokenReservesInstruction)
 
-    //The user is borrowing from a Token Reserve they have never interacted with before in this case
-    const refreshTokenReserveInstruction = await program.methods.refreshTokenReserveOnly(usdcMint.publicKey)
-    .accounts({ signer: borrowerWalletKeypair.publicKey })
-    .signers([borrowerWalletKeypair])
-    .instruction()
-
-    transaction.add(refreshTokenReserveInstruction)
-
     const borrowRemainingAccounts = [usdcPythPriceUpdateRemainingAccount]
     const borrowInstruction = await program.methods.borrowTokens(
       program.provider.publicKey,
@@ -1653,8 +1638,6 @@ describe("lending_protocol", () =>
     try
     {
       const transaction = new Transaction()
-      //const { blockhash } = await program.provider.connection.getLatestBlockhash()
-      //transaction.recentBlockhash = blockhash
         
       const refreshingRemainingAccounts = 
       [
@@ -4135,7 +4118,7 @@ describe("lending_protocol", () =>
       authority: program.provider.publicKey,
       payer: program.provider.publicKey,
       recentSlot: slot,
-    });
+    })
 
     await program.provider.sendAndConfirm(new Transaction().add(createInstruction), [])
     await timeOutFunction(1)
