@@ -1617,22 +1617,31 @@ pub mod lending_protocol
             )?;
         }
 
-        //Update interest earned and accrued for the liquidator before hand if they are depositing their liquidation
-        if !send_reward_to_wallet
-        {
-            update_user_previous_interest_earned(
-                liquidation_token_reserve,
-                &mut liquidation_sub_market,
-                liquidator_liquidation_tab_account,
-                liquidator_liquidation_monthly_statement_account
-            )?;
-            update_user_previous_interest_accrued(
-                liquidation_token_reserve,
-                &mut liquidation_sub_market,
-                liquidator_liquidation_tab_account,
-                liquidator_liquidation_monthly_statement_account
-            )?;
-        }
+        //Update interest earned and accrued for the liquidator
+        update_user_previous_interest_earned(
+            repayment_token_reserve,
+            &mut repayment_sub_market,
+            liquidator_repayment_tab_account,
+            liquidator_repayment_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            repayment_token_reserve,
+            &mut repayment_sub_market,
+            liquidator_repayment_tab_account,
+            liquidator_repayment_monthly_statement_account
+        )?;
+        update_user_previous_interest_earned(
+            liquidation_token_reserve,
+            &mut liquidation_sub_market,
+            liquidator_liquidation_tab_account,
+            liquidator_liquidation_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            liquidation_token_reserve,
+            &mut liquidation_sub_market,
+            liquidator_liquidation_tab_account,
+            liquidator_liquidation_monthly_statement_account
+        )?;
 
         //Repay Liquidati's Debt
         deposit_tokens_into_token_reserve_from_user(
@@ -1745,6 +1754,8 @@ pub mod lending_protocol
         repayment_sub_market.borrow_interest_change_index = repayment_token_reserve.borrow_interest_change_index;
         liquidati_repayment_tab_account.supply_interest_change_index = repayment_token_reserve.supply_interest_change_index;
         liquidati_repayment_tab_account.borrow_interest_change_index = repayment_token_reserve.borrow_interest_change_index;
+        liquidator_repayment_tab_account.supply_interest_change_index = repayment_token_reserve.supply_interest_change_index;
+        liquidator_repayment_tab_account.borrow_interest_change_index = repayment_token_reserve.borrow_interest_change_index;
 
         //Update Liquidation Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexes
         update_token_reserve_rates(liquidation_token_reserve)?;
@@ -1794,6 +1805,444 @@ pub mod lending_protocol
 
         msg!("Liquidated collateral at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
         ctx.accounts.liquidation_mint.key(),
+        liquidation_sub_market_owner_address.key(),
+        liquidation_sub_market_index);
+
+        Ok(())
+    }
+
+    //This liquidation is for when the repayment and liquidation tokens are the same
+    pub fn liquidate_account_same_token(ctx: Context<LiquidateAccountSameToken>,
+        repayment_sub_market_owner_address: Pubkey,
+        repayment_sub_market_index: u16,
+        liquidation_sub_market_owner_address: Pubkey,
+        liquidation_sub_market_index: u16,
+        liquidati_account_owner_address: Pubkey,
+        liquidati_account_index: u8,
+        liquidator_account_index: u8,
+        amount_to_repay: u64,
+        repay_max: bool,
+        paying_off_insolvent_account: bool,
+        send_reward_to_wallet: bool,
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
+    ) -> Result<()>
+    {
+        let lending_protocol = &ctx.accounts.lending_protocol;
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
+        let liquidator_lending_account = &mut ctx.accounts.liquidator_lending_account;
+        let liquidator_repayment_tab_account = &mut ctx.accounts.liquidator_repayment_tab_account;
+        let liquidator_liquidation_tab_account = &mut ctx.accounts.liquidator_liquidation_tab_account;
+        let liquidator_repayment_monthly_statement_account = &mut ctx.accounts.liquidator_repayment_monthly_statement_account;
+        let liquidator_liquidation_monthly_statement_account = &mut ctx.accounts.liquidator_liquidation_monthly_statement_account;
+        let clock_slot = Clock::get()?.slot;
+
+        //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
+        require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
+        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
+
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+
+        //Validate Accounts
+
+        ///////////////
+        //Lending Stats
+        let lending_stats_serialized = remaining_accounts_iter.next().unwrap();
+        let mut lending_stats = validate_and_return_lending_stats_account(*ctx.program_id, lending_stats_serialized)?;
+
+        /////////////////////////////
+        //Repayment SubMarket Account
+        let repayment_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
+        let mut repayment_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
+            repayment_sub_market_account_serialized,
+            ctx.accounts.token_mint.key(),
+            repayment_sub_market_owner_address,
+            repayment_sub_market_index)?;
+
+        ///////////////////////////////
+        //Liquidation SubMarket Account
+        let liquidation_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
+        let mut liquidation_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
+            liquidation_sub_market_account_serialized,
+            ctx.accounts.token_mint.key(),
+            liquidation_sub_market_owner_address,
+            liquidation_sub_market_index)?;
+
+        /////////////////////////////////
+        //Liquidati Repayment Tab Account
+        let liquidati_repayment_tab_account_serialized = remaining_accounts_iter.next().unwrap();
+        let mut liquidati_repayment_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
+            liquidati_repayment_tab_account_serialized,
+            ctx.accounts.token_mint.key(),
+            repayment_sub_market_owner_address,
+            repayment_sub_market_index,
+            liquidati_account_owner_address,
+            liquidati_account_index)?;
+
+        ///////////////////////////////////
+        //Liquidati Liquidation Tab Account
+        let liquidati_liquidation_tab_account_serialized = remaining_accounts_iter.next().unwrap();
+        let mut liquidati_liquidation_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
+            liquidati_liquidation_tab_account_serialized,
+            ctx.accounts.token_mint.key(),
+            liquidation_sub_market_owner_address,
+            liquidation_sub_market_index,
+            liquidati_account_owner_address,
+            liquidati_account_index)?;
+
+        ///////////////////////////////////////////////
+        //Liquidati Repayment Monthly Statement Account
+        let liquidati_repayment_monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
+        let mut liquidati_repayment_monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
+            liquidati_repayment_monthly_statement_account_serialized,
+            lending_protocol.current_statement_month,
+            lending_protocol.current_statement_year,
+            ctx.accounts.token_mint.key(),
+            repayment_sub_market_owner_address,
+            repayment_sub_market_index,
+            liquidati_account_owner_address,
+            liquidati_account_index)?;
+
+        ///////////////////////////////////////////////
+        //Liquidati Liquidation Monthly Statement Account
+        let liquidati_liquidation_monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
+        let mut liquidati_liquidation_monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
+            liquidati_liquidation_monthly_statement_account_serialized,
+            lending_protocol.current_statement_month,
+            lending_protocol.current_statement_year,
+            ctx.accounts.token_mint.key(),
+            liquidation_sub_market_owner_address,
+            liquidation_sub_market_index,
+            liquidati_account_owner_address,
+            liquidati_account_index)?;
+
+        let repayment_amount;
+
+        //Check if Account is liquidatable and set repayment_amount
+        if paying_off_insolvent_account
+        {
+            //You can't zero out an account whose borrow liabilities aren't 100% or more of their deposited collateral
+            require!(liquidati_lending_account.total_borrowed_usd_value >= liquidati_lending_account.total_deposited_usd_value, LendingError::NotInsolvent);
+
+            if repay_max
+            {
+                repayment_amount = liquidati_repayment_tab_account.borrowed_amount;
+            }
+            else
+            {
+                if amount_to_repay > liquidati_repayment_tab_account.borrowed_amount
+                {
+                    //Can't pay more debt than the user has accumulated
+                    repayment_amount = liquidati_repayment_tab_account.borrowed_amount;
+                }
+                else
+                {
+                    repayment_amount = amount_to_repay;
+                }  
+            }
+        }
+        else
+        {
+            //Multiply before dividing to help keep precision
+            let liquidati_deposited_usd_value_x_80 = liquidati_lending_account.total_deposited_usd_value * 80;
+            let eighty_percent_of_liquidati_deposited_usd_value = liquidati_deposited_usd_value_x_80 / 100;
+
+            //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
+            require!(liquidati_lending_account.total_borrowed_usd_value >= eighty_percent_of_liquidati_deposited_usd_value, LendingError::NotLiquidatable);
+
+            //Multiply before dividing to help keep precision
+            let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
+            let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
+
+            if repay_max
+            {
+                repayment_amount = fifty_percent_of_liquidati_borrowed_amount;
+            }
+            else
+            {
+                repayment_amount = amount_to_repay;
+            }
+
+            //You can't repay more than 50% of a liquidati's debt position
+            require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
+        }
+
+        //Multiply before dividing to help keep precision
+        let borrowed_amount_x_10 = liquidati_repayment_tab_account.borrowed_amount * 10;
+        let ten_percent_of_borrowed_amount = borrowed_amount_x_10 / 100;
+
+        //You must repay atleast 10% of the borrow position when the account is in an unhealthy state. This prevents "griefing".
+        //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running other liquidators so their transaction fails and holding the protocol's solvency hostage!
+        require!(repayment_amount >= ten_percent_of_borrowed_amount, LendingError::GriefingRepayment);
+
+        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
+        if liquidator_lending_account.lending_user_account_added == false
+        {
+            let mut new_account_name_to_use: String = String::from("Generic Liquidator");
+            if let Some(new_account_name) = account_name
+            {
+                if !new_account_name.is_empty()
+                {
+                    new_account_name_to_use = new_account_name;
+                }
+            }
+
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
+            initialize_lending_user_account(
+                liquidator_lending_account,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+                new_account_name_to_use,
+                lut_address
+            )?;
+        }
+
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
+        if liquidator_repayment_tab_account.user_tab_account_added == false
+        {
+            initialize_lending_user_tab_account(
+                liquidator_lending_account,
+                liquidator_repayment_tab_account,
+                ctx.bumps.liquidator_repayment_tab_account,
+                ctx.accounts.token_mint.key(),
+                repayment_sub_market_owner_address.key(),
+                repayment_sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index
+            )?;
+        }
+        if liquidator_liquidation_tab_account.user_tab_account_added == false
+        {
+            initialize_lending_user_tab_account(
+                liquidator_lending_account,
+                liquidator_liquidation_tab_account,
+                ctx.bumps.liquidator_liquidation_tab_account,
+                ctx.accounts.token_mint.key(),
+                liquidation_sub_market_owner_address.key(),
+                liquidation_sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index
+            )?;
+        }
+
+        //Initialize monthly statement account if the statement month/year has changed or brand new sub user account.
+        if liquidator_repayment_monthly_statement_account.monthly_statement_account_added == false
+        {
+            initialize_lending_user_monthly_statement_account(
+                liquidator_repayment_monthly_statement_account,
+                liquidator_repayment_tab_account,
+                lending_protocol,
+                ctx.bumps.liquidator_repayment_monthly_statement_account,
+                ctx.accounts.token_mint.key(),
+                repayment_sub_market_owner_address,
+                repayment_sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+            )?;
+        }
+        if liquidator_liquidation_monthly_statement_account.monthly_statement_account_added == false
+        {
+            initialize_lending_user_monthly_statement_account(
+                liquidator_liquidation_monthly_statement_account,
+                liquidator_liquidation_tab_account,
+                lending_protocol,
+                ctx.bumps.liquidator_liquidation_monthly_statement_account,
+                ctx.accounts.token_mint.key(),
+                liquidation_sub_market_owner_address,
+                liquidation_sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+            )?;
+        }
+
+        //Update interest earned and accrued for the liquidator
+        update_user_previous_interest_earned(
+            token_reserve,
+            &mut repayment_sub_market,
+            liquidator_repayment_tab_account,
+            liquidator_repayment_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            token_reserve,
+            &mut repayment_sub_market,
+            liquidator_repayment_tab_account,
+            liquidator_repayment_monthly_statement_account
+        )?;
+        update_user_previous_interest_earned(
+            token_reserve,
+            &mut liquidation_sub_market,
+            liquidator_liquidation_tab_account,
+            liquidator_liquidation_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            token_reserve,
+            &mut liquidation_sub_market,
+            liquidator_liquidation_tab_account,
+            liquidator_liquidation_monthly_statement_account
+        )?;
+
+        //Repay Liquidati's Debt
+        deposit_tokens_into_token_reserve_from_user(
+            ctx.accounts.token_mint.key(),
+            &ctx.accounts.token_reserve_ata,
+            &ctx.accounts.liquidator_ata,
+            &ctx.accounts.token_mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.signer,
+            &ctx.accounts.system_program,
+            repayment_amount
+        )?;
+
+        //Get Token USD value
+        let token_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+        let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
+        let token_usd_value = get_token_pyth_usd_value(token_price_update_account_serialized, token_reserve.pyth_feed_id)?;
+
+        //Get USD value of Repayment Amount
+        let repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
+
+        //Get Amount to be Liquidated
+        let amount_to_be_liquidated = ((repayment_amount_usd_value * token_conversion_number) / token_usd_value) as u64;
+
+        //Liquidate part of the Liquidati's Collateral and Transfer it plus a 7% bonus to the Liquidator
+        //Multiply before dividing to help keep precision
+        let amount_to_be_liquidated_x_107 = amount_to_be_liquidated * 107;
+        let mut liquidation_amount_with_7_percent_bonus = amount_to_be_liquidated_x_107 / 100;
+
+        //Take a 1% liquidation fee
+        let mut liquidation_fee_amount = amount_to_be_liquidated / 100;
+
+        //Check for underflow if liquidation isn't profitable
+        if liquidati_liquidation_tab_account.deposited_amount < liquidation_amount_with_7_percent_bonus + liquidation_fee_amount
+        {
+            //Take a 1% liquidation fee
+            liquidation_fee_amount = liquidati_liquidation_tab_account.deposited_amount / 100;
+            //Give remainder to liquidator
+            liquidation_amount_with_7_percent_bonus = liquidati_liquidation_tab_account.deposited_amount - liquidation_fee_amount;
+        }
+
+        //Update Repayment Values
+        token_reserve.borrowed_amount -= repayment_amount as u128;
+        token_reserve.repaid_debt_amount += repayment_amount as u128;
+        repayment_sub_market.borrowed_amount -= repayment_amount as u128;
+        repayment_sub_market.repaid_debt_amount += repayment_amount as u128;
+        liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
+        liquidator_repayment_tab_account.repaid_debt_amount += repayment_amount;
+        liquidator_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
+        liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
+        liquidator_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidator_repayment_tab_account.repaid_debt_amount;
+
+        //Update Liquidation and Fee Values
+        token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
+        token_reserve.liquidated_amount += liquidation_fee_amount as u128;
+        token_reserve.deposited_amount -= liquidation_fee_amount as u128;
+        token_reserve.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
+        token_reserve.uncollected_liquidation_fees_amount += liquidation_fee_amount as u128;
+        liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
+        liquidation_sub_market.liquidated_amount += liquidation_fee_amount as u128;
+        liquidation_sub_market.deposited_amount -= liquidation_fee_amount as u128;
+        liquidation_sub_market.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
+        liquidati_liquidation_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_tab_account.deposited_amount -= liquidation_fee_amount;
+        liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_tab_account.liquidated_amount += liquidation_fee_amount;
+        liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
+        liquidati_liquidation_monthly_statement_account.snap_shot_liquidated_amount = liquidati_liquidation_tab_account.liquidated_amount;
+        liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
+        liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_liquidation_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
+        liquidator_liquidation_monthly_statement_account.snap_shot_liquidation_fees_generated_amount = liquidator_liquidation_tab_account.liquidation_fees_generated_amount;
+        
+        if send_reward_to_wallet
+        {
+            withdraw_tokens_from_token_reserve_to_user(
+                ctx.accounts.token_mint.key(),
+                token_reserve,
+                &ctx.accounts.token_reserve_ata,
+                &ctx.accounts.liquidator_ata,
+                &ctx.accounts.token_mint,
+                &ctx.accounts.token_program,
+                &ctx.accounts.signer,
+                &ctx.accounts.system_program,
+                liquidation_amount_with_7_percent_bonus
+            )?;
+
+            token_reserve.deposited_amount -= liquidation_amount_with_7_percent_bonus as u128;
+            liquidation_sub_market.deposited_amount -= liquidation_amount_with_7_percent_bonus as u128; 
+        }
+        else
+        {
+            liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
+            liquidator_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidator_liquidation_tab_account.deposited_amount;
+        }
+        
+        //Update Stat Listener
+        lending_stats.liquidations += 1;
+        
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY
+        update_token_reserve_rates(token_reserve)?;
+
+        //Update Repayment SubMarket/User time stamp based interest indexes
+        repayment_sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        repayment_sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        liquidati_repayment_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        liquidati_repayment_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        liquidator_repayment_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        liquidator_repayment_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+
+        //Update Liquidation SubMarket/User time stamp based interest indexes
+        liquidation_sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        liquidation_sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        liquidati_liquidation_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        liquidati_liquidation_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        liquidator_liquidation_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        liquidator_liquidation_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+
+        //Update last activity on accounts
+        //token_reserve.last_lending_activity_amount = repayment_amount;
+        //token_reserve.last_lending_activity_type = Activity::Repay as u8;
+        token_reserve.last_lending_activity_amount = repayment_amount;
+        token_reserve.last_lending_activity_type = Activity::Liquidate as u8; //We'll let the Liquidate activity be the last activity since the repayment and liquidation token reserves are the same in this case
+        repayment_sub_market.last_lending_activity_amount = repayment_amount;
+        repayment_sub_market.last_lending_activity_type = Activity::Repay as u8;
+        repayment_sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        liquidation_sub_market.last_lending_activity_amount = repayment_amount;
+        liquidation_sub_market.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidation_sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        liquidati_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidati_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
+        liquidati_repayment_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        
+        //Save changes to passed in remaining accounts
+        lending_stats.serialize(&mut &mut lending_stats_serialized.data.borrow_mut()[8..])?;
+        repayment_sub_market.serialize(&mut &mut repayment_sub_market_account_serialized.data.borrow_mut()[8..])?;
+        liquidation_sub_market.serialize(&mut &mut liquidation_sub_market_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_repayment_tab_account.serialize(&mut &mut liquidati_repayment_tab_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_liquidation_tab_account.serialize(&mut &mut liquidati_liquidation_tab_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_repayment_monthly_statement_account.serialize(&mut &mut liquidati_repayment_monthly_statement_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_liquidation_monthly_statement_account.serialize(&mut &mut liquidati_liquidation_monthly_statement_account_serialized.data.borrow_mut()[8..])?;
+        
+        msg!("{} liquidated {}", ctx.accounts.signer.key(), liquidati_account_owner_address.key());
+
+        msg!("Repaid debt at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.token_mint.key(),
+        repayment_sub_market_owner_address.key(),
+        repayment_sub_market_index);
+
+        msg!("Liquidated collateral at token mint address: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        ctx.accounts.token_mint.key(),
         liquidation_sub_market_owner_address.key(),
         liquidation_sub_market_index);
 
@@ -2507,9 +2956,9 @@ pub mod lending_protocol
         sub_market.deposited_amount += token_reserve.uncollected_liquidation_fees_amount;
         lending_user_tab_account.deposited_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
         lending_user_tab_account.liquidation_fees_collected_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
-        lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
+        lending_user_monthly_statement_account.monthly_liquidation_fees_collected_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
-        lending_user_monthly_statement_account.snap_shot_liquidation_fees_generated_amount = lending_user_tab_account.liquidation_fees_collected_amount;
+        lending_user_monthly_statement_account.snap_shot_liquidation_fees_collected_amount = lending_user_tab_account.liquidation_fees_collected_amount;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
@@ -3317,6 +3766,123 @@ pub struct LiquidateAccount<'info>
     pub liquidation_mint: Box<InterfaceAccount<'info, Mint>>,
     pub repayment_token_program: Interface<'info, TokenInterface>,
     pub liquidation_token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+#[instruction(repayment_sub_market_owner_address: Pubkey,
+    repayment_sub_market_index: u16,
+    liquidation_sub_market_owner_address: Pubkey,
+    liquidation_sub_market_index: u16,
+    liquidati_account_owner_address: Pubkey,
+    liquidati_account_index: u8,
+    liquidator_account_index: u8)]
+pub struct LiquidateAccountSameToken<'info>
+{
+    #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
+        bump)]
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
+
+    #[account(
+        mut,
+        seeds = [b"lendingUserAccount".as_ref(), liquidati_account_owner_address.key().as_ref(), liquidati_account_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub liquidati_lending_account: Box<Account<'info, LendingUserAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), liquidator_account_index.to_le_bytes().as_ref()],
+        bump, 
+        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+    pub liquidator_lending_account: Box<Account<'info, LendingUserAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint.key().as_ref(),
+        repayment_sub_market_owner_address.key().as_ref(),
+        repayment_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        liquidati_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub liquidator_repayment_tab_account: Box<Account<'info, LendingUserTabAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_mint.key().as_ref(),
+        liquidation_sub_market_owner_address.key().as_ref(),
+        liquidation_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        liquidator_account_index.to_le_bytes().as_ref()],
+        bump, 
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub liquidator_liquidation_tab_account: Box<Account<'info, LendingUserTabAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint.key().as_ref(),
+        repayment_sub_market_owner_address.key().as_ref(),
+        repayment_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        liquidator_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub liquidator_repayment_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_mint.key().as_ref(),
+        liquidation_sub_market_owner_address.key().as_ref(),
+        liquidation_sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        liquidator_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub liquidator_liquidation_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
+
+    #[account(
+        init_if_needed, //SOL has to be repaid as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
+        payer = signer,
+        associated_token::mint = token_mint,
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
+    )]
+    pub liquidator_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        associated_token::mint = token_mint,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
+    )]
+    pub token_reserve_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    pub token_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
