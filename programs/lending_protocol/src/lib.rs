@@ -69,7 +69,10 @@ enum Activity
 
 //Helper function to update Token Reserve Accrued Interest Index before a lending transaction (deposit, withdraw, borrow, repay, liquidate)
 //This function helps determine how much compounding interest a Token Reserve has earned for its token over the Token Reserve's entire existence
-fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_reserve: &mut TokenReserve, new_time_stamp: u64, new_clock_slot: Option<u64>) -> Result<()>
+//This way is linear and only compounds the interest when it's called. If a token reserve went months without it being called, that would be a lot of interest lots from lack of compounding.
+//The Taylor Series version below is more computationally expensive but compounds the interest more accurately over long periods of time without needing to be called.
+//The Taylor Series version is currently being used and the linear version is commented out.
+/*fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_reserve: &mut TokenReserve, new_time_stamp: u64, new_clock_slot: Option<u64>) -> Result<()>
 {
     //Skip if there is no borrowing in the Token Reserve. There is no interest change if there is no borrowing.
     if token_reserve.borrowed_amount != 0
@@ -101,6 +104,83 @@ fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(token_res
         let new_borrow_interest_index_fp = old_borrow_interest_index_fp.mul(&one_plus_interest_change_factor_fp)?;
         let new_borrow_interest_index = new_borrow_interest_index_fp.to_u128()?;
         token_reserve.borrow_interest_change_index = new_borrow_interest_index;
+
+        msg!("Updated Token Reserve Interest Change Indexes");
+        msg!("Supply Change Index: {}", token_reserve.supply_interest_change_index);
+        msg!("Borrow Change Index: {}", token_reserve.borrow_interest_change_index);
+    }
+
+    token_reserve.last_lending_activity_time_stamp = new_time_stamp;
+
+    if let Some(clock_slot) = new_clock_slot
+    {
+        token_reserve.last_health_update_clock_slot = clock_slot;
+    }
+    
+    Ok(())
+}*/
+
+// Helper function to update Token Reserve Accrued Interest Index using continuous compounding via Taylor Series
+fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(
+    token_reserve: &mut TokenReserve, 
+    new_time_stamp: u64, 
+    new_clock_slot: Option<u64>
+) -> Result<()> {
+    
+    //Skip if there is no borrowing in the Token Reserve. There is no interest change if there is no borrowing.
+    if token_reserve.borrowed_amount != 0
+    {
+        // NOTE: Ensure your FixedPoint library has a way to ingest u128 without truncating via `as u64`
+        let old_supply_interest_index_fp = FixedPoint::from_scaled_u128(token_reserve.supply_interest_change_index);
+        let old_borrow_interest_index_fp = FixedPoint::from_scaled_u128(token_reserve.borrow_interest_change_index);
+        
+        let number_one_fp = FixedPoint::from_int(1);
+        let two_fp = FixedPoint::from_int(2);
+        let three_fp = FixedPoint::from_int(3);
+        let four_fp = FixedPoint::from_int(4);
+
+        let supply_apy_fp = FixedPoint::from_bps(token_reserve.supply_apy as u64)?;
+        let borrow_apy_fp = FixedPoint::from_bps(token_reserve.borrow_apy as u64)?;
+        
+        let change_in_time = new_time_stamp - token_reserve.last_lending_activity_time_stamp;
+        let change_in_time_fp = FixedPoint::from_int(change_in_time);
+        let seconds_in_a_year_fp = FixedPoint::from_int(31_556_952); 
+
+        //Taylor Series 4th Order Interest Calculation: e^x = 1 + x + (x^2 / 2!) + (x^3 / 3!) + (x^4 / 4!) 
+        //1. Calculate common time factor x: APY * Δt / seconds_in_a_year
+        //We multiply by APY first (before dividing) in the steps below to preserve fixed-point precision
+        
+        //--- SUPPLY INTEREST COMPOUNDING (Taylor Series 4th Order) ---
+        let supply_x = supply_apy_fp.mul(&change_in_time_fp)?.div(&seconds_in_a_year_fp)?;
+        
+        let s_term1 = supply_x.clone();                                      // x
+        let s_term2 = s_term1.mul(&supply_x)?.div(&two_fp)?;                 // x^2 / 2!
+        let s_term3 = s_term2.mul(&supply_x)?.div(&three_fp)?;               // x^3 / 3!
+        let s_term4 = s_term3.mul(&supply_x)?.div(&four_fp)?;                // x^4 / 4!
+        
+        let supply_compounding_factor_fp = number_one_fp
+            .add(&s_term1)?
+            .add(&s_term2)?
+            .add(&s_term3)?
+            .add(&s_term4)?;
+
+        token_reserve.supply_interest_change_index = old_supply_interest_index_fp.mul(&supply_compounding_factor_fp)?.value.as_u128();
+
+        //--- BORROW INTEREST COMPOUNDING (Taylor Series 4th Order) ---
+        let borrow_x = borrow_apy_fp.mul(&change_in_time_fp)?.div(&seconds_in_a_year_fp)?;
+        
+        let b_term1 = borrow_x.clone();                                      // x
+        let b_term2 = b_term1.mul(&borrow_x)?.div(&two_fp)?;                 // x^2 / 2!
+        let b_term3 = b_term2.mul(&borrow_x)?.div(&three_fp)?;               // x^3 / 3!
+        let b_term4 = b_term3.mul(&borrow_x)?.div(&four_fp)?;                // x^4 / 4!
+        
+        let borrow_compounding_factor_fp = number_one_fp
+            .add(&b_term1)?
+            .add(&b_term2)?
+            .add(&b_term3)?
+            .add(&b_term4)?;
+
+        token_reserve.borrow_interest_change_index = old_borrow_interest_index_fp.mul(&borrow_compounding_factor_fp)?.value.as_u128();
 
         msg!("Updated Token Reserve Interest Change Indexes");
         msg!("Supply Change Index: {}", token_reserve.supply_interest_change_index);
@@ -1062,8 +1142,7 @@ pub mod lending_protocol
         let clock_slot = Clock::get()?.slot;
 
         //This withdraw_tokens function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-        require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
-        require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
+        require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
 
         //After updating interest earned and accrued, set withdraw amount
         let withdraw_amount;
@@ -1172,7 +1251,7 @@ pub mod lending_protocol
             update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, Some(clock_slot))?;
         }
         
-        require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
+        require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         //This is for when a user is borrowing a token they have never interacted with before
@@ -1286,8 +1365,7 @@ pub mod lending_protocol
         let clock_slot = Clock::get()?.slot;
         
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-        require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
-        require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
+        require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
 
         //After updating interest earned and accrued(with refresh_user_health_chunk), set payment amount
         let repayment_amount;
@@ -1398,9 +1476,7 @@ pub mod lending_protocol
         let clock_slot = Clock::get()?.slot;
 
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-        require!(repayment_token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
-        require!(liquidation_token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
-        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
+        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
 
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
@@ -1839,8 +1915,7 @@ pub mod lending_protocol
         let clock_slot = Clock::get()?.slot;
 
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-        require!(token_reserve.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserve);
-        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleLendingUser);
+        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
 
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 

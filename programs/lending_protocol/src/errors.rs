@@ -56,10 +56,8 @@ pub enum LendingError
     InsufficientLiquidity,
     #[msg("You can't pay back more funds than you've borrowed")]
     TooManyFunds,
-    #[msg("The token reserve was stale")]
-    StaleTokenReserve,
-    #[msg("The lending user health data was stale")]
-    StaleLendingUser,
+    #[msg("The token reserve or lending user health data was stale")]
+    StaleTokenReserveOrLendingUser,
     #[msg("The price data was stale or the feed id was incorrect")]
     StalePriceDataOrWrongFeedID,
     #[msg("You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'")]
@@ -128,8 +126,8 @@ pub enum LendingError
     TooManyFunds,
     #[msg("The token reserve was stale")]
     StaleTokenReserve,
-    #[msg("The lending user health data was stale")]
-    StaleLendingUser,
+    #[msg("The token reserve or lending user health data was stale")]
+    StaleTokenReserveOrLendingUser,
     #[msg("The price data was stale or the feed id was incorrect")]
     StalePriceDataOrWrongFeedID,
     #[msg("You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'")]

@@ -57,8 +57,7 @@ describe("lending_protocol", () =>
   const unexpectedMonthlyStatementErrorMsg = "Unexpected Monthly Statement Account PDA detected"
   const unexpectedPythAccountFeedIDOrStalePriceErrorMsg = "The price data was stale or the feed id was incorrect"
   const notFeeCollectorErrorMsg = "Only the Fee Collector can claim the fees"
-  const staleTokenReserveErrorMsg = "The token reserve was stale"
-  const staleLendingUserErrorMsg = "The lending user health data was stale"
+  const staleTokenReserveOrLendingUserErrorMsg = "The token reserve or lending user health data was stale"
   
   var protocolLookUpTableAddress: PublicKey
   var protocolLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
@@ -204,8 +203,8 @@ describe("lending_protocol", () =>
   const borrowerWalletKeypair = anchor.web3.Keypair.generate()
 
   //Test Settings
-  //const borrowWaitTimeInSeconds = 30
-  const borrowWaitTimeInSeconds = 0
+  const borrowWaitTimeInSeconds = 30
+  //const borrowWaitTimeInSeconds = 0
   const useUSDCFixedBorrowAPY = false
   const runInsolventTest = false
   var solLiquidationPrice: bigint
@@ -974,7 +973,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == staleTokenReserveErrorMsg)
+    assert(errorMessage == staleTokenReserveOrLendingUserErrorMsg)
   })
 
   it("Verifies a User Can't Withdraw More wSOL Than They Deposited", async () => 
@@ -1522,7 +1521,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == staleLendingUserErrorMsg)
+    assert(errorMessage == staleTokenReserveOrLendingUserErrorMsg)
   })
 
   it("Verifies that you can't Borrow More than 70% of the Value of your Collateral", async () => 
