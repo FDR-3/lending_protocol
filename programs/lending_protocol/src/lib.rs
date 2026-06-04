@@ -226,7 +226,7 @@ fn update_token_reserve_rates<'info>(token_reserve: &mut TokenReserve) -> Result
             let optimal_utilization_rate = 7_000; //7_000 = 70.00%
             let utilization_rate = token_reserve.utilization_rate as u128;
             
-            //Borrow APY = Borrow APY Base + ((Utilization Rate/Optimal Utialization Rate) * Borrow APY Slope1)
+            //Borrow APY = Borrow APY Base(Borrow APY Slope1 in this case) + ((Utilization Rate/Optimal Utialization Rate) * Borrow APY Slope1)
             //Setting Borrow APY Base to Borrow APY Slope1 in this case
             if utilization_rate < optimal_utilization_rate
             {
@@ -236,20 +236,28 @@ fn update_token_reserve_rates<'info>(token_reserve: &mut TokenReserve) -> Result
                 let u_rate_times_borrow_apy_slope1 = utilization_rate * borrow_apy_slope1;
                 let u_rate_times_borrow_apy_slope1_divide_optimal_u_rate = u_rate_times_borrow_apy_slope1 / optimal_utilization_rate;
 
+                //Max Borrow Rate = token_reserve.fixed_borrow_apy + token_reserve.fixed_borrow_apy @Less Than 70% Utilization Rate
                 token_reserve.borrow_apy = (borrow_apy_slope1 + u_rate_times_borrow_apy_slope1_divide_optimal_u_rate) as u16;
             }
-            //Borrow APY = Borrow APY Base + Borrow APY Slope1 + ((Utilization Rate - Optimal Utialization Rate) / (100% Utilization - Optimal Utialization Rate) * Borrow APY Slope2)
-            //Not using a Borrow APY Base in this case
             else
             {
-                //Max Borrow Rate = 10% + 100% = 110% @100% Utilization Rate. I think having a rate more than 110% would appear too pay day loany...just seems like a bad look lol.
-                let ten_percent = 1_000; //1_000 = 10.00%
+                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate. I think having a rate more than 44% would appear too pay day loany...just seems like a bad look lol.
+                let ten_percent = 1_000; //1,000 = 10.00%
+                let borrow_apy_slope2 = 3_400; //3,400 = 34.00%
+
+                /*
+                * Formula: New High Rate Base = (Current Utilization Rate - Optimal Utilization Rate) / (100% - Optimal Utilization Rate) * Borrow APY Slope 2
+                * * This linearly scales the interest rate upward from the 10% base rate at 70% utilization, 
+                * reaching the full 34% slope cap (44% total APY) only when utilization hits 100%.
+                * * Order of operations: Multiply before dividing to prevent integer truncation / precision loss.
+                */
                 let u_rate_minus_optimal_u_rate = utilization_rate - optimal_utilization_rate;
                 let one_hundred_percent_minus_optimal_u_rate = decimal_scaling - optimal_utilization_rate;
                 //Multiply before dividing to help keep precision
-                let u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 = u_rate_minus_optimal_u_rate * decimal_scaling;
+                let u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 = u_rate_minus_optimal_u_rate * borrow_apy_slope2;
                 let new_high_rate_base = u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 / one_hundred_percent_minus_optimal_u_rate;
 
+                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate.
                 token_reserve.borrow_apy = (ten_percent + new_high_rate_base) as u16;
             }
         }
@@ -1300,6 +1308,10 @@ pub mod lending_protocol
 
         //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
         let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
+        msg!("Token Reserve Deposited Amount: {}", token_reserve.deposited_amount);
+        msg!("Token Reserve Borrowed Amount: {}", token_reserve.borrowed_amount);
+        msg!("Available Token Reserve Amount: {}", available_token_amount);
+        msg!("Borrow Amount: {}", amount);
         require!(available_token_amount >= amount as u128, LendingError::InsufficientLiquidity);
 
         withdraw_tokens_from_token_reserve_to_user(
