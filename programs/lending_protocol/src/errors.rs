@@ -35,6 +35,8 @@ pub enum InvalidInputError
     UnexpectedTabAccount,
     #[msg("Unexpected Pyth Price Update Account detected. Feed in only legitimate accounts :)")]
     UnexpectedPythPriceUpdateAccount,
+    #[msg("Unexpected Switchboard Quote Account detected. Feed in only legitimate accounts :)")]
+    UnexpectedSwitchboardQuoteAccount,
     #[msg("Unexpected Token Reserve Account PDA detected")]
     UnexpectedTokenReserveAccount,
     #[msg("Unexpected SubMarket Account PDA detected")]
@@ -106,8 +108,10 @@ pub enum LendingError
     UnexpectedLendingStatsAccount,
     #[msg("Unexpected Tab Account PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]
     UnexpectedTabAccount,
-    #[msg("Unexpected Pyth Price Update Account detected. Feed in only legitimate accounts :)")]
-    UnexpectedPythPriceUpdateAccount,
+    //#[msg("Unexpected Pyth Price Update Account detected. Feed in only legitimate accounts :)")]
+    //UnexpectedPythPriceUpdateAccount,
+    #[msg("Unexpected Switchboard Quote Account detected. Feed in only legitimate accounts :)")]
+    UnexpectedSwitchboardQuoteAccount,
     #[msg("Unexpected Token Reserve Account PDA detected")]
     UnexpectedTokenReserveAccount,
     #[msg("Unexpected SubMarket Account PDA detected")]
@@ -124,11 +128,11 @@ pub enum LendingError
     InsufficientLiquidity,
     #[msg("You can't pay back more funds than you've borrowed")]
     TooManyFunds,
-    #[msg("The token reserve was stale")]
-    StaleTokenReserve,
-    #[msg("The token reserve or lending user health data was stale")]
+    #[msg("Token Reserve missing for user refresh")]
+    MissingTokenReserveAccountForRefresh,
+    #[msg("Token Reserve or lending user health data was stale")]
     StaleTokenReserveOrLendingUser,
-    #[msg("The price data was stale or the feed id was incorrect")]
+    #[msg("Price data was stale or the feed id was incorrect")]
     StalePriceDataOrWrongFeedID,
     #[msg("You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'")]
     GriefingRepayment,
@@ -145,5 +149,7 @@ pub enum LendingError
     #[msg("Negative Price Detected")]
     NegativePriceDetected,
     #[msg("Oracle Price Too Unstable")]
-    OraclePriceTooUnstable
+    OraclePriceTooUnstable,
+    #[msg("Each Lending User Account can have no more than 5 Tab Accounts. Please make new account")]
+    TooManyTabAccounts
 }

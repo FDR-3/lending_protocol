@@ -6,7 +6,11 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 use ra_solana_math::FixedPoint;
-use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
+//use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
+use anchor_lang::solana_program::sysvar::instructions::ID as INSTRUCTIONS_ID;
+use anchor_lang::solana_program::sysvar::slot_hashes::ID as SLOT_HASHES_ID;
+use switchboard_on_demand::QuoteVerifier;
+use switchboard_on_demand::on_demand::oracle_quote::PackedFeedInfo;
 use hex;
 pub mod validation;
 pub mod errors;
@@ -32,10 +36,11 @@ const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNra
 const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6zgxNa8F4nY3kfDpdRJsT8HdPU");
 #[cfg(feature = "dev")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("9BRgCdmwyP5wGVTvKAUDjSwucpqGncurVa35DjaWqSsC");//Also the HodlTreasury
+//#[cfg(feature = "dev")]
+//use pyth_solana_receiver_sdk::ID as PYTH_PROGRAM_ID;
 #[cfg(feature = "dev")]
-use pyth_solana_receiver_sdk::ID as PYTH_RECEIVER_ID;
-#[cfg(feature = "dev")]
-const PYTH_PROGRAM_ID: Pubkey = PYTH_RECEIVER_ID;
+use switchboard_on_demand::QUOTE_PROGRAM_ID as QUOTE_PROGRAM_ID;
+
 
 #[cfg(feature = "local")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
@@ -43,8 +48,10 @@ const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8
 const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+//#[cfg(feature = "local")] 
+//const PYTH_PROGRAM_ID: Pubkey = pubkey!("C1W9tfmWFn6R5Pr54gaMQkEoyvc6NfAQAQuz4CZnCAEe");//This comes from pyth-mock/lib.rs
 #[cfg(feature = "local")] 
-const PYTH_PROGRAM_ID: Pubkey = pubkey!("C1W9tfmWFn6R5Pr54gaMQkEoyvc6NfAQAQuz4CZnCAEe");//This comes from pyth-mock/lib.rs
+const QUOTE_PROGRAM_ID: Pubkey = pubkey!("C1W9tfmWFn6R5Pr54gaMQkEoyvc6NfAQAQuz4CZnCAEe");//This comes from pyth-mock/lib.rs
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
@@ -424,7 +431,7 @@ fn update_user_previous_interest_accrued<'info>(
     Ok(())
 }
 
-fn get_token_pyth_usd_value<'info>(price_update_account_serialized: &AccountInfo<'info>, pyth_feed_id: [u8; 32]) -> Result<u128>
+/*fn get_token_pyth_usd_value<'info>(price_update_account_serialized: &AccountInfo<'info>, pyth_feed_id: [u8; 32]) -> Result<u128>
 {
     //Validate Price Update Account
     require_keys_eq!(*price_update_account_serialized.owner, PYTH_PROGRAM_ID, LendingError::UnexpectedPythPriceUpdateAccount);
@@ -453,10 +460,36 @@ fn get_token_pyth_usd_value<'info>(price_update_account_serialized: &AccountInfo
     );*/
 
     Ok(normalized_price_8_decimals)
+}*/
+
+fn get_token_switchboard_usd_value<'info>(switchboard_price_feeds: &[PackedFeedInfo], switch_board_feed_id: [u8; 32]) -> Result<u128>
+{
+    //Find the feed
+    let feed = switchboard_price_feeds.iter()
+        .find(|f| *f.feed_id() == switch_board_feed_id)
+        .ok_or(LendingError::StalePriceDataOrWrongFeedID)?;
+
+    //Get the SwitchboardDecimal
+    let decimal_value = feed.value();
+    
+    //Negative price check
+    require!(decimal_value.mantissa() > 0, LendingError::NegativePriceDetected);
+    
+    let normalized_price_8_decimals = normalize_switchboard_price_to_8_decimals(decimal_value.mantissa(), decimal_value.scale());
+
+    //Debug
+    /*msg!
+    (
+        "Token Price: {} x 10^{}",
+        decimal_value.mantissa,
+        decimal_value.scale
+    );*/
+
+    Ok(normalized_price_8_decimals)
 }
 
 //Helper function to get the token price by the pyth ID
-fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_feed_id: [u8; 32]) -> Result<Price>
+/*fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_feed_id: [u8; 32]) -> Result<Price>
 {
     pub const MAXIMUM_AGE: u64 = 30; //30 seconds
 
@@ -469,9 +502,46 @@ fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_f
     .map_err(|_| error!(LendingError::StalePriceDataOrWrongFeedID))?; //Handle Option returned by pyth (None if stale or wrong feed)
 
     Ok(current_price)
+}*/
+
+fn get_validated_switchboard_price_feeds<'info>(
+    switchboard_qoute_account_serialized: &'info AccountInfo<'info>,
+    queue_account: &AccountInfo<'info>,
+    slothash_sysvar_account: &AccountInfo<'info>,
+    ix_sysvar_account: &AccountInfo<'info>,
+    clock_slot: u64
+) -> Result<&'info [PackedFeedInfo]>
+{
+    //Validate SwitchboardQuote Account
+    require_keys_eq!(*switchboard_qoute_account_serialized.owner, QUOTE_PROGRAM_ID, LendingError::UnexpectedSwitchboardQuoteAccount);
+
+    //Validate System Slot Hashes Account
+    require_keys_eq!(*slothash_sysvar_account.owner, SLOT_HASHES_ID, LendingError::UnexpectedSwitchboardQuoteAccount);
+
+    //Validate System Instruction Account
+    require_keys_eq!(*ix_sysvar_account.owner, INSTRUCTIONS_ID, LendingError::UnexpectedSwitchboardQuoteAccount);
+
+    // Initialize the verifier using the provided accounts
+    let mut binding = QuoteVerifier::new();
+    let verifier = binding
+        .queue(queue_account)
+        .slothash_sysvar(slothash_sysvar_account)
+        .ix_sysvar(ix_sysvar_account)
+        .clock_slot(clock_slot)
+        .max_age(0); // e.g., reject if older than 150 slots (~1 minute). 0 means it must be within the current slot
+
+    //Verify and get the trusted quote data
+    //This performs the Ed25519 signature checks and validates
+    //that the account was signed by an oracle in the specified queue.
+    let queue_key_bytes = queue_account.key.to_bytes();
+    let verified_quote = verifier
+        .verify_account(&queue_key_bytes, switchboard_qoute_account_serialized)
+        .map_err(|_| error!(LendingError::StalePriceDataOrWrongFeedID))?;
+
+    Ok(verified_quote.packed_feed_infos)
 }
 
-fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
+/*fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
 {
     let expo = pyth_expo.abs() as u32;
 
@@ -488,6 +558,24 @@ fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
     else
     {
         return pyth_price as u128;
+    }
+}*/
+
+fn normalize_switchboard_price_to_8_decimals(switchboard_price: i128, scale: u32) -> u128
+{
+    if scale > 8
+    {
+        let conversion_number = BASE_10_INT.pow(scale - 8); 
+        return switchboard_price as u128 / conversion_number;
+    }
+    else if scale < 8
+    {
+        let conversion_number = BASE_10_INT.pow(8 - scale); 
+        return switchboard_price as u128 * conversion_number;
+    }
+    else
+    {
+        return switchboard_price as u128;
     }
 }
 
@@ -535,6 +623,12 @@ fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut Lending
     lending_user_tab_account.user_tab_account_added = true;
 
     lending_user_account.tab_account_count += 1;
+
+    //Limit the number of tab accounts to prevent accounts from becoming broken with too many tab accounts.
+    //Unable to withdraw, borrow, repay, or be liquidated because too many transactions would be required to land in the same slot.
+    //Jito bundles only allow for up to 5 transacations.
+    //A user can create a new account if there are other submarkets they want to interact with
+    require!(lending_user_account.tab_account_count <= 5, LendingError::TooManyTabAccounts);
 
     msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
 
@@ -806,7 +900,8 @@ pub mod lending_protocol
 
     pub fn add_token_reserve(ctx: Context<AddTokenReserve>,
         token_decimal_amount: u8,
-        pyth_feed_id: [u8; 32],
+        //pyth_feed_id: [u8; 32],
+        switch_board_feed_id: [u8; 32],
         fixed_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
         global_limit: u128,
@@ -824,7 +919,8 @@ pub mod lending_protocol
         token_reserve.bump = ctx.bumps.token_reserve;
         token_reserve.token_mint_address = ctx.accounts.token_mint.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
-        token_reserve.pyth_feed_id = pyth_feed_id;
+        //token_reserve.pyth_feed_id = pyth_feed_id;
+        token_reserve.switch_board_feed_id = switch_board_feed_id;
         token_reserve.borrow_apy = fixed_borrow_apy;
         token_reserve.fixed_borrow_apy = fixed_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
@@ -836,12 +932,13 @@ pub mod lending_protocol
         token_reserve.token_reserve_protocol_index = token_reserve_stats.token_reserve_count;
         token_reserve_stats.token_reserve_count += 1;
 
-        let hex_string = hex::encode(pyth_feed_id);
+        //let hex_string = hex::encode(pyth_feed_id);
+        let hex_string = hex::encode(switch_board_feed_id);
 
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
         msg!("Token Mint Address: {}", ctx.accounts.token_mint.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
-        msg!("Pyth Feed ID: 0x{}", hex_string);
+        msg!("SwitchBoard Feed ID: 0x{}", hex_string);
         msg!("Fixed Borrow APY: {}", fixed_borrow_apy);
         msg!("Use fixed Borrow APY: {}", use_fixed_borrow_apy);
         msg!("Global Limit: {}", global_limit);
@@ -851,6 +948,8 @@ pub mod lending_protocol
 
     pub fn update_token_reserve(ctx: Context<UpdateTokenReserve>,
         _token_mint_address: Pubkey,
+        //pyth_feed_id: [u8; 32],
+        switch_board_feed_id: [u8; 32],
         fixed_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
         global_limit: u128,
@@ -875,6 +974,8 @@ pub mod lending_protocol
             update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, None)?;
         }
 
+        //token_reserve.pyth_feed_id = pyth_feed_id;
+        token_reserve.switch_board_feed_id = switch_board_feed_id;
         token_reserve.fixed_borrow_apy = fixed_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
@@ -1131,7 +1232,7 @@ pub mod lending_protocol
     }
 
     //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-    pub fn withdraw_tokens(ctx: Context<WithdrawTokens>,
+    pub fn withdraw_tokens<'info>(ctx: Context<'_, '_, 'info, 'info, WithdrawTokens<'info>>,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         _user_account_index: u8,
@@ -1173,8 +1274,18 @@ pub mod lending_protocol
 
         if lending_user_account.total_borrowed_usd_value > 0
         {
-            let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
-            let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
+            //let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+            //let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
+            let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
+            let verified_price_feeds = get_validated_switchboard_price_feeds(
+                switchboard_qoute_account_serialized,
+                &ctx.accounts.queue.to_account_info(),
+                &ctx.accounts.slothashes.to_account_info(),
+                &ctx.accounts.instructions.to_account_info(),
+                //ctx.accounts.clock.slot,
+                clock_slot
+            )?;
+            let normalized_price_8_decimals = get_token_switchboard_usd_value(verified_price_feeds, token_reserve.switch_board_feed_id)?;
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
             let new_user_deposited_usd_value = lending_user_account.total_deposited_usd_value - ((withdraw_amount as u128 * normalized_price_8_decimals) / token_conversion_number);
 
@@ -1233,7 +1344,7 @@ pub mod lending_protocol
     }
 
     //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-    pub fn borrow_tokens(ctx: Context<BorrowTokens>,
+    pub fn borrow_tokens<'info>(ctx: Context<'_, '_, 'info, 'info, BorrowTokens<'info>>,
         sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
@@ -1294,8 +1405,19 @@ pub mod lending_protocol
             )?;
         }
 
-        let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
-        let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
+        //let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+        //let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
+        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
+        let verified_price_feeds = get_validated_switchboard_price_feeds(
+            switchboard_qoute_account_serialized,
+            &ctx.accounts.queue.to_account_info(),
+            &ctx.accounts.slothashes.to_account_info(),
+            &ctx.accounts.instructions.to_account_info(),
+            //ctx.accounts.clock.slot,
+            clock_slot
+        )?;
+        let normalized_price_8_decimals = get_token_switchboard_usd_value(verified_price_feeds, token_reserve.switch_board_feed_id)?;
+        
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
         let new_user_borrowed_usd_value = lending_user_account.total_borrowed_usd_value + ((amount as u128 * normalized_price_8_decimals) / token_conversion_number);
 
@@ -1460,7 +1582,7 @@ pub mod lending_protocol
         Ok(())
     }
 
-    pub fn liquidate_account(ctx: Context<LiquidateAccount>,
+    pub fn liquidate_account<'info>(ctx: Context<'_, '_, 'info, 'info, LiquidateAccount<'info>>,
         repayment_sub_market_owner_address: Pubkey,
         repayment_sub_market_index: u16,
         liquidation_sub_market_owner_address: Pubkey,
@@ -1744,16 +1866,30 @@ pub mod lending_protocol
             repayment_amount
         )?;
 
+        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
+        let queue_account = remaining_accounts_iter.next().unwrap();
+        let slothashes_account = remaining_accounts_iter.next().unwrap();
+        let instructions_account = remaining_accounts_iter.next().unwrap();
+        let verified_price_feeds = get_validated_switchboard_price_feeds(
+            switchboard_qoute_account_serialized,
+            queue_account,
+            slothashes_account,
+            instructions_account,
+            clock_slot
+        )?;
+
         //Get USD value of Repayment Amount
-        let repayment_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+        //let repayment_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
         let repayment_token_conversion_number = BASE_10_INT.pow(repayment_token_reserve.token_decimal_amount as u32); 
-        let repayment_token_usd_value = get_token_pyth_usd_value(repayment_price_update_account_serialized, repayment_token_reserve.pyth_feed_id)?;
+        //let repayment_token_usd_value = get_token_pyth_usd_value(repayment_price_update_account_serialized, repayment_token_reserve.pyth_feed_id)?;
+        let repayment_token_usd_value = get_token_switchboard_usd_value(verified_price_feeds, repayment_token_reserve.switch_board_feed_id)?;
         let repayment_amount_usd_value = (repayment_amount as u128 * repayment_token_usd_value) / repayment_token_conversion_number;
 
         //Get USD value of Liquidation Token
-        let liquidation_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+        //let liquidation_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
         let liquidation_token_conversion_number = BASE_10_INT.pow(liquidation_token_reserve.token_decimal_amount as u32); 
-        let liquidation_token_usd_value = get_token_pyth_usd_value(liquidation_price_update_account_serialized, liquidation_token_reserve.pyth_feed_id)?;
+        //let liquidation_token_usd_value = get_token_pyth_usd_value(liquidation_price_update_account_serialized, liquidation_token_reserve.pyth_feed_id)?;
+        let liquidation_token_usd_value = get_token_switchboard_usd_value(verified_price_feeds, liquidation_token_reserve.switch_board_feed_id)?;
 
         let amount_to_be_liquidated = ((repayment_amount_usd_value * liquidation_token_conversion_number) / liquidation_token_usd_value) as u64;
 
@@ -1900,7 +2036,7 @@ pub mod lending_protocol
     }
 
     //This liquidation is for when the repayment and liquidation tokens are the same
-    pub fn liquidate_account_same_token(ctx: Context<LiquidateAccountSameToken>,
+    pub fn liquidate_account_same_token<'info>(ctx: Context<'_, '_, 'info, 'info, LiquidateAccountSameToken<'info>>,
         repayment_sub_market_owner_address: Pubkey,
         repayment_sub_market_index: u16,
         liquidation_sub_market_owner_address: Pubkey,
@@ -2183,9 +2319,19 @@ pub mod lending_protocol
         )?;
 
         //Get Token USD value
-        let token_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
+        let verified_price_feeds = get_validated_switchboard_price_feeds(
+            switchboard_qoute_account_serialized,
+            &ctx.accounts.queue.to_account_info(),
+            &ctx.accounts.slothashes.to_account_info(),
+            &ctx.accounts.instructions.to_account_info(),
+            //ctx.accounts.clock.slot,
+            clock_slot
+        )?;
+        //let token_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-        let token_usd_value = get_token_pyth_usd_value(token_price_update_account_serialized, token_reserve.pyth_feed_id)?;
+        //let token_usd_value = get_token_pyth_usd_value(token_price_update_account_serialized, token_reserve.pyth_feed_id)?;
+        let token_usd_value = get_token_switchboard_usd_value(verified_price_feeds, token_reserve.switch_board_feed_id)?;
 
         //Get USD value of Repayment Amount
         let repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
@@ -2336,10 +2482,18 @@ pub mod lending_protocol
         Ok(())
     }
 
+    //Old Pyth way
+    //1 set of accounts in remaining accounts for refresh (in this order) Example: LendingUserTabAccount, TokenReserve, Submarket, LendingUserMonthlyStatementAccount, and PriceUpdateV2
+
     //You have to call this instruction for all user tab accounts before calling the withdraw, borrow, or liquidate functions in the same transaction.
     //It's recommended to call this refresh function on up to 4 tab sets only at a time.
-    //1 set of accounts in remaining accounts for refresh (in this order) Example: LendingUserTabAccount, TokenReserve, Submarket, LendingUserMonthlyStatementAccount, and PriceUpdateV2
-    pub fn refresh_user_health_chunk_and_token_reserves(ctx: Context<RefreshUserHealthChunkAndTokenReserves>, user_account_owner_address: Pubkey, user_account_index: u8) -> Result<()> 
+    //New Switchboard way. Feed in SwitchboardQuote account first with all price data then
+    //All of the Token Reserves as the same order as the token_mint_addresses feed in then
+    //Repeating sets of these accounts in this order (Up to 5 tab account sets at once, use another instruction for more): LendingUserTabAccount, Submarket, LendingUserMonthlyStatementAccount
+    pub fn refresh_user_health_chunk_and_token_reserves<'info>(ctx: Context<'_, '_, 'info, 'info, RefreshUserHealthChunkAndTokenReserves<'info>>,
+    token_mint_addresses: Vec<Pubkey>,
+    user_account_owner_address: Pubkey,
+    user_account_index: u8) -> Result<()> 
     {
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
@@ -2364,9 +2518,30 @@ pub mod lending_protocol
             lending_user_account.refresh_clock_slot = clock_slot;
         }
 
+        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
+        let verified_price_feeds = get_validated_switchboard_price_feeds(
+            switchboard_qoute_account_serialized,
+            &ctx.accounts.queue.to_account_info(),
+            &ctx.accounts.slothashes.to_account_info(),
+            &ctx.accounts.instructions.to_account_info(),
+            //ctx.accounts.clock.slot,
+            clock_slot
+        )?;
+
+        let token_reserve_count = token_mint_addresses.len();
+        let mut token_reserves: Vec<(&AccountInfo<'info>, TokenReserve)> = Vec::with_capacity(token_reserve_count);
+        for token_mint_address in token_mint_addresses.iter()
+        {
+            let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap();
+            let token_reserve = validate_and_return_token_reserve_account(*ctx.program_id,
+                token_reserve_account_serialized,
+                *token_mint_address)?;
+            token_reserves.push((token_reserve_account_serialized, token_reserve));
+        }
+
         while let Some(tab_account_serialized) = remaining_accounts_iter.next()
         {
-            //Validate Accounts
+            //Validate Remaining Accounts
             
             /////////////
             //Tab Account
@@ -2390,10 +2565,10 @@ pub mod lending_protocol
 
             ///////////////////////
             //Token Reserve Account
-            let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap();
-            let mut token_reserve = validate_and_return_token_reserve_account(*ctx.program_id,
-                token_reserve_account_serialized,
-                lending_user_tab_account.token_mint_address)?;
+            let token_reserve_entry = token_reserves.iter_mut()
+                .find(|(_, token_reserve)| token_reserve.token_mint_address == lending_user_tab_account.token_mint_address)
+                .ok_or(LendingError::MissingTokenReserveAccountForRefresh)?;
+            let (token_reserve_account_serialized, token_reserve) = token_reserve_entry;
 
             ///////////////////
             //SubMarket Account
@@ -2419,37 +2594,40 @@ pub mod lending_protocol
 
             ///////////////////////////
             //Pyth Price Update Account
-            let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
-            let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
+            //let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+            //let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.switch_board_feed_id)?;
             //msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
-            
+
             //Calculate Token Reserve Previously Earned And Accrued Interest
             if token_reserve.last_health_update_clock_slot != clock_slot
             {
-                update_token_reserve_supply_and_borrow_interest_change_index(&mut token_reserve, time_stamp, Some(clock_slot))?;
+                update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, Some(clock_slot))?;
             }
             
             update_user_previous_interest_earned(
-                &mut token_reserve,
+                token_reserve,
                 &mut sub_market,
                 &mut lending_user_tab_account,
                 &mut monthly_statement_account
             )?;
 
             update_user_previous_interest_accrued(
-                &mut token_reserve,
+                token_reserve,
                 &mut sub_market,
                 &mut lending_user_tab_account,
                 &mut monthly_statement_account
             )?;
             
             //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexes
-            update_token_reserve_rates(&mut token_reserve)?;
+            update_token_reserve_rates(token_reserve)?;
             sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
             sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
             lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
             lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
 
+            //Get Switchboard normalized price with 8 decimals
+            let normalized_price_8_decimals = get_token_switchboard_usd_value(verified_price_feeds, token_reserve.switch_board_feed_id)?;
+            
             //Update temp deposited and borrow values
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
             lending_user_account.temp_deposit_usd_value += (lending_user_tab_account.deposited_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
@@ -3507,7 +3685,7 @@ pub struct WithdrawTokens<'info>
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+    pub lending_user_tab_account: Box<Account<'info, LendingUserTabAccount>>,
 
     #[account(
         mut,
@@ -3545,7 +3723,17 @@ pub struct WithdrawTokens<'info>
 
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub system_program: Program<'info, System>
+    pub system_program: Program<'info, System>,
+
+    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
+    pub queue: AccountInfo<'info>,
+    //pub clock: Sysvar<'info, Clock>,
+    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = SLOT_HASHES_ID)]
+    pub slothashes: AccountInfo<'info>,
+    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>
 }
 
 #[derive(Accounts)]
@@ -3555,7 +3743,7 @@ pub struct BorrowTokens<'info>
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Account<'info, LendingProtocol>,
+    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
 
     #[account(
         mut, 
@@ -3626,13 +3814,23 @@ pub struct BorrowTokens<'info>
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_mint: InterfaceAccount<'info, Mint>,
+    pub token_mint: Box<InterfaceAccount<'info, Mint>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub system_program: Program<'info, System>
+    pub system_program: Program<'info, System>,
+
+    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
+    pub queue: AccountInfo<'info>,
+    //pub clock: Sysvar<'info, Clock>,
+    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = SLOT_HASHES_ID)]
+    pub slothashes: AccountInfo<'info>,
+    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>
 }
 
 #[derive(Accounts)]
@@ -3974,7 +4172,17 @@ pub struct LiquidateAccountSameToken<'info>
 
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub system_program: Program<'info, System>
+    pub system_program: Program<'info, System>,
+
+    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
+    pub queue: AccountInfo<'info>,
+    //pub clock: Sysvar<'info, Clock>,
+    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = SLOT_HASHES_ID)]
+    pub slothashes: AccountInfo<'info>,
+    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>
 }
 
 //The monthly statement accounts have to exists before calling the refresh_user_health_chunk instruction.
@@ -3997,7 +4205,17 @@ pub struct RefreshUserHealthChunkAndTokenReserves<'info>
 
     #[account(mut)]
     pub signer: Signer<'info>,
-    pub system_program: Program<'info, System>
+    pub system_program: Program<'info, System>,
+
+    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
+    pub queue: AccountInfo<'info>,
+    //pub clock: Sysvar<'info, Clock>,
+    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = SLOT_HASHES_ID)]
+    pub slothashes: AccountInfo<'info>,
+    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
+    #[account(address = INSTRUCTIONS_ID)]
+    pub instructions: AccountInfo<'info>
 }
 
 #[derive(Accounts)]
@@ -4448,7 +4666,8 @@ pub struct TokenReserve
     pub token_reserve_protocol_index: u32,
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
-    pub pyth_feed_id: [u8; 32],
+    //pub pyth_feed_id: [u8; 32],
+    pub switch_board_feed_id: [u8; 32],
     pub supply_apy: u16,
     pub borrow_apy: u16,
     pub fixed_borrow_apy: u16,
