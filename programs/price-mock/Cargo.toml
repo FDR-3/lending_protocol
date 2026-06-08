@@ -1,12 +1,12 @@
 [package]
-name = "pyth-mock"
+name = "price-mock"
 version = "0.1.0"
 description = "Created with Anchor"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "pyth_mock"
+name = "price_mock"
 
 [features]
 default = []
@@ -23,3 +23,4 @@ idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
+switchboard-on-demand = "0.12.1"

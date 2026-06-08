@@ -112,6 +112,12 @@ pub enum LendingError
     //UnexpectedPythPriceUpdateAccount,
     #[msg("Unexpected Switchboard Quote Account detected. Feed in only legitimate accounts :)")]
     UnexpectedSwitchboardQuoteAccount,
+    #[msg("Unexpected Slot Hash Account Quote Account detected")]
+    UnexpectedSlotHashAccount,
+    #[msg("Unexpected Instructions Account detected")]
+    UnexpectedInstructionsAccount,
+    #[msg("Error reading Mocked Switchboard Quote Account")]
+    ReadingMockedQuoteAccountError,
     #[msg("Unexpected Token Reserve Account PDA detected")]
     UnexpectedTokenReserveAccount,
     #[msg("Unexpected SubMarket Account PDA detected")]
@@ -134,6 +140,8 @@ pub enum LendingError
     StaleTokenReserveOrLendingUser,
     #[msg("Price data was stale or the feed id was incorrect")]
     StalePriceDataOrWrongFeedID,
+    #[msg("Not enough aggregator price sources. You need atleast 1")]
+    NotEnoughAggregatorPriceSources,
     #[msg("You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'")]
     GriefingRepayment,
     #[msg("You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral")]

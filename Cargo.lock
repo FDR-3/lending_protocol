@@ -1327,6 +1327,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "price-mock"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "switchboard-on-demand",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1487,13 +1495,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "pyth-mock"
-version = "0.1.0"
-dependencies = [
- "anchor-lang",
 ]
 
 [[package]]
