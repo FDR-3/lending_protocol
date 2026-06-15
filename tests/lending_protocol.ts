@@ -2071,11 +2071,15 @@ describe("lending_protocol", () =>
 
     try
     {
+      const priceData = [solLiquidationPrice, usdcTestPrice]
+      const unverifiedPriceData = await setPrice(priceData)
+
       const repayTokenInstruction = await program.methods.repayTokens(
       testSubMarketIndex,
       testUserAccountIndex,
       lessThan10PercentOfBorrowedAmount,
-      false
+      false,
+      unverifiedPriceData
       )
       .accounts({
         subMarketOwner: programProviderPublicKey,
@@ -2135,7 +2139,8 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       lessThan10PercentOfBorrowedAmount,
-      false
+      false,
+      unverifiedPriceData
       )
       .accounts({
         subMarketOwner: programProviderPublicKey,
@@ -2605,7 +2610,8 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       overBorrowUSDCAmount,
-      false
+      false,
+      unverifiedPriceData
       )
       .accounts({
         subMarketOwner: programProviderPublicKey,
@@ -2672,7 +2678,8 @@ describe("lending_protocol", () =>
     testSubMarketIndex,
     testUserAccountIndex,
     borrowerUSDCAmount,
-    true
+    true,
+    unverifiedPriceData
     )
     .accounts({
       subMarketOwner: programProviderPublicKey,
@@ -2686,6 +2693,13 @@ describe("lending_protocol", () =>
 
     var tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     assert(tokenReserve.borrowedAmount.eq(bnZero))
+
+    const borrowerLendingUserAccount = await program.account.lendingUserAccount.fetch(getLendingUserAccountPDA
+    (
+      borrowerWalletKeypair.publicKey,
+      testUserAccountIndex
+    ))
+    assert(borrowerLendingUserAccount.totalBorrowedUsdValue.eq(bnZero))
 
     const borrowerLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
