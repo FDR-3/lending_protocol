@@ -6,16 +6,12 @@ use core::mem::size_of;
 use solana_security_txt::security_txt;
 use std::ops::Deref;
 use ra_solana_math::FixedPoint;
-//use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
-use anchor_lang::solana_program::sysvar::instructions::ID as INSTRUCTIONS_ID;
-use anchor_lang::solana_program::sysvar::slot_hashes::ID as SLOT_HASHES_ID;
-use switchboard_on_demand::QuoteVerifier;
-use switchboard_on_demand::on_demand::oracle_quote::PackedFeedInfo;
-use hex;
 pub mod validation;
 pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
+use brine_ed25519::hasher::Sha512;
+use brine_ed25519::verify;
 
 declare_id!("AyjtTAkQUQyCBJAHntC97ZiVEmhCJTx3zH4TidivSEKZ");
 
@@ -36,11 +32,8 @@ const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("Fdqu1muWocA5ms8VmTrUxRxxmSattrmpNra
 const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6zgxNa8F4nY3kfDpdRJsT8HdPU");
 #[cfg(feature = "dev")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("9BRgCdmwyP5wGVTvKAUDjSwucpqGncurVa35DjaWqSsC");//Also the HodlTreasury
-//#[cfg(feature = "dev")]
-//use pyth_solana_receiver_sdk::ID as PYTH_PROGRAM_ID;
-#[cfg(feature = "dev")]
-use switchboard_on_demand::QUOTE_PROGRAM_ID as QUOTE_PROGRAM_ID;
-
+#[cfg(feature = "dev")] 
+const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
 
 #[cfg(feature = "local")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
@@ -48,17 +41,14 @@ const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8
 const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
 #[cfg(feature = "local")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
-//#[cfg(feature = "local")] 
-//const PYTH_PROGRAM_ID: Pubkey = pubkey!("C1W9tfmWFn6R5Pr54gaMQkEoyvc6NfAQAQuz4CZnCAEe");//This comes from pyth-mock/lib.rs
 #[cfg(feature = "local")] 
-const QUOTE_PROGRAM_ID: Pubkey = pubkey!("4HSLn75xsDdQuKuxKt2dy656EEU9iNZExtgYcrMVBUsN");//This comes from pyth-mock/lib.rs
+const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
 //Lending User Account need atleast 4 extra bytes of space to pass with full load(Longest name possible)
 const LENDING_USER_ACCOUNT_EXTRA_SIZE: usize = 4;
 const MAX_TABS_PER_LENDING_ACCOUNT: u8 = 5;
-const MIN_REQUIRED_PRICE_SOURCES: u8 = 1;
 const MAX_ACCOUNT_NAME_LENGTH: usize = 25;
 const BASE_10_INT :u128 = 10;
 
@@ -190,12 +180,15 @@ fn update_token_reserve_supply_and_borrow_interest_change_index<'info>(
         token_reserve.borrow_interest_change_index = old_borrow_interest_index_fp.mul(&borrow_compounding_factor_fp)?.value.as_u128();
 
         msg!("Updated Token Reserve Interest Change Indexes");
-        msg!("Supply Change Index: {}", token_reserve.supply_interest_change_index);
-        msg!("Borrow Change Index: {}", token_reserve.borrow_interest_change_index);
+        msg!("Supply: {}", token_reserve.supply_interest_change_index);
+        msg!("Borrow: {}", token_reserve.borrow_interest_change_index);
     }
 
     token_reserve.last_lending_activity_time_stamp = new_time_stamp;
 
+    //This setting keeps us from running update_token_reserve_supply_and_borrow_interest_change_index more than we need to when calling refresh_user_health_chunk_and_token_reserves
+    //It also detects when a user borrows from a token reserve they have never interacted with before
+    //Ultimately though, lending_user_account.last_health_update_clock_slot guarantees all relavent token reserves and user tabs have been refreshed for withdraw, borrow, refresh_user_health_chunk_and_token_reserves, and liquidate functions
     if let Some(clock_slot) = new_clock_slot
     {
         token_reserve.last_health_update_clock_slot = clock_slot;
@@ -382,9 +375,6 @@ fn update_user_previous_interest_earned<'info>(
     lending_user_tab_account.sub_market_fees_generated_amount += new_sub_market_fees_generated_amount as u64;
     lending_user_tab_account.solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
     lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
-    lending_user_monthly_statement_account.snap_shot_interest_earned_amount = lending_user_tab_account.interest_earned_amount;
-    lending_user_monthly_statement_account.snap_shot_sub_market_fees_generated_amount = lending_user_tab_account.sub_market_fees_generated_amount;
-    lending_user_monthly_statement_account.snap_shot_solvency_insurance_fees_generated_amount = lending_user_tab_account.solvency_insurance_fees_generated_amount;
     lending_user_monthly_statement_account.monthly_interest_earned_amount += new_user_interest_earned_amount_after_fees as u64;
     lending_user_monthly_statement_account.monthly_sub_market_fees_generated_amount += new_sub_market_fees_generated_amount as u64;
     lending_user_monthly_statement_account.monthly_solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
@@ -425,245 +415,94 @@ fn update_user_previous_interest_accrued<'info>(
     lending_user_tab_account.borrowed_amount += new_user_interest_accrued_amount as u64;
     lending_user_tab_account.interest_accrued_amount += new_user_interest_accrued_amount as u64;
     lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
-    lending_user_monthly_statement_account.snap_shot_interest_accrued_amount = lending_user_tab_account.interest_accrued_amount;
     lending_user_monthly_statement_account.monthly_interest_accrued_amount += new_user_interest_accrued_amount as u64;
 
     Ok(())
 }
 
-/*fn get_token_pyth_usd_value<'info>(price_update_account_serialized: &AccountInfo<'info>, pyth_feed_id: [u8; 32]) -> Result<u128>
+fn verify_token_prices(
+    unverified_price_data: &[UnverifiedPriceData],
+    price_validator_publickey: &Pubkey,
+    current_slot: u64
+)-> Result<Vec<VerifiedPriceData>>
 {
-    //Validate Price Update Account
-    require_keys_eq!(*price_update_account_serialized.owner, PYTH_PROGRAM_ID, LendingError::UnexpectedPythPriceUpdateAccount);
+    let mut verified_prices = Vec::with_capacity(unverified_price_data.len());
 
-    let mut data_slice: &[u8] = &price_update_account_serialized.data.borrow();
+    //Extract the raw 32-byte public key matrix of your Oracle
+    let validator_publickey_bytes = price_validator_publickey.to_bytes();
+    let validator_address = brine_ed25519::Address::from(validator_publickey_bytes);
 
-    let price_update_account = PriceUpdateV2::try_deserialize(&mut data_slice)?;
-    let current_price = get_token_pyth_price_by_id(price_update_account, pyth_feed_id)?;
-
-    //Negative Price Detected
-    require!(current_price.price >= 0, LendingError::NegativePriceDetected);
-
-    //Oracle Price Too Unstable
-    let uncertainty_ratio = current_price.conf as f64 / current_price.price as f64;
-    require!(uncertainty_ratio <= 0.02, LendingError::OraclePriceTooUnstable);//Reject price if more than 2% price uncertainty
-    
-    let normalized_price_8_decimals = normalize_pyth_price_to_8_decimals(current_price.price, current_price.exponent);
-
-    //Debug
-    /*msg!
-    (
-        "Token Price: {} +- {} x 10^{}",
-        current_price.price,
-        current_price.conf,
-        current_price.exponent
-    );*/
-
-    Ok(normalized_price_8_decimals)
-}*/
-
-fn get_token_switchboard_usd_value<'info>(switchboard_price_feeds: &[PackedFeedInfo], switchboard_feed_id: [u8; 32]) -> Result<u128>
-{
-    let normalized_price_8_decimals;
-
-    //Find the feed
-    let feed = switchboard_price_feeds.iter()
-        .find(|f| *f.feed_id() == switchboard_feed_id)
-        .ok_or(LendingError::StalePriceDataOrWrongFeedID)?;
-
-    //Negative price check
-    require!(feed.min_oracle_samples >= MIN_REQUIRED_PRICE_SOURCES, LendingError::NotEnoughAggregatorPriceSources);
-
-    #[cfg(feature = "local")]
+    //Loop through and evaluate each chunk sequentially
+    for data in unverified_price_data
     {
-        let value = feed.feed_value;
-        let price_samples = feed.min_oracle_samples;
+        let token_mint_address = data.token_mint_address;
+        let normalized_price_18_decimals = data.normalized_price_18_decimals;
+        let slot = data.slot;
+        let signature = data.signature;
 
-        //Negative price check
-        require!(value >= 0, LendingError::NegativePriceDetected);
+        msg!("Token: {}", token_mint_address);
+        msg!("price: {}", normalized_price_18_decimals);
+        msg!("Slot: {}", slot);
+        msg!("Data Slot: {}", slot);
 
-        normalized_price_8_decimals = value as u128;
-    }
-
-    #[cfg(not(feature = "local"))]
-    {
-        let decimal_value = feed.value();
-        
-        //Negative price check
-        require!(decimal_value.mantissa() >= 0, LendingError::NegativePriceDetected);
-
-        normalized_price_8_decimals = normalize_switchboard_price_to_8_decimals(decimal_value.mantissa(), decimal_value.scale());
-    }
-    
-    /*msg!("DEBUG: Inspecting {} total feeds", switchboard_price_feeds.len());
-    for (i, feed) in switchboard_price_feeds.iter().enumerate()
-    {
-        // 1. Copy the values into local variables first.
-        // Since these are Copy types (array and integer), this is safe and cheap.
-        let id = feed.feed_id;
-        let val = feed.feed_value;
-        let samples = feed.min_oracle_samples;
-
-        if id == switchboard_feed_id
+        #[cfg(feature = "local")] 
+        //Allow a max age of 40 slots (approx 16 seconds) 1 slot is about 400ms
+        if current_slot.saturating_sub(slot) > 40
         {
-            msg!("match found");
-            msg!("Feed Index {}:", i);
-            msg!("ID: {:?}", id); 
-            msg!("Value: {}", val);
-            msg!("Samples: {}", samples);
-        }
-    }*/
-    
-    //Debug
-    /*msg!
-    (
-        "Token Price: {} x 10^{}",
-        decimal_value.mantissa(),
-        decimal_value.scale()
-    );*/
-
-    Ok(normalized_price_8_decimals)
-}
-
-//Helper function to get the token price by the pyth ID
-/*fn get_token_pyth_price_by_id<'info>(price_update_account: PriceUpdateV2, pyth_feed_id: [u8; 32]) -> Result<Price>
-{
-    pub const MAXIMUM_AGE: u64 = 30; //30 seconds
-
-    let current_price: Price = price_update_account
-    .get_price_no_older_than(
-        &Clock::get()?, 
-        MAXIMUM_AGE, 
-        &pyth_feed_id
-    )
-    .map_err(|_| error!(LendingError::StalePriceDataOrWrongFeedID))?; //Handle Option returned by pyth (None if stale or wrong feed)
-
-    Ok(current_price)
-}*/
-
-fn get_validated_switchboard_price_feeds<'info>(
-    switchboard_qoute_account_serialized: &'info AccountInfo<'info>,
-    queue_account: &AccountInfo<'info>,
-    slothash_sysvar_account: &AccountInfo<'info>,
-    ix_sysvar_account: &AccountInfo<'info>,
-    clock_slot: u64
-) -> Result<Vec<PackedFeedInfo>>
-{
-    //Validate SwitchboardQuote Account
-    require_keys_eq!(*switchboard_qoute_account_serialized.owner, QUOTE_PROGRAM_ID, LendingError::UnexpectedSwitchboardQuoteAccount);
-
-    //Validate System Slot Hashes Account
-    require_keys_eq!(*slothash_sysvar_account.key, SLOT_HASHES_ID, LendingError::UnexpectedSlotHashAccount);
-
-    //Validate System Instruction Account
-    require_keys_eq!(*ix_sysvar_account.key, INSTRUCTIONS_ID, LendingError::UnexpectedInstructionsAccount);
-
-    #[cfg(feature = "local")]
-    {
-        use std::io::{Read, Cursor};
-    
-        let data = switchboard_qoute_account_serialized.data.borrow();
-        let mut cursor = Cursor::new(&data[..]);
-
-        //1. Skip queue (32 bytes)
-        cursor.set_position(32);
-
-        //2. Skip signatures length (2 bytes)
-        //You wrote the length prefix, but NO signature data.
-        //So we just skip the 2 bytes of the length prefix.
-        let mut sig_len_buf = [0u8; 2];
-        cursor.read_exact(&mut sig_len_buf).map_err(|_| LendingError::ReadingMockedQuoteAccountError)?;
-        //cursor.position() is now at 32 + 2 = 34
-
-        //3. Skip quote_header (32 bytes)
-        cursor.set_position(cursor.position() + 32);
-
-        //4. Read feeds
-        //feeds: u8 length prefix
-        let mut feed_len_buf = [0u8; 1];
-        cursor.read_exact(&mut feed_len_buf).map_err(|_| LendingError::ReadingMockedQuoteAccountError)?;
-        let feed_len = feed_len_buf[0] as usize;
-
-        let mut feeds = Vec::with_capacity(feed_len);
-        for _ in 0..feed_len
-        {
-            let mut id = [0u8; 32];
-            let mut val_bytes = [0u8; 16]; //i128 is 16 bytes
-            let mut samples_buf = [0u8; 1]; //u8 is 1 byte
-
-            cursor.read_exact(&mut id).map_err(|_| LendingError::ReadingMockedQuoteAccountError)?;
-            cursor.read_exact(&mut val_bytes).map_err(|_| LendingError::ReadingMockedQuoteAccountError)?;
-            cursor.read_exact(&mut samples_buf).map_err(|_| LendingError::ReadingMockedQuoteAccountError)?;
-
-            feeds.push(PackedFeedInfo
-            {
-                feed_id: id,
-                feed_value: i128::from_le_bytes(val_bytes),
-                min_oracle_samples: samples_buf[0],
-            });
+            msg!("Current Slot: {}", current_slot);
+            msg!("Data Slot: {}", slot);
+            return Err(error!(LendingError::OracleDataStale));
         }
 
-        return Ok(feeds);
+        #[cfg(feature = "dev")]
+        //Allow a max age of 0 slots (approx 0 seconds)
+        if current_slot.saturating_sub(slot) > 0
+        {
+            msg!("Current Slot: {}", current_slot);
+            msg!("Data Slot: {}", slot);
+            return Err(error!(LendingError::OracleDataStale));
+        }
+
+        //Reconstruct the exact 56-byte buffer we serialized on the Cloudflare Worker:
+        //[32 bytes Mint] + [16 bytes Price] + [8 bytes Slot] = 56 bytes
+        let mut message = [0u8; 56];
+        message[0..32].copy_from_slice(&token_mint_address.to_bytes());
+        message[32..48].copy_from_slice(&normalized_price_18_decimals.to_le_bytes());
+        message[48..56].copy_from_slice(&slot.to_le_bytes());
+
+        let message_slices: &[&[u8]] = &[&message];
+
+        //Execute runtime cryptographic check using brine-ed25519
+        //If a single bit of data was mutated by a hacker on the frontend, this throws an error.
+        verify::<Sha512>(&validator_address, &signature, message_slices)
+            .map_err(|_| error!(LendingError::InvalidOracleSignature))?;
+
+        //Push validated data into results
+        verified_prices.push(VerifiedPriceData
+        {
+            token_mint_address,
+            normalized_price_18_decimals
+        });
     }
 
-    #[cfg(not(feature = "local"))]
-    {
-        let mut binding = QuoteVerifier::new();
-        let verifier = binding
-            .queue(queue_account)
-            .slothash_sysvar(slothash_sysvar_account)
-            .ix_sysvar(ix_sysvar_account)
-            .clock_slot(clock_slot)
-            .max_age(0);
-
-        //Verify and get the trusted quote data
-        //This performs the Ed25519 signature checks and validates
-        //that the account was signed by an oracle in the specified queue.
-        let queue_key_bytes = queue_account.key.to_bytes();
-        let verified_quote = verifier
-            .verify_account(&queue_key_bytes, switchboard_qoute_account_serialized)
-            .map_err(|_| error!(LendingError::StalePriceDataOrWrongFeedID))?;
-
-        Ok(verified_quote.packed_feed_infos)
-    }
+    Ok(verified_prices)
 }
 
-/*fn normalize_pyth_price_to_8_decimals(pyth_price: i64, pyth_expo: i32) -> u128
+fn get_verified_token_price(verified_token_prices: &[VerifiedPriceData], token_mint_address: Pubkey) -> Result<u128>
 {
-    let expo = pyth_expo.abs() as u32;
+    //Search the slice for the first item matching the target token mint address
+    let found_data = verified_token_prices
+        .iter()
+        .find(|data| data.token_mint_address == token_mint_address);
 
-    if expo > 8
+    match found_data
     {
-        let conversion_number = BASE_10_INT.pow(expo - 8); 
-        return pyth_price as u128 / conversion_number;
-    }
-    else if expo < 8
-    {
-        let conversion_number = BASE_10_INT.pow(8 - expo); 
-        return pyth_price as u128 * conversion_number;
-    }
-    else
-    {
-        return pyth_price as u128;
-    }
-}*/
-
-#[cfg(not(feature = "local"))]
-fn normalize_switchboard_price_to_8_decimals(switchboard_price: i128, scale: u32) -> u128
-{
-    if scale > 8
-    {
-        let conversion_number = BASE_10_INT.pow(scale - 8); 
-        return switchboard_price as u128 / conversion_number;
-    }
-    else if scale < 8
-    {
-        let conversion_number = BASE_10_INT.pow(8 - scale); 
-        return switchboard_price as u128 * conversion_number;
-    }
-    else
-    {
-        return switchboard_price as u128;
+        Some(data) => Ok(data.normalized_price_18_decimals),
+        None =>
+        {
+            msg!("🚨 Price lookup failed. Requested mint not verified: {:?}", token_mint_address);
+            Err(error!(LendingError::OraclePriceNotFound))
+        }
     }
 }
 
@@ -744,18 +583,7 @@ fn initialize_lending_user_monthly_statement_account<'info>(lending_user_monthly
     lending_user_monthly_statement_account.statement_month = lending_protocol.current_statement_month;
     lending_user_monthly_statement_account.statement_year = lending_protocol.current_statement_year;
     lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
-    lending_user_monthly_statement_account.snap_shot_interest_earned_amount = lending_user_tab_account.interest_earned_amount;
-    lending_user_monthly_statement_account.snap_shot_sub_market_fees_generated_amount = lending_user_tab_account.sub_market_fees_generated_amount;
-    lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = lending_user_tab_account.sub_market_fees_collected_amount;
-    lending_user_monthly_statement_account.snap_shot_solvency_insurance_fees_generated_amount = lending_user_tab_account.solvency_insurance_fees_generated_amount;
-    lending_user_monthly_statement_account.snap_shot_solvency_insurance_fees_collected_amount = lending_user_tab_account.solvency_insurance_fees_collected_amount;
-    lending_user_monthly_statement_account.snap_shot_liquidation_fees_generated_amount = lending_user_tab_account.liquidation_fees_generated_amount;
-    lending_user_monthly_statement_account.snap_shot_liquidation_fees_collected_amount = lending_user_tab_account.liquidation_fees_collected_amount;
     lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
-    lending_user_monthly_statement_account.snap_shot_interest_accrued_amount = lending_user_tab_account.interest_accrued_amount;
-    lending_user_monthly_statement_account.snap_shot_repaid_debt_amount = lending_user_tab_account.repaid_debt_amount;
-    lending_user_monthly_statement_account.snap_shot_liquidated_amount = lending_user_tab_account.liquidated_amount;
-    lending_user_monthly_statement_account.snap_shot_liquidator_amount = lending_user_tab_account.liquidator_amount;
     lending_user_monthly_statement_account.monthly_statement_account_added = true;
 
     msg!("Created Statement Account for month: {}, year: {}", lending_user_monthly_statement_account.statement_month, lending_user_monthly_statement_account.statement_year);
@@ -913,6 +741,10 @@ pub mod lending_protocol
         let liquidation_treasurer = &mut ctx.accounts.liquidation_treasurer;
         liquidation_treasurer.address = INITIAL_LIQUIDATION_TREASURER_ADDRESS;
 
+        let price_validator = &mut ctx.accounts.price_validator;
+        price_validator.bump = ctx.bumps.price_validator;
+        price_validator.address = INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS;
+
         let lending_protocol = &mut ctx.accounts.lending_protocol;
         lending_protocol.current_statement_month = statement_month;
         lending_protocol.current_statement_year = statement_year;
@@ -971,6 +803,22 @@ pub mod lending_protocol
         Ok(())
     }
 
+    pub fn set_oracle_price_validator(ctx: Context<SetOraclePriceValidator>, new_price_validator_address: Pubkey) -> Result<()> 
+    {
+        let ceo = &ctx.accounts.ceo;
+        //Only the CEO can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
+
+        let price_validator = &mut ctx.accounts.price_validator;
+
+        msg!("A new Oracle Price Validator has been set");
+        msg!("New Price Validator: {}", new_price_validator_address.key());
+
+        price_validator.address = new_price_validator_address.key();
+
+        Ok(())
+    }
+
     pub fn update_current_statement_month_and_year(ctx: Context<UpdateCurrentStatementMonthAndYear>, statement_month: u8, statement_year: u16) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
@@ -988,8 +836,6 @@ pub mod lending_protocol
 
     pub fn add_token_reserve(ctx: Context<AddTokenReserve>,
         token_decimal_amount: u8,
-        //pyth_feed_id: [u8; 32],
-        switchboard_feed_id: [u8; 32],
         fixed_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
         global_limit: u128,
@@ -1007,8 +853,6 @@ pub mod lending_protocol
         token_reserve.bump = ctx.bumps.token_reserve;
         token_reserve.token_mint_address = ctx.accounts.token_mint.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
-        //token_reserve.pyth_feed_id = pyth_feed_id;
-        token_reserve.switchboard_feed_id = switchboard_feed_id;
         token_reserve.borrow_apy = fixed_borrow_apy;
         token_reserve.fixed_borrow_apy = fixed_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
@@ -1020,13 +864,9 @@ pub mod lending_protocol
         token_reserve.token_reserve_protocol_index = token_reserve_stats.token_reserve_count;
         token_reserve_stats.token_reserve_count += 1;
 
-        //let hex_string = hex::encode(pyth_feed_id);
-        let hex_string = hex::encode(switchboard_feed_id);
-
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
         msg!("Token Mint Address: {}", ctx.accounts.token_mint.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
-        msg!("Switchboard Feed ID: 0x{}", hex_string);
         msg!("Fixed Borrow APY: {}", fixed_borrow_apy);
         msg!("Use fixed Borrow APY: {}", use_fixed_borrow_apy);
         msg!("Global Limit: {}", global_limit);
@@ -1036,8 +876,6 @@ pub mod lending_protocol
 
     pub fn update_token_reserve(ctx: Context<UpdateTokenReserve>,
         _token_mint_address: Pubkey,
-        //pyth_feed_id: [u8; 32],
-        switchboard_feed_id: [u8; 32],
         fixed_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
         global_limit: u128,
@@ -1062,8 +900,6 @@ pub mod lending_protocol
             update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, None)?;
         }
 
-        //token_reserve.pyth_feed_id = pyth_feed_id;
-        token_reserve.switchboard_feed_id = switchboard_feed_id;
         token_reserve.fixed_borrow_apy = fixed_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
@@ -1163,7 +999,6 @@ pub mod lending_protocol
     }
 
     pub fn deposit_tokens(ctx: Context<DepositTokens>,
-        sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
         amount: u64,
@@ -1182,6 +1017,8 @@ pub mod lending_protocol
         let new_token_reserve_deposited_amount = amount as u128 + token_reserve.deposited_amount;
         //You can't deposit more than the global limit
         require!(new_token_reserve_deposited_amount <= token_reserve.global_limit, LendingError::GlobalLimitExceeded);
+
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
 
         //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
         if lending_user_account.lending_user_account_added == false
@@ -1320,17 +1157,16 @@ pub mod lending_protocol
     }
 
     //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-    pub fn withdraw_tokens<'info>(ctx: Context<'_, '_, 'info, 'info, WithdrawTokens<'info>>,
-        sub_market_owner_address: Pubkey,
+    pub fn withdraw_tokens(ctx: Context<WithdrawTokens>,
         sub_market_index: u16,
-        _user_account_index: u8,
+        user_account_index: u8,
         amount: u64,
-        withdraw_max: bool
+        withdraw_max: bool,
+        unverified_price_data: Option<Vec<UnverifiedPriceData>>
     ) -> Result<()> 
     {
-        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
-
         let lending_stats = &mut ctx.accounts.lending_stats;
+        let price_validator = &ctx.accounts.price_validator;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_user_account = &mut ctx.accounts.lending_user_account;
@@ -1338,8 +1174,45 @@ pub mod lending_protocol
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
         let clock_slot = Clock::get()?.slot;
 
-        //This withdraw_tokens function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-        require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
+
+        //This keeps users who have no debt at all from needing to check prices on withdrawals
+        if lending_user_account.total_borrowed_usd_value > 0
+        {
+            //This withdraw_tokens function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s) if the user has debt
+            require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+        }
+        else
+        {
+            //Initialize monthly statement account if the statement month/year has changed.
+            if lending_user_monthly_statement_account.monthly_statement_account_added == false
+            {
+                let lending_protocol = &ctx.accounts.lending_protocol;
+                initialize_lending_user_monthly_statement_account(
+                    lending_user_monthly_statement_account,
+                    lending_user_tab_account,
+                    lending_protocol,
+                    ctx.bumps.lending_user_monthly_statement_account,
+                    ctx.accounts.token_mint.key(),
+                    sub_market_owner_address.key(),
+                    sub_market_index,
+                    ctx.accounts.signer.key(),
+                    user_account_index,
+                )?;
+            }
+
+            let time_stamp = Clock::get()?.unix_timestamp as u64;
+
+            //Calculate Token Reserve Previously Earned And Accrued Interest
+            update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, None)?;
+
+            update_user_previous_interest_earned(
+                token_reserve,
+                sub_market,
+                lending_user_tab_account,
+                lending_user_monthly_statement_account
+            )?;
+        }
 
         //After updating interest earned and accrued, set withdraw amount
         let withdraw_amount;
@@ -1362,20 +1235,16 @@ pub mod lending_protocol
 
         if lending_user_account.total_borrowed_usd_value > 0
         {
-            //let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
-            //let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
-            let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
-            let verified_price_feeds = get_validated_switchboard_price_feeds(
-                switchboard_qoute_account_serialized,
-                &ctx.accounts.queue.to_account_info(),
-                &ctx.accounts.slothashes.to_account_info(),
-                &ctx.accounts.instructions.to_account_info(),
-                //ctx.accounts.clock.slot,
-                clock_slot
-            )?;
-            let normalized_price_8_decimals = get_token_switchboard_usd_value(&verified_price_feeds, token_reserve.switchboard_feed_id)?;
+            let unverified_data = match &unverified_price_data
+            {
+                Some(data) => data,
+                None => return Err(error!(LendingError::OracleDataMissingOrIncorrect)),
+            };
+
+            let verified_token_prices = verify_token_prices(&unverified_data, &price_validator.address, clock_slot)?;
+            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-            let new_user_deposited_usd_value = lending_user_account.total_deposited_usd_value - ((withdraw_amount as u128 * normalized_price_8_decimals) / token_conversion_number);
+            let new_user_deposited_usd_value = lending_user_account.total_deposited_usd_value - ((withdraw_amount as u128 * normalized_price_18_decimals) / token_conversion_number);
 
             //Multiply before dividing to help keep precision
             let user_deposited_usd_value_x_70 = new_user_deposited_usd_value * 70;
@@ -1432,16 +1301,15 @@ pub mod lending_protocol
     }
 
     //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-    pub fn borrow_tokens<'info>(ctx: Context<'_, '_, 'info, 'info, BorrowTokens<'info>>,
-        sub_market_owner_address: Pubkey,
+    pub fn borrow_tokens(ctx: Context<BorrowTokens>,
         sub_market_index: u16,
         user_account_index: u8,
-        amount: u64
+        amount: u64,
+        unverified_price_data: Vec<UnverifiedPriceData>
     ) -> Result<()> 
     {
-        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
-
         let lending_stats = &mut ctx.accounts.lending_stats;
+        let price_validator = &ctx.accounts.price_validator;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
         let lending_user_account = &mut ctx.accounts.lending_user_account;
@@ -1455,10 +1323,12 @@ pub mod lending_protocol
             let time_stamp = Clock::get()?.unix_timestamp as u64;
             
             //When a user is borrowing from a token reserve they have never interacted with before, it won't get refreshed by refresh_user_health_chunk, so doing it here
-            update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, Some(clock_slot))?;
+            update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, None)?;
         }
         
         require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         //This is for when a user is borrowing a token they have never interacted with before
@@ -1477,6 +1347,7 @@ pub mod lending_protocol
         }
         //This is for when a user is borrowing a token they have never interacted with before
         //You won't be able to use the create_new_monthly_statement until after the lending_user_tab_account exists
+        //Normally create_new_monthly_statement and refresh_user_health_chunk would have this covered
         if lending_user_monthly_statement_account.monthly_statement_account_added == false
         {
             let lending_protocol = &ctx.accounts.lending_protocol;
@@ -1493,28 +1364,18 @@ pub mod lending_protocol
             )?;
         }
 
-        //let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
-        //let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.pyth_feed_id)?;
-        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
-        let verified_price_feeds = get_validated_switchboard_price_feeds(
-            switchboard_qoute_account_serialized,
-            &ctx.accounts.queue.to_account_info(),
-            &ctx.accounts.slothashes.to_account_info(),
-            &ctx.accounts.instructions.to_account_info(),
-            //ctx.accounts.clock.slot,
-            clock_slot
-        )?;
-        let normalized_price_8_decimals = get_token_switchboard_usd_value(&verified_price_feeds, token_reserve.switchboard_feed_id)?;
+        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
+        let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
         
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-        let new_user_borrowed_usd_value = lending_user_account.total_borrowed_usd_value + ((amount as u128 * normalized_price_8_decimals) / token_conversion_number);
+        lending_user_account.total_borrowed_usd_value += (amount as u128 * normalized_price_18_decimals) / token_conversion_number;
 
         //Multiply before dividing to help keep precision
         let user_deposited_usd_value_x_70 = lending_user_account.total_deposited_usd_value * 70;
         let seventy_percent_of_deposited_usd_value = user_deposited_usd_value_x_70 / 100;
 
         //You can't borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
-        require!(seventy_percent_of_deposited_usd_value >= new_user_borrowed_usd_value, LendingError::LiquidationExposure);
+        require!(seventy_percent_of_deposited_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
 
         //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
         let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
@@ -1567,7 +1428,6 @@ pub mod lending_protocol
     }
 
     pub fn repay_tokens(ctx: Context<RepayTokens>,
-        sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         _user_account_index: u8,
         amount: u64,
@@ -1584,6 +1444,8 @@ pub mod lending_protocol
         
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
         require!(lending_user_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
 
         //After updating interest earned and accrued(with refresh_user_health_chunk), set payment amount
         let repayment_amount;
@@ -1638,7 +1500,6 @@ pub mod lending_protocol
         lending_user_tab_account.repaid_debt_amount += repayment_amount;
         lending_user_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
-        lending_user_monthly_statement_account.snap_shot_repaid_debt_amount = lending_user_tab_account.repaid_debt_amount;
         
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
@@ -1666,12 +1527,9 @@ pub mod lending_protocol
         Ok(())
     }
 
-    pub fn liquidate_account<'info>(ctx: Context<'_, '_, 'info, 'info, LiquidateAccount<'info>>,
-        repayment_sub_market_owner_address: Pubkey,
+    pub fn liquidate_account(ctx: Context<LiquidateAccount>,
         repayment_sub_market_index: u16,
-        liquidation_sub_market_owner_address: Pubkey,
         liquidation_sub_market_index: u16,
-        liquidati_account_owner_address: Pubkey,
         liquidati_account_index: u8,
         liquidator_account_index: u8,
         amount_to_repay: u64,
@@ -1679,10 +1537,12 @@ pub mod lending_protocol
         paying_off_insolvent_account: bool,
         send_reward_to_wallet: bool,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
-        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
+        look_up_table_address: Option<Pubkey>, //Needed when a user initializes their Lending User Account
+        unverified_price_data: Vec<UnverifiedPriceData>
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
+        //let price_validator = &ctx.accounts.price_validator;
         let repayment_token_reserve = &mut ctx.accounts.repayment_token_reserve;
         let liquidation_token_reserve = &mut ctx.accounts.liquidation_token_reserve;
         let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
@@ -1694,11 +1554,23 @@ pub mod lending_protocol
         let clock_slot = Clock::get()?.slot;
 
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
-        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+        #[cfg(feature = "local")] 
+        require!(clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot) <= 1, LendingError::StaleTokenReserveOrLendingUser);
+        #[cfg(feature = "dev")] 
+        require!(clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot) == 0, LendingError::StaleTokenReserveOrLendingUser);
+
+        let repayment_sub_market_owner_address = ctx.accounts.repayment_sub_market_owner.key();
+        let liquidation_sub_market_owner_address = ctx.accounts.liquidation_sub_market_owner.key();
+        let liquidati_account_owner_address = ctx.accounts.liquidati_account_owner.key();
 
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
         //Validate Accounts
+
+        ///////////////
+        //Oracle Price Validator
+        let price_validator_serialized = remaining_accounts_iter.next().unwrap();
+        let price_validator = validate_and_return_price_validator_account(*ctx.program_id, price_validator_serialized)?;
 
         ///////////////
         //Lending Stats
@@ -1950,30 +1822,16 @@ pub mod lending_protocol
             repayment_amount
         )?;
 
-        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
-        let queue_account = remaining_accounts_iter.next().unwrap();
-        let slothashes_account = remaining_accounts_iter.next().unwrap();
-        let instructions_account = remaining_accounts_iter.next().unwrap();
-        let verified_price_feeds = get_validated_switchboard_price_feeds(
-            switchboard_qoute_account_serialized,
-            queue_account,
-            slothashes_account,
-            instructions_account,
-            clock_slot
-        )?;
+        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
 
         //Get USD value of Repayment Amount
-        //let repayment_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
         let repayment_token_conversion_number = BASE_10_INT.pow(repayment_token_reserve.token_decimal_amount as u32); 
-        //let repayment_token_usd_value = get_token_pyth_usd_value(repayment_price_update_account_serialized, repayment_token_reserve.pyth_feed_id)?;
-        let repayment_token_usd_value = get_token_switchboard_usd_value(&verified_price_feeds, repayment_token_reserve.switchboard_feed_id)?;
+        let repayment_token_usd_value = get_verified_token_price(&verified_token_prices, repayment_token_reserve.token_mint_address)?;
         let repayment_amount_usd_value = (repayment_amount as u128 * repayment_token_usd_value) / repayment_token_conversion_number;
 
         //Get USD value of Liquidation Token
-        //let liquidation_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
         let liquidation_token_conversion_number = BASE_10_INT.pow(liquidation_token_reserve.token_decimal_amount as u32); 
-        //let liquidation_token_usd_value = get_token_pyth_usd_value(liquidation_price_update_account_serialized, liquidation_token_reserve.pyth_feed_id)?;
-        let liquidation_token_usd_value = get_token_switchboard_usd_value(&verified_price_feeds, liquidation_token_reserve.switchboard_feed_id)?;
+        let liquidation_token_usd_value = get_verified_token_price(&verified_token_prices, liquidation_token_reserve.token_mint_address)?;
 
         let amount_to_be_liquidated = ((repayment_amount_usd_value * liquidation_token_conversion_number) / liquidation_token_usd_value) as u64;
 
@@ -2003,7 +1861,6 @@ pub mod lending_protocol
         liquidator_repayment_tab_account.repaid_debt_amount += repayment_amount;
         liquidator_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
-        liquidator_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidator_repayment_tab_account.repaid_debt_amount;
 
         //Update Liquidation and Fee Values
         liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
@@ -2023,13 +1880,10 @@ pub mod lending_protocol
         liquidator_liquidation_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
-        liquidati_liquidation_monthly_statement_account.snap_shot_liquidated_amount = liquidati_liquidation_tab_account.liquidated_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
         liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
         liquidator_liquidation_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
-        liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
-        liquidator_liquidation_monthly_statement_account.snap_shot_liquidation_fees_generated_amount = liquidator_liquidation_tab_account.liquidation_fees_generated_amount;
-        
+
         if send_reward_to_wallet
         {
             withdraw_tokens_from_token_reserve_to_user(
@@ -2120,12 +1974,9 @@ pub mod lending_protocol
     }
 
     //This liquidation is for when the repayment and liquidation tokens are the same
-    pub fn liquidate_account_same_token<'info>(ctx: Context<'_, '_, 'info, 'info, LiquidateAccountSameToken<'info>>,
-        repayment_sub_market_owner_address: Pubkey,
+    pub fn liquidate_account_same_token(ctx: Context<LiquidateAccountSameToken>,
         repayment_sub_market_index: u16,
-        liquidation_sub_market_owner_address: Pubkey,
         liquidation_sub_market_index: u16,
-        liquidati_account_owner_address: Pubkey,
         liquidati_account_index: u8,
         liquidator_account_index: u8,
         amount_to_repay: u64,
@@ -2133,10 +1984,12 @@ pub mod lending_protocol
         paying_off_insolvent_account: bool,
         send_reward_to_wallet: bool,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
-        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
+        look_up_table_address: Option<Pubkey>, //Needed when a user initializes their Lending User Account
+        unverified_price_data: Vec<UnverifiedPriceData>
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
+        let price_validator = &ctx.accounts.price_validator;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
         let liquidator_lending_account = &mut ctx.accounts.liquidator_lending_account;
@@ -2148,6 +2001,10 @@ pub mod lending_protocol
 
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
         require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+
+        let repayment_sub_market_owner_address = ctx.accounts.repayment_sub_market_owner.key();
+        let liquidation_sub_market_owner_address = ctx.accounts.liquidation_sub_market_owner.key();
+        let liquidati_account_owner_address = ctx.accounts.liquidati_account_owner.key();
 
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
@@ -2403,19 +2260,9 @@ pub mod lending_protocol
         )?;
 
         //Get Token USD value
-        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
-        let verified_price_feeds = get_validated_switchboard_price_feeds(
-            switchboard_qoute_account_serialized,
-            &ctx.accounts.queue.to_account_info(),
-            &ctx.accounts.slothashes.to_account_info(),
-            &ctx.accounts.instructions.to_account_info(),
-            //ctx.accounts.clock.slot,
-            clock_slot
-        )?;
-        //let token_price_update_account_serialized = remaining_accounts_iter.next().unwrap();
+        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-        //let token_usd_value = get_token_pyth_usd_value(token_price_update_account_serialized, token_reserve.pyth_feed_id)?;
-        let token_usd_value = get_token_switchboard_usd_value(&verified_price_feeds, token_reserve.switchboard_feed_id)?;
+        let token_usd_value = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
 
         //Get USD value of Repayment Amount
         let repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
@@ -2449,7 +2296,6 @@ pub mod lending_protocol
         liquidator_repayment_tab_account.repaid_debt_amount += repayment_amount;
         liquidator_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
-        liquidator_repayment_monthly_statement_account.snap_shot_repaid_debt_amount = liquidator_repayment_tab_account.repaid_debt_amount;
 
         //Update Liquidation and Fee Values
         token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
@@ -2469,13 +2315,10 @@ pub mod lending_protocol
         liquidator_liquidation_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
-        liquidati_liquidation_monthly_statement_account.snap_shot_liquidated_amount = liquidati_liquidation_tab_account.liquidated_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
         liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
         liquidator_liquidation_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
-        liquidator_liquidation_monthly_statement_account.snap_shot_liquidator_amount = liquidator_liquidation_tab_account.liquidator_amount;
-        liquidator_liquidation_monthly_statement_account.snap_shot_liquidation_fees_generated_amount = liquidator_liquidation_tab_account.liquidation_fees_generated_amount;
-        
+
         if send_reward_to_wallet
         {
             withdraw_tokens_from_token_reserve_to_user(
@@ -2566,22 +2409,22 @@ pub mod lending_protocol
         Ok(())
     }
 
-    //Old Pyth way
-    //1 set of accounts in remaining accounts for refresh (in this order) Example: LendingUserTabAccount, TokenReserve, Submarket, LendingUserMonthlyStatementAccount, and PriceUpdateV2
-
     //You have to call this instruction for all user tab accounts before calling the withdraw, borrow, or liquidate functions in the same transaction.
-    //It's recommended to call this refresh function on up to 4 tab sets only at a time.
-    //New Switchboard way. Feed in SwitchboardQuote account first with all price data then
-    //All of the Token Reserves as the same order as the token_mint_addresses feed in then
-    //Repeating sets of these accounts in this order (Up to 5 tab account sets at once, use another instruction for more): LendingUserTabAccount, Submarket, LendingUserMonthlyStatementAccount
+    //It's recommended to call this refresh function on up to 5 tab sets only at a time.
+    //Feed in all of the Token Reserves remaining accounts as the same order as the token_reserve_mint_addresses input, then
+    //Repeating sets of these remaining accounts in this order (Up to 5 tab account sets at once, use another instruction for more): LendingUserTabAccount, Submarket, LendingUserMonthlyStatementAccount
     pub fn refresh_user_health_chunk_and_token_reserves<'info>(ctx: Context<'_, '_, 'info, 'info, RefreshUserHealthChunkAndTokenReserves<'info>>,
-    user_account_owner_address: Pubkey,
-    user_account_index: u8,
-    token_mint_addresses: Vec<Pubkey>) -> Result<()> 
+        user_account_index: u8,
+        refresh_token_reserve_count: u8, //The number of token reserves being refreshed may not be the number of unverified_price_data, ie when borrowing from a token reserve the user has never interacted with before
+        unverified_price_data: Vec<UnverifiedPriceData>
+    ) -> Result<()> 
     {
+        let user_account_owner_address = ctx.accounts.lending_user_owner.key();
+
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
         let lending_protocol = &ctx.accounts.lending_protocol;
+        let price_validator = &ctx.accounts.price_validator;
         let lending_user_account = &mut ctx.accounts.lending_user_account;
         let time_stamp = Clock::get()?.unix_timestamp as u64;
         let clock_slot = Clock::get()?.slot;
@@ -2602,25 +2445,16 @@ pub mod lending_protocol
             lending_user_account.refresh_clock_slot = clock_slot;
         }
 
-        let switchboard_qoute_account_serialized = remaining_accounts_iter.next().unwrap();
-        let verified_price_feeds = get_validated_switchboard_price_feeds(
-            switchboard_qoute_account_serialized,
-            &ctx.accounts.queue.to_account_info(),
-            &ctx.accounts.slothashes.to_account_info(),
-            &ctx.accounts.instructions.to_account_info(),
-            //ctx.accounts.clock.slot,
-            clock_slot
-        )?;
+        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
 
-        let token_reserve_count = token_mint_addresses.len();
-        let mut token_reserves: Vec<(&AccountInfo<'info>, TokenReserve)> = Vec::with_capacity(token_reserve_count);
-        for token_mint_address in token_mint_addresses.iter()
+        let mut token_reserves: Vec<(&AccountInfo<'info>, TokenReserve)> = Vec::with_capacity(refresh_token_reserve_count.into());
+        for i in 0..refresh_token_reserve_count.into()
         {
-            let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap();
+           let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap();
             let token_reserve = validate_and_return_token_reserve_account(*ctx.program_id,
                 token_reserve_account_serialized,
-                *token_mint_address)?;
-            token_reserves.push((token_reserve_account_serialized, token_reserve));
+                verified_token_prices[i].token_mint_address)?;
+            token_reserves.push((token_reserve_account_serialized, token_reserve)); 
         }
 
         while let Some(tab_account_serialized) = remaining_accounts_iter.next()
@@ -2676,12 +2510,6 @@ pub mod lending_protocol
                 user_account_owner_address,
                 user_account_index)?;
 
-            ///////////////////////////
-            //Pyth Price Update Account
-            //let price_update_account_serialized = remaining_accounts_iter.next().unwrap();
-            //let normalized_price_8_decimals = get_token_pyth_usd_value(price_update_account_serialized, token_reserve.switchboard_feed_id)?;
-            //msg!("Normalized Price with 8 Decimals: {}", normalized_price_8_decimals);
-
             //Calculate Token Reserve Previously Earned And Accrued Interest
             if token_reserve.last_health_update_clock_slot != clock_slot
             {
@@ -2709,13 +2537,13 @@ pub mod lending_protocol
             lending_user_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
             lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
 
-            //Get Switchboard normalized price with 8 decimals
-            let normalized_price_8_decimals = get_token_switchboard_usd_value(&verified_price_feeds, token_reserve.switchboard_feed_id)?;
+            //Get normalized price with 8 decimals
+            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, lending_user_tab_account.token_mint_address)?;
             
             //Update temp deposited and borrow values
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-            lending_user_account.temp_deposit_usd_value += (lending_user_tab_account.deposited_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
-            lending_user_account.temp_borrow_usd_value += (lending_user_tab_account.borrowed_amount as u128 * normalized_price_8_decimals) / token_conversion_number;
+            lending_user_account.temp_deposit_usd_value += (lending_user_tab_account.deposited_amount as u128 * normalized_price_18_decimals) / token_conversion_number;
+            lending_user_account.temp_borrow_usd_value += (lending_user_tab_account.borrowed_amount as u128 * normalized_price_18_decimals) / token_conversion_number;
 
             lending_user_account.next_tab_index_to_refresh += 1;
 
@@ -2748,14 +2576,11 @@ pub mod lending_protocol
         Ok(())
     }
 
-    pub fn create_new_monthly_statement(ctx: Context<CreateNewMonthlyStatement>,
-        token_mint_address: Pubkey,
-        sub_market_owner_address: Pubkey,
-        sub_market_index: u16,
-        user_account_owner_address: Pubkey,
-        user_account_index: u8
-    ) -> Result<()> 
+    pub fn create_new_monthly_statement(ctx: Context<CreateNewMonthlyStatement>, sub_market_index: u16, user_account_index: u8) -> Result<()> 
     {
+        let token_mint_address = ctx.accounts.token_mint_address.key();
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
+        let user_account_owner_address = ctx.accounts.lending_user_owner.key();
         let lending_protocol = &ctx.accounts.lending_protocol;
         let lending_user_tab_account = &ctx.accounts.lending_user_tab_account;
         let lending_user_monthly_statement_account = &mut ctx.accounts.lending_user_monthly_statement_account;
@@ -2776,8 +2601,6 @@ pub mod lending_protocol
     }
 
     pub fn claim_sub_market_fees(ctx: Context<ClaimSubMarketFees>,
-        token_mint_address: Pubkey,
-        sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
@@ -2788,6 +2611,8 @@ pub mod lending_protocol
         //Only the Fee Collector can call this function
         require_keys_eq!(ctx.accounts.signer.key(), sub_market.fee_collector_address.key(), LendingError::NotFeeCollector);
 
+        let token_mint_address = ctx.accounts.token_mint_address.key();
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let lending_user_account = &mut ctx.accounts.lending_user_account;
@@ -2874,7 +2699,6 @@ pub mod lending_protocol
         lending_user_tab_account.sub_market_fees_collected_amount += sub_market.uncollected_sub_market_fees_amount as u64;
         lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += sub_market.uncollected_sub_market_fees_amount as u64;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
-        lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = lending_user_tab_account.sub_market_fees_collected_amount;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
@@ -2910,16 +2734,16 @@ pub mod lending_protocol
     }
 
     pub fn claim_sub_market_fees_and_deposit_in_different_sub_market(ctx: Context<ClaimSubMarketFeesAndDepositInDifferentSubMarket>,
-        token_mint_address: Pubkey,
-        initial_sub_market_owner_address: Pubkey,
         initial_sub_market_index: u16,
-        destination_sub_market_owner_address: Pubkey,
         destination_sub_market_index: u16,
         user_account_index: u8,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
         look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()> 
     {
+        let token_mint_address = ctx.accounts.token_mint_address.key();
+        let initial_sub_market_owner_address = ctx.accounts.initial_sub_market_owner.key();
+        let destination_sub_market_owner_address = ctx.accounts.destination_sub_market_owner.key();
         let initial_sub_market = &mut ctx.accounts.initial_sub_market;
         //Only the Fee Collector can call this function
         require_keys_eq!(ctx.accounts.signer.key(), initial_sub_market.fee_collector_address.key(), LendingError::NotFeeCollector);
@@ -3046,7 +2870,6 @@ pub mod lending_protocol
         initial_lending_user_tab_account.sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
         initial_lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
         initial_lending_user_monthly_statement_account.monthly_withdrawal_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a withdrawal from initial submarket. The fee collection and withdrawal cancel each other out, so no need to update snap shot balance for initial submarket.
-        initial_lending_user_monthly_statement_account.snap_shot_sub_market_fees_collected_amount = initial_lending_user_tab_account.sub_market_fees_collected_amount;
         destination_lending_user_monthly_statement_account.monthly_deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a deposit into destination submarket.
         destination_lending_user_monthly_statement_account.snap_shot_balance_amount = destination_lending_user_tab_account.deposited_amount;
 
@@ -3092,7 +2915,6 @@ pub mod lending_protocol
     }
 
     pub fn claim_solvency_insurance_fees(ctx: Context<ClaimSolvencyInsuranceFees>,
-        sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
@@ -3103,6 +2925,7 @@ pub mod lending_protocol
         //Only the Treasurer can call this function
         require_keys_eq!(ctx.accounts.signer.key(), solvency_treasurer.address.key(), LendingError::NotSolvencyTreasurer);
 
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let lending_user_account = &mut ctx.accounts.lending_user_account;
@@ -3181,7 +3004,6 @@ pub mod lending_protocol
         //Record Solvency Insurance Fee Collection
         lending_user_tab_account.solvency_insurance_fees_collected_amount += amount;
         lending_user_monthly_statement_account.monthly_solvency_insurance_fees_collected_amount += amount;
-        lending_user_monthly_statement_account.snap_shot_solvency_insurance_fees_collected_amount = lending_user_tab_account.solvency_insurance_fees_collected_amount;
 
         //Update last activity on accounts
         token_reserve.last_lending_activity_amount = token_reserve.uncollected_solvency_insurance_fees_amount as u64;
@@ -3208,8 +3030,6 @@ pub mod lending_protocol
     }
 
     pub fn claim_liquidation_fees(ctx: Context<ClaimLiquidationFees>,
-        token_mint_address: Pubkey,
-        sub_market_owner_address: Pubkey,
         sub_market_index: u16,
         user_account_index: u8,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
@@ -3220,6 +3040,8 @@ pub mod lending_protocol
         //Only the Treasurer can call this function
         require_keys_eq!(ctx.accounts.signer.key(), liquidation_treasurer.address.key(), LendingError::NotLiquidationTreasurer);
 
+        let token_mint_address = ctx.accounts.token_mint_address.key();
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
         let lending_stats = &mut ctx.accounts.lending_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
         let sub_market = &mut ctx.accounts.sub_market;
@@ -3307,7 +3129,6 @@ pub mod lending_protocol
         lending_user_tab_account.liquidation_fees_collected_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
         lending_user_monthly_statement_account.monthly_liquidation_fees_collected_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
-        lending_user_monthly_statement_account.snap_shot_liquidation_fees_collected_amount = lending_user_tab_account.liquidation_fees_collected_amount;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexes
         update_token_reserve_rates(token_reserve)?;
@@ -3382,6 +3203,14 @@ pub struct InitializeLendingProtocol<'info>
     #[account(
         init, 
         payer = signer,
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump,
+        space = size_of::<OraclePriceValidator>() + 8)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
+
+    #[account(
+        init, 
+        payer = signer,
         seeds = [b"lendingStats".as_ref()],
         bump,
         space = size_of::<LendingStats>() + 8)]
@@ -3452,6 +3281,25 @@ pub struct PassOnLiquidationTreasurer<'info>
         seeds = [b"liquidationTreasurer".as_ref()],
         bump)]
     pub liquidation_treasurer: Account<'info, LiquidationTreasurer>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+pub struct SetOraclePriceValidator<'info> 
+{
+    #[account(
+        seeds = [b"lendingProtocolCEO".as_ref()],
+        bump)]
+    pub ceo: Account<'info, LendingProtocolCEO>,
+
+    #[account(
+        mut,
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -3617,9 +3465,12 @@ pub struct UpdateLendingUserLookUpTableAddress<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct DepositTokens<'info> 
 {
+    ///CHECK: This is the wallet address of the user who owns the Sub Market
+    pub sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -3639,7 +3490,7 @@ pub struct DepositTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -3656,7 +3507,7 @@ pub struct DepositTokens<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -3671,7 +3522,7 @@ pub struct DepositTokens<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -3728,9 +3579,12 @@ pub struct EditLendingUserAccountName<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct WithdrawTokens<'info> 
 {
+    ///CHECK: This is the wallet address of the user who owns the Sub Market
+    pub sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -3740,7 +3594,12 @@ pub struct WithdrawTokens<'info>
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Box<Account<'info, LendingStats>>,
+    pub lending_stats: Account<'info, LendingStats>,
+
+    #[account(
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
 
     #[account(
         mut,
@@ -3750,7 +3609,7 @@ pub struct WithdrawTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -3764,7 +3623,7 @@ pub struct WithdrawTokens<'info>
         mut,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -3772,16 +3631,18 @@ pub struct WithdrawTokens<'info>
     pub lending_user_tab_account: Box<Account<'info, LendingUserTabAccount>>,
 
     #[account(
-        mut,
+        init_if_needed, //Users that withdraw with no debt won't have to use the refresh_user_health_chunk instruction. Create monthly statement if it doesn't exist.
+        payer = signer,
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
-        bump)]
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
     pub lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
@@ -3808,32 +3669,30 @@ pub struct WithdrawTokens<'info>
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
-
-    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
-    pub queue: AccountInfo<'info>,
-    //pub clock: Sysvar<'info, Clock>,
-    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = SLOT_HASHES_ID)]
-    pub slothashes: AccountInfo<'info>,
-    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = INSTRUCTIONS_ID)]
-    pub instructions: AccountInfo<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct BorrowTokens<'info> 
 {
+    ///CHECK: This is the wallet address of the user who owns the Sub Market
+    pub sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
+    pub lending_protocol: Account<'info, LendingProtocol>,
 
     #[account(
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
     pub lending_stats: Box<Account<'info, LendingStats>>,
+
+    #[account(
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
 
     #[account(
         mut,
@@ -3843,7 +3702,7 @@ pub struct BorrowTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -3858,13 +3717,13 @@ pub struct BorrowTokens<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserTabAccount>() + 8)]
-    pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
+    pub lending_user_tab_account: Box<Account<'info, LendingUserTabAccount>>,
 
     #[account(
         init_if_needed,
@@ -3873,7 +3732,7 @@ pub struct BorrowTokens<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -3898,39 +3757,32 @@ pub struct BorrowTokens<'info>
     )]
     pub token_reserve_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub token_mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
-
-    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
-    pub queue: AccountInfo<'info>,
-    //pub clock: Sysvar<'info, Clock>,
-    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = SLOT_HASHES_ID)]
-    pub slothashes: AccountInfo<'info>,
-    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = INSTRUCTIONS_ID)]
-    pub instructions: AccountInfo<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct RepayTokens<'info> 
 {
+    ///CHECK: This is the wallet address of the user who owns the Sub Market
+    pub sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
+    pub lending_protocol: Account<'info, LendingProtocol>,
 
     #[account(
         mut, 
         seeds = [b"lendingStats".as_ref()],
         bump)]
-    pub lending_stats: Box<Account<'info, LendingStats>>,
+    pub lending_stats: Account<'info, LendingStats>,
 
     #[account(
         mut,
@@ -3940,7 +3792,7 @@ pub struct RepayTokens<'info>
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint.key().as_ref(), sub_market_owner.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Box<Account<'info, SubMarket>>,
 
@@ -3948,13 +3800,13 @@ pub struct RepayTokens<'info>
         mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_account: Box<Account<'info, LendingUserAccount>>,
+    pub lending_user_account: Account<'info, LendingUserAccount>,
 
     #[account(
         mut,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -3967,12 +3819,12 @@ pub struct RepayTokens<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
-    pub lending_user_monthly_statement_account: Account<'info, LendingUserMonthlyStatementAccount>,
+    pub lending_user_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
         init_if_needed, //SOL has to be repaid as wSol and the user may or may not have a wSol account already.
@@ -4001,15 +3853,19 @@ pub struct RepayTokens<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(repayment_sub_market_owner_address: Pubkey,
-    repayment_sub_market_index: u16,
-    liquidation_sub_market_owner_address: Pubkey,
+#[instruction(repayment_sub_market_index: u16,
     liquidation_sub_market_index: u16,
-    liquidati_account_owner_address: Pubkey,
     liquidati_account_index: u8,
     liquidator_account_index: u8)]
 pub struct LiquidateAccount<'info>
 {
+    ///CHECK: This is the wallet address of the liquidati (borrower) being liquidated
+    pub liquidati_account_owner: AccountInfo<'info>,
+    ///CHECK: This is the wallet address of the user who owns the repayment Sub Market
+    pub repayment_sub_market_owner: AccountInfo<'info>,
+    ///CHECK: This is the wallet address of the user who owns the liquidation Sub Market
+    pub liquidation_sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -4029,7 +3885,7 @@ pub struct LiquidateAccount<'info>
 
     #[account(
         mut,
-        seeds = [b"lendingUserAccount".as_ref(), liquidati_account_owner_address.key().as_ref(), liquidati_account_index.to_le_bytes().as_ref()], 
+        seeds = [b"lendingUserAccount".as_ref(), liquidati_account_owner.key().as_ref(), liquidati_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub liquidati_lending_account: Box<Account<'info, LendingUserAccount>>,
 
@@ -4046,7 +3902,7 @@ pub struct LiquidateAccount<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         repayment_mint.key().as_ref(),
-        repayment_sub_market_owner_address.key().as_ref(),
+        repayment_sub_market_owner.key().as_ref(),
         repayment_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidati_account_index.to_le_bytes().as_ref()], 
@@ -4059,7 +3915,7 @@ pub struct LiquidateAccount<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         liquidation_mint.key().as_ref(),
-        liquidation_sub_market_owner_address.key().as_ref(),
+        liquidation_sub_market_owner.key().as_ref(),
         liquidation_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidator_account_index.to_le_bytes().as_ref()],
@@ -4074,7 +3930,7 @@ pub struct LiquidateAccount<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         repayment_mint.key().as_ref(),
-        repayment_sub_market_owner_address.key().as_ref(),
+        repayment_sub_market_owner.key().as_ref(),
         repayment_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidator_account_index.to_le_bytes().as_ref()], 
@@ -4089,7 +3945,7 @@ pub struct LiquidateAccount<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         liquidation_mint.key().as_ref(),
-        liquidation_sub_market_owner_address.key().as_ref(),
+        liquidation_sub_market_owner.key().as_ref(),
         liquidation_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidator_account_index.to_le_bytes().as_ref()], 
@@ -4143,19 +3999,28 @@ pub struct LiquidateAccount<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(repayment_sub_market_owner_address: Pubkey,
-    repayment_sub_market_index: u16,
-    liquidation_sub_market_owner_address: Pubkey,
+#[instruction(repayment_sub_market_index: u16,
     liquidation_sub_market_index: u16,
-    liquidati_account_owner_address: Pubkey,
     liquidati_account_index: u8,
     liquidator_account_index: u8)]
 pub struct LiquidateAccountSameToken<'info>
 {
+    ///CHECK: This is the wallet address of the liquidati (borrower) being liquidated
+    pub liquidati_account_owner: AccountInfo<'info>,
+    ///CHECK: This is the wallet address of the user who owns the repayment Sub Market
+    pub repayment_sub_market_owner: AccountInfo<'info>,
+    ///CHECK: This is the wallet address of the user who owns the liquidation Sub Market
+    pub liquidation_sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
-    pub lending_protocol: Box<Account<'info, LendingProtocol>>,
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
 
     #[account(
         mut,
@@ -4165,7 +4030,7 @@ pub struct LiquidateAccountSameToken<'info>
 
     #[account(
         mut,
-        seeds = [b"lendingUserAccount".as_ref(), liquidati_account_owner_address.key().as_ref(), liquidati_account_index.to_le_bytes().as_ref()], 
+        seeds = [b"lendingUserAccount".as_ref(), liquidati_account_owner.key().as_ref(), liquidati_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub liquidati_lending_account: Box<Account<'info, LendingUserAccount>>,
 
@@ -4182,7 +4047,7 @@ pub struct LiquidateAccountSameToken<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint.key().as_ref(),
-        repayment_sub_market_owner_address.key().as_ref(),
+        repayment_sub_market_owner.key().as_ref(),
         repayment_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidati_account_index.to_le_bytes().as_ref()], 
@@ -4195,7 +4060,7 @@ pub struct LiquidateAccountSameToken<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint.key().as_ref(),
-        liquidation_sub_market_owner_address.key().as_ref(),
+        liquidation_sub_market_owner.key().as_ref(),
         liquidation_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidator_account_index.to_le_bytes().as_ref()],
@@ -4210,7 +4075,7 @@ pub struct LiquidateAccountSameToken<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint.key().as_ref(),
-        repayment_sub_market_owner_address.key().as_ref(),
+        repayment_sub_market_owner.key().as_ref(),
         repayment_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidator_account_index.to_le_bytes().as_ref()], 
@@ -4225,7 +4090,7 @@ pub struct LiquidateAccountSameToken<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint.key().as_ref(),
-        liquidation_sub_market_owner_address.key().as_ref(),
+        liquidation_sub_market_owner.key().as_ref(),
         liquidation_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         liquidator_account_index.to_le_bytes().as_ref()], 
@@ -4240,7 +4105,7 @@ pub struct LiquidateAccountSameToken<'info>
         associated_token::authority = signer,
         associated_token::token_program = token_program
     )]
-    pub liquidator_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub liquidator_ata: InterfaceAccount<'info, TokenAccount>,
 
     #[account(
         mut,
@@ -4257,59 +4122,50 @@ pub struct LiquidateAccountSameToken<'info>
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
-
-    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
-    pub queue: AccountInfo<'info>,
-    //pub clock: Sysvar<'info, Clock>,
-    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = SLOT_HASHES_ID)]
-    pub slothashes: AccountInfo<'info>,
-    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = INSTRUCTIONS_ID)]
-    pub instructions: AccountInfo<'info>
 }
 
 //The monthly statement accounts have to exists before calling the refresh_user_health_chunk instruction.
 //Use the create_new_monthly_statement function if it's a new month and it doesn't exist yet.
 //This refreshes the Lending User Account and associated Token Reserves
 #[derive(Accounts)]
-#[instruction(user_account_owner_address: Pubkey, user_account_index: u8)]
+#[instruction(user_account_index: u8)]
 pub struct RefreshUserHealthChunkAndTokenReserves<'info> 
 {
+    ///CHECK: This is the wallet address of the Lending User having their health refreshed
+    pub lending_user_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
     pub lending_protocol: Account<'info, LendingProtocol>,
 
     #[account(
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
+
+    #[account(
         mut,
-        seeds = [b"lendingUserAccount".as_ref(), user_account_owner_address.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
+        seeds = [b"lendingUserAccount".as_ref(), lending_user_owner.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
         bump)]
     pub lending_user_account: Account<'info, LendingUserAccount>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
-
-    ///CHECK: Queue account used by Switchboard; validated at runtime by `QuoteVerifier`
-    pub queue: AccountInfo<'info>,
-    //pub clock: Sysvar<'info, Clock>,
-    ///CHECK: SlotHashes account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = SLOT_HASHES_ID)]
-    pub slothashes: AccountInfo<'info>,
-    ///CHECK: Instructions account used by Switchboard; validated at runtime by `QuoteVerifier`
-    #[account(address = INSTRUCTIONS_ID)]
-    pub instructions: AccountInfo<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey,
-    sub_market_owner_address: Pubkey,
-    sub_market_index: u16,
-    user_account_owner_address: Pubkey,
-    user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct CreateNewMonthlyStatement<'info> 
 {
+    ///CHECK: This is the Token Mint address for the monthly statement that will be created
+    pub token_mint_address: AccountInfo<'info>,
+    ///CHECK: This is the Sub Market Owner address for the monthly statement that will be created
+    pub sub_market_owner: AccountInfo<'info>,
+    ///CHECK: This is the Lending User wallet address for the monthly statement that will be created
+    pub lending_user_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -4318,9 +4174,9 @@ pub struct CreateNewMonthlyStatement<'info>
     #[account(
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
-        user_account_owner_address.key().as_ref(),
+        lending_user_owner.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump)]
     pub lending_user_tab_account: Account<'info, LendingUserTabAccount>,
@@ -4332,9 +4188,9 @@ pub struct CreateNewMonthlyStatement<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
-        user_account_owner_address.key().as_ref(),
+        lending_user_owner.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
         bump, 
         space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
@@ -4346,9 +4202,14 @@ pub struct CreateNewMonthlyStatement<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct ClaimSubMarketFees<'info> 
 {
+    ///CHECK: This is the Token Mint address for the fees being claimed
+    pub token_mint_address: AccountInfo<'info>,
+    ///CHECK: This is the Sub Market Owner address for the fees being claimed
+    pub sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -4368,7 +4229,7 @@ pub struct ClaimSubMarketFees<'info>
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Account<'info, SubMarket>,
 
@@ -4385,7 +4246,7 @@ pub struct ClaimSubMarketFees<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4400,7 +4261,7 @@ pub struct ClaimSubMarketFees<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4414,14 +4275,16 @@ pub struct ClaimSubMarketFees<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey,
-    initial_sub_market_owner_address: Pubkey,
-    initial_sub_market_index: u16,
-    destination_sub_market_owner_address: Pubkey,
-    destination_sub_market_index: u16,
-    user_account_index: u8)]
+#[instruction(initial_sub_market_index: u16, destination_sub_market_index: u16, user_account_index: u8)]
 pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info> 
 {
+    ///CHECK: This is the Token Mint address for the fees being claimed
+    pub token_mint_address: AccountInfo<'info>,
+    ///CHECK: This is the Initial Sub Market Owner address for the fees being claimed
+    pub initial_sub_market_owner: AccountInfo<'info>,
+    ///CHECK: This is the Destination Sub Market Owner address for the fees being claimed
+    pub destination_sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -4441,13 +4304,13 @@ pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info>
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), initial_sub_market_owner_address.key().as_ref(), initial_sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), initial_sub_market_owner.key().as_ref(), initial_sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub initial_sub_market: Box<Account<'info, SubMarket>>,
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), destination_sub_market_owner_address.key().as_ref(), destination_sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), destination_sub_market_owner.key().as_ref(), destination_sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub destination_sub_market: Box<Account<'info, SubMarket>>,
 
@@ -4464,7 +4327,7 @@ pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
-        initial_sub_market_owner_address.key().as_ref(),
+        initial_sub_market_owner.key().as_ref(),
         initial_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4477,7 +4340,7 @@ pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
-        destination_sub_market_owner_address.key().as_ref(),
+        destination_sub_market_owner.key().as_ref(),
         destination_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4492,7 +4355,7 @@ pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
-        initial_sub_market_owner_address.key().as_ref(),
+        initial_sub_market_owner.key().as_ref(),
         initial_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4507,7 +4370,7 @@ pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
-        destination_sub_market_owner_address.key().as_ref(),
+        destination_sub_market_owner.key().as_ref(),
         destination_sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4521,9 +4384,12 @@ pub struct ClaimSubMarketFeesAndDepositInDifferentSubMarket<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct ClaimSolvencyInsuranceFees<'info> 
 {
+    ///CHECK: This is the Sub Market Owner address for the solvency fees being claimed
+    pub sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -4560,7 +4426,7 @@ pub struct ClaimSolvencyInsuranceFees<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4576,7 +4442,7 @@ pub struct ClaimSolvencyInsuranceFees<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4611,9 +4477,14 @@ pub struct ClaimSolvencyInsuranceFees<'info>
 }
 
 #[derive(Accounts)]
-#[instruction(token_mint_address: Pubkey, sub_market_owner_address: Pubkey, sub_market_index: u16, user_account_index: u8)]
+#[instruction(sub_market_index: u16, user_account_index: u8)]
 pub struct ClaimLiquidationFees<'info> 
 {
+    ///CHECK: This is the Token Mint address for the liquidation fees being claimed
+    pub token_mint_address: AccountInfo<'info>,
+    ///CHECK: This is the Sub Market Owner address for the liquidation fees being claimed
+    pub sub_market_owner: AccountInfo<'info>,
+
     #[account(
         seeds = [b"lendingProtocol".as_ref()],
         bump)]
@@ -4638,7 +4509,7 @@ pub struct ClaimLiquidationFees<'info>
 
     #[account(
         mut,
-        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner_address.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
+        seeds = [b"subMarket".as_ref(), token_mint_address.key().as_ref(), sub_market_owner.key().as_ref(), sub_market_index.to_le_bytes().as_ref()], 
         bump)]
     pub sub_market: Account<'info, SubMarket>,
 
@@ -4655,7 +4526,7 @@ pub struct ClaimLiquidationFees<'info>
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4670,7 +4541,7 @@ pub struct ClaimLiquidationFees<'info>
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),
         lending_protocol.current_statement_year.to_le_bytes().as_ref(),
         token_mint_address.key().as_ref(),
-        sub_market_owner_address.key().as_ref(),
+        sub_market_owner.key().as_ref(),
         sub_market_index.to_le_bytes().as_ref(),
         signer.key().as_ref(),
         user_account_index.to_le_bytes().as_ref()], 
@@ -4681,6 +4552,22 @@ pub struct ClaimLiquidationFees<'info>
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>
+}
+
+//Internal Structs
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct UnverifiedPriceData
+{
+    pub token_mint_address: Pubkey,
+    pub normalized_price_18_decimals: u128,
+    pub slot: u64,
+    pub signature: [u8; 64]
+}
+
+struct VerifiedPriceData
+{
+    pub token_mint_address: Pubkey,
+    pub normalized_price_18_decimals: u128
 }
 
 //Accounts
@@ -4699,6 +4586,13 @@ pub struct SolvencyTreasurer
 #[account]
 pub struct LiquidationTreasurer
 {
+    pub address: Pubkey
+}
+
+#[account]
+pub struct OraclePriceValidator
+{
+    pub bump: u8,
     pub address: Pubkey
 }
 
@@ -4750,8 +4644,6 @@ pub struct TokenReserve
     pub token_reserve_protocol_index: u32,
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
-    //pub pyth_feed_id: [u8; 32],
-    pub switchboard_feed_id: [u8; 32],
     pub supply_apy: u16,
     pub borrow_apy: u16,
     pub fixed_borrow_apy: u16,
@@ -4874,18 +4766,7 @@ pub struct LendingUserMonthlyStatementAccount
     pub statement_year: u16,
     pub monthly_statement_account_added: bool,
     pub snap_shot_balance_amount: u64,//The snap_shot properties give a snapshot of the value of the Tab Account over its whole life time at the time it is updated
-    pub snap_shot_interest_earned_amount: u64,
-    pub snap_shot_sub_market_fees_generated_amount: u64,
-    pub snap_shot_sub_market_fees_collected_amount: u64,
-    pub snap_shot_solvency_insurance_fees_generated_amount: u64,
-    pub snap_shot_solvency_insurance_fees_collected_amount: u64,
-    pub snap_shot_liquidation_fees_generated_amount: u64,
-    pub snap_shot_liquidation_fees_collected_amount: u64,
     pub snap_shot_debt_amount: u64,
-    pub snap_shot_interest_accrued_amount: u64,
-    pub snap_shot_repaid_debt_amount: u64,
-    pub snap_shot_liquidated_amount: u64,
-    pub snap_shot_liquidator_amount: u64,
     pub monthly_deposited_amount: u64,//The monthly properties give the specific value changes for that specific month
     pub monthly_interest_earned_amount: u64,
     pub monthly_sub_market_fees_generated_amount: u64,

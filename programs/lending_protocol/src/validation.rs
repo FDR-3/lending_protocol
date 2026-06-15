@@ -2,6 +2,29 @@ use anchor_lang::prelude::*;
 use crate::*;
 use crate::errors::LendingError;
 
+pub fn validate_and_return_price_validator_account<'info>(program_id: Pubkey, price_validator_serialized: &AccountInfo<'info>) -> Result<OraclePriceValidator>
+{
+    let mut data_slice: &[u8] = &price_validator_serialized.data.borrow();
+
+    let price_validator = OraclePriceValidator::try_deserialize(&mut data_slice)?;
+
+    let bump = [price_validator.bump];
+    let seeds = &
+    [
+        b"oraclePriceValidator".as_ref(),//It seems when there is only the string for the seed, you need the .as_ref() on it and the bump
+        &bump.as_ref()
+    ];
+
+    //Verify Lending User Tab Account PDA is a valid PDA
+    let expected_pda = Pubkey::create_program_address(seeds, &program_id)
+    .map_err(|_| LendingError::UnexpectedOraclePriceValidatorAccount)?;
+        
+    //Verify Lending User Tab Account Address is the expected PDA
+    require_keys_eq!(expected_pda.key(), price_validator_serialized.key(), LendingError::UnexpectedOraclePriceValidatorAccount);
+
+    Ok(price_validator)
+}
+
 pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lending_stats_serialized: &AccountInfo<'info>) -> Result<LendingStats>
 {
     let mut data_slice: &[u8] = &lending_stats_serialized.data.borrow();

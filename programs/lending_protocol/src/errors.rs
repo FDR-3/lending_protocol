@@ -104,20 +104,24 @@ pub enum LendingError
     MissingLendingUserLookUpTable,
     #[msg("You must provide the sub user's tab accounts ordered by user_tab_account_index")]
     IncorrectOrderOfTabAccounts,
-    #[msg("Unexpected Lending Stats PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]
+    #[msg("Unexpected Oracle Price Validator PDA detected")]
+    UnexpectedOraclePriceValidatorAccount,
+    #[msg("Unexpected Lending Stats PDA detected")]
     UnexpectedLendingStatsAccount,
     #[msg("Unexpected Tab Account PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]
     UnexpectedTabAccount,
-    //#[msg("Unexpected Pyth Price Update Account detected. Feed in only legitimate accounts :)")]
-    //UnexpectedPythPriceUpdateAccount,
-    #[msg("Unexpected Switchboard Quote Account detected. Feed in only legitimate accounts :)")]
-    UnexpectedSwitchboardQuoteAccount,
     #[msg("Unexpected Slot Hash Account Quote Account detected")]
     UnexpectedSlotHashAccount,
     #[msg("Unexpected Instructions Account detected")]
     UnexpectedInstructionsAccount,
-    #[msg("Error reading Mocked Switchboard Quote Account")]
-    ReadingMockedQuoteAccountError,
+    #[msg("This price wasn't signed by the Oracle")]
+    InvalidOracleSignature,
+    #[msg("Oracle data missing or incorrectly formated")]
+    OracleDataMissingOrIncorrect,
+    #[msg("Oracle price was stale")]
+    OracleDataStale,
+    #[msg("Oracle price not found")]
+    OraclePriceNotFound,
     #[msg("Unexpected Token Reserve Account PDA detected")]
     UnexpectedTokenReserveAccount,
     #[msg("Unexpected SubMarket Account PDA detected")]
@@ -138,10 +142,6 @@ pub enum LendingError
     MissingTokenReserveAccountForRefresh,
     #[msg("Token Reserve or lending user health data was stale")]
     StaleTokenReserveOrLendingUser,
-    #[msg("Price data was stale or the feed id was incorrect")]
-    StalePriceDataOrWrongFeedID,
-    #[msg("Not enough aggregator price sources. You need atleast 1")]
-    NotEnoughAggregatorPriceSources,
     #[msg("You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'")]
     GriefingRepayment,
     #[msg("You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral")]
@@ -154,10 +154,6 @@ pub enum LendingError
     NotInsolvent,
     #[msg("Duplicate SubMarket Detected")]
     DuplicateSubMarket,
-    #[msg("Negative Price Detected")]
-    NegativePriceDetected,
-    #[msg("Oracle Price Too Unstable")]
-    OraclePriceTooUnstable,
     #[msg("Each Lending User Account can have no more than 5 Tab Accounts. Please make new account")]
     TooManyTabAccounts
 }
