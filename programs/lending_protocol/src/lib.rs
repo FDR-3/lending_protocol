@@ -1558,7 +1558,6 @@ pub mod lending_protocol
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
-        //let price_validator = &ctx.accounts.price_validator;
         let repayment_token_reserve = &mut ctx.accounts.repayment_token_reserve;
         let liquidation_token_reserve = &mut ctx.accounts.liquidation_token_reserve;
         let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
@@ -2110,6 +2109,12 @@ pub mod lending_protocol
             liquidati_account_index)?;
 
         let repayment_amount;
+        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
+
+        //Get USD value of Repayment Amount
+        let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
+        let token_usd_value = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
+        let mut repayment_amount_usd_value = 0;
 
         //Check if Account is liquidatable and set repayment_amount
         if paying_off_insolvent_account
@@ -2120,6 +2125,14 @@ pub mod lending_protocol
             if repay_max
             {
                 repayment_amount = liquidati_repayment_tab_account.borrowed_amount;
+                repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
+                
+                //Since all of this borrowed amount is being repaid, check if liquidati's total borrowed value would go to zero for cheaper withdrawals for them
+                //Use saturating_sub to safely deduct the value
+                //If lending_user_account.total_borrowed_usd_value falls to zero here, it just allows the user to withdraw without having to check their user health before hand. Otherwise this would get set to zero when calling withdraw again when the borrowed amounts are zero just incase this check fails.
+                liquidati_lending_account.total_borrowed_usd_value = liquidati_lending_account
+                    .total_borrowed_usd_value
+                    .saturating_sub(repayment_amount_usd_value);
             }
             else
             {
@@ -2158,6 +2171,11 @@ pub mod lending_protocol
 
             //You can't repay more than 50% of a liquidati's debt position
             require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
+        }
+
+        if repayment_amount_usd_value == 0
+        {
+            repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
         }
 
         //Multiply before dividing to help keep precision
@@ -2286,14 +2304,6 @@ pub mod lending_protocol
             &ctx.accounts.system_program,
             repayment_amount
         )?;
-
-        //Get Token USD value
-        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
-        let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-        let token_usd_value = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
-
-        //Get USD value of Repayment Amount
-        let repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
 
         //Get Amount to be Liquidated
         let amount_to_be_liquidated = ((repayment_amount_usd_value * token_conversion_number) / token_usd_value) as u64;
