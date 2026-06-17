@@ -421,66 +421,60 @@ fn update_user_previous_interest_accrued<'info>(
 }
 
 fn verify_token_prices(
-    unverified_price_data: &[UnverifiedPriceData],
+    unverified_price_data: &UnverifiedPriceData,
     price_validator_publickey: &Pubkey,
     current_slot: u64
 )-> Result<Vec<VerifiedPriceData>>
 {
-    let mut verified_prices = Vec::with_capacity(unverified_price_data.len());
+    let token_ids = &unverified_price_data.payload.token_ids;
+    let normalized_prices_18_decimals = &unverified_price_data.payload.normalized_prices_18_decimals;
+    require!(token_ids.len() == normalized_prices_18_decimals.len(),LendingError::OracleDataMissingOrIncorrect);
 
-    //Extract the raw 32-byte public key matrix of your Oracle
+    let payload = &unverified_price_data.payload;
+
+    #[cfg(feature = "local")] 
+    //Allow a max age of 40 slots (approx 16 seconds) 1 slot is about 400ms
+    if current_slot.saturating_sub(payload.slot) > 40
+    {
+        msg!("Current Slot: {}", current_slot);
+        msg!("Data Slot: {}", payload.slot);
+        return Err(error!(LendingError::OracleDataStale));
+    }
+
+    #[cfg(feature = "dev")]
+    //Allow a max age of 0 slots (approx 0 seconds)
+    if current_slot.saturating_sub(payload.slot) > 0
+    {
+        msg!("Current Slot: {}", current_slot);
+        msg!("Data Slot: {}", payload.slot);
+        return Err(error!(LendingError::OracleDataStale));
+    }
+
+    let mut verified_prices = Vec::with_capacity(token_ids.len());
+    let message_bytes: Vec<u8> = payload.try_to_vec()?;
+    let message_slices: &[&[u8]] = &[&message_bytes];
+    let signature = unverified_price_data.signature;
     let validator_publickey_bytes = price_validator_publickey.to_bytes();
     let validator_address = brine_ed25519::Address::from(validator_publickey_bytes);
 
+    //Execute runtime cryptographic check using brine-ed25519
+    //If a single bit of data was mutated by a hacker on the frontend, this throws an error.
+    verify::<Sha512>(&validator_address, &signature, message_slices)
+        .map_err(|_| error!(LendingError::InvalidOracleSignature))?;
+
     //Loop through and evaluate each chunk sequentially
-    for data in unverified_price_data
+    for i in 0..token_ids.len()
     {
-        let token_mint_address = data.token_mint_address;
-        let normalized_price_18_decimals = data.normalized_price_18_decimals;
-        let slot = data.slot;
-        let signature = data.signature;
+        let token_id = token_ids[i];
+        let normalized_price_18_decimals = normalized_prices_18_decimals[i];
 
-        msg!("Token: {}", token_mint_address);
+        msg!("Token: {}", token_id);
         msg!("price: {}", normalized_price_18_decimals);
-        msg!("Slot: {}", slot);
-        msg!("Data Slot: {}", slot);
-
-        #[cfg(feature = "local")] 
-        //Allow a max age of 40 slots (approx 16 seconds) 1 slot is about 400ms
-        if current_slot.saturating_sub(slot) > 40
-        {
-            msg!("Current Slot: {}", current_slot);
-            msg!("Data Slot: {}", slot);
-            return Err(error!(LendingError::OracleDataStale));
-        }
-
-        #[cfg(feature = "dev")]
-        //Allow a max age of 0 slots (approx 0 seconds)
-        if current_slot.saturating_sub(slot) > 0
-        {
-            msg!("Current Slot: {}", current_slot);
-            msg!("Data Slot: {}", slot);
-            return Err(error!(LendingError::OracleDataStale));
-        }
-
-        //Reconstruct the exact 56-byte buffer we serialized on the Cloudflare Worker:
-        //[32 bytes Mint] + [16 bytes Price] + [8 bytes Slot] = 56 bytes
-        let mut message = [0u8; 56];
-        message[0..32].copy_from_slice(&token_mint_address.to_bytes());
-        message[32..48].copy_from_slice(&normalized_price_18_decimals.to_le_bytes());
-        message[48..56].copy_from_slice(&slot.to_le_bytes());
-
-        let message_slices: &[&[u8]] = &[&message];
-
-        //Execute runtime cryptographic check using brine-ed25519
-        //If a single bit of data was mutated by a hacker on the frontend, this throws an error.
-        verify::<Sha512>(&validator_address, &signature, message_slices)
-            .map_err(|_| error!(LendingError::InvalidOracleSignature))?;
-
+        
         //Push validated data into results
         verified_prices.push(VerifiedPriceData
         {
-            token_mint_address,
+            token_id,
             normalized_price_18_decimals
         });
     }
@@ -488,19 +482,19 @@ fn verify_token_prices(
     Ok(verified_prices)
 }
 
-fn get_verified_token_price(verified_token_prices: &[VerifiedPriceData], token_mint_address: Pubkey) -> Result<u128>
+fn get_verified_token_price(verified_token_prices: &[VerifiedPriceData], token_id: u8) -> Result<u128>
 {
     //Search the slice for the first item matching the target token mint address
     let found_data = verified_token_prices
         .iter()
-        .find(|data| data.token_mint_address == token_mint_address);
+        .find(|data| data.token_id == token_id);
 
     match found_data
     {
         Some(data) => Ok(data.normalized_price_18_decimals),
         None =>
         {
-            msg!("🚨 Price lookup failed. Requested mint not verified: {:?}", token_mint_address);
+            msg!("🚨 Requested Token ID not found in verified prices: {}", token_id);
             Err(error!(LendingError::OraclePriceNotFound))
         }
     }
@@ -861,9 +855,9 @@ pub mod lending_protocol
         token_reserve.supply_interest_change_index = 1_000_000_000_000_000_000;
         token_reserve.borrow_interest_change_index = 1_000_000_000_000_000_000;
 
-        token_reserve.token_reserve_protocol_index = token_reserve_stats.token_reserve_count;
         token_reserve_stats.token_reserve_count += 1;
-
+        token_reserve.token_id = token_reserve_stats.token_reserve_count;
+        
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
         msg!("Token Mint Address: {}", ctx.accounts.token_mint.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
@@ -1162,7 +1156,7 @@ pub mod lending_protocol
         user_account_index: u8,
         amount: u64,
         withdraw_max: bool,
-        unverified_price_data: Option<Vec<UnverifiedPriceData>>
+        unverified_price_data: Option<UnverifiedPriceData>
     ) -> Result<()> 
     {
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -1242,7 +1236,7 @@ pub mod lending_protocol
             };
 
             let verified_token_prices = verify_token_prices(&unverified_data, &price_validator.address, clock_slot)?;
-            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
+            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
             let new_user_deposited_usd_value = lending_user_account.total_deposited_usd_value - ((withdraw_amount as u128 * normalized_price_18_decimals) / token_conversion_number);
 
@@ -1305,7 +1299,7 @@ pub mod lending_protocol
         sub_market_index: u16,
         user_account_index: u8,
         amount: u64,
-        unverified_price_data: Vec<UnverifiedPriceData>
+        unverified_price_data: UnverifiedPriceData
     ) -> Result<()> 
     {
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -1365,7 +1359,7 @@ pub mod lending_protocol
         }
 
         let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
-        let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
+        let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
         
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
         lending_user_account.total_borrowed_usd_value += (amount as u128 * normalized_price_18_decimals) / token_conversion_number;
@@ -1432,7 +1426,7 @@ pub mod lending_protocol
         _user_account_index: u8,
         amount: u64,
         pay_off_loan: bool,
-        unverified_price_data: Vec<UnverifiedPriceData>
+        unverified_price_data: UnverifiedPriceData
     ) -> Result<()> 
     {
         let price_validator = &ctx.accounts.price_validator;
@@ -1493,7 +1487,7 @@ pub mod lending_protocol
         )?;
 
         let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
-        let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
+        let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
 
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
 
@@ -1554,7 +1548,7 @@ pub mod lending_protocol
         send_reward_to_wallet: bool,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
         look_up_table_address: Option<Pubkey>, //Needed when a user initializes their Lending User Account
-        unverified_price_data: Vec<UnverifiedPriceData>
+        unverified_price_data: UnverifiedPriceData
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
@@ -1663,7 +1657,7 @@ pub mod lending_protocol
 
         //Get USD value of Repayment Amount
         let repayment_token_conversion_number = BASE_10_INT.pow(repayment_token_reserve.token_decimal_amount as u32); 
-        let repayment_token_usd_value = get_verified_token_price(&verified_token_prices, repayment_token_reserve.token_mint_address)?;
+        let repayment_token_usd_value = get_verified_token_price(&verified_token_prices, repayment_token_reserve.token_id)?;
         let mut repayment_amount_usd_value = 0;
 
         //Check if Account is liquidatable and set repayment_amount
@@ -1858,7 +1852,7 @@ pub mod lending_protocol
 
         //Get USD value of Liquidation Token
         let liquidation_token_conversion_number = BASE_10_INT.pow(liquidation_token_reserve.token_decimal_amount as u32); 
-        let liquidation_token_usd_value = get_verified_token_price(&verified_token_prices, liquidation_token_reserve.token_mint_address)?;
+        let liquidation_token_usd_value = get_verified_token_price(&verified_token_prices, liquidation_token_reserve.token_id)?;
 
         let amount_to_be_liquidated = ((repayment_amount_usd_value * liquidation_token_conversion_number) / liquidation_token_usd_value) as u64;
 
@@ -2012,7 +2006,7 @@ pub mod lending_protocol
         send_reward_to_wallet: bool,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
         look_up_table_address: Option<Pubkey>, //Needed when a user initializes their Lending User Account
-        unverified_price_data: Vec<UnverifiedPriceData>
+        unverified_price_data: UnverifiedPriceData
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
@@ -2113,7 +2107,7 @@ pub mod lending_protocol
 
         //Get USD value of Repayment Amount
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-        let token_usd_value = get_verified_token_price(&verified_token_prices, token_reserve.token_mint_address)?;
+        let token_usd_value = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
         let mut repayment_amount_usd_value = 0;
 
         //Check if Account is liquidatable and set repayment_amount
@@ -2454,7 +2448,7 @@ pub mod lending_protocol
     pub fn refresh_user_health_chunk_and_token_reserves<'info>(ctx: Context<'_, '_, 'info, 'info, RefreshUserHealthChunkAndTokenReserves<'info>>,
         user_account_index: u8,
         refresh_token_reserve_count: u8, //The number of token reserves being refreshed may not be the number of unverified_price_data, ie when borrowing from a token reserve the user has never interacted with before
-        unverified_price_data: Vec<UnverifiedPriceData>
+        unverified_price_data: UnverifiedPriceData
     ) -> Result<()> 
     {
         let user_account_owner_address = ctx.accounts.lending_user_owner.key();
@@ -2486,12 +2480,11 @@ pub mod lending_protocol
         let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
 
         let mut token_reserves: Vec<(&AccountInfo<'info>, TokenReserve)> = Vec::with_capacity(refresh_token_reserve_count.into());
-        for i in 0..refresh_token_reserve_count.into()
+        for _i in 0..refresh_token_reserve_count.into()
         {
-           let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap();
+            let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap();
             let token_reserve = validate_and_return_token_reserve_account(*ctx.program_id,
-                token_reserve_account_serialized,
-                verified_token_prices[i].token_mint_address)?;
+                token_reserve_account_serialized)?;
             token_reserves.push((token_reserve_account_serialized, token_reserve)); 
         }
 
@@ -2576,7 +2569,7 @@ pub mod lending_protocol
             lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
 
             //Get normalized price with 8 decimals
-            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, lending_user_tab_account.token_mint_address)?;
+            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
             
             //Update temp deposited and borrow values
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
@@ -4599,17 +4592,23 @@ pub struct ClaimLiquidationFees<'info>
 
 //Internal Structs
 #[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct PriceDataPayload
+{
+    pub token_ids: Vec<u8>,
+    pub normalized_prices_18_decimals: Vec<u128>,
+    pub slot: u64
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct UnverifiedPriceData
 {
-    pub token_mint_address: Pubkey,
-    pub normalized_price_18_decimals: u128,
-    pub slot: u64,
+    pub payload: PriceDataPayload,
     pub signature: [u8; 64]
 }
 
 struct VerifiedPriceData
 {
-    pub token_mint_address: Pubkey,
+    pub token_id: u8,
     pub normalized_price_18_decimals: u128
 }
 
@@ -4650,8 +4649,8 @@ pub struct LendingProtocol
 #[account]
 pub struct TokenReserveStats
 {
-    pub token_reserve_count: u32,
-    pub token_reserves_updated_count: u128
+    pub token_reserve_count: u8,
+    pub token_reserves_updated_count: u32
 }
 
 #[account]
@@ -4684,7 +4683,7 @@ pub struct LendingUserStats
 pub struct TokenReserve
 {
     pub bump: u8,
-    pub token_reserve_protocol_index: u32,
+    pub token_id: u8,
     pub token_mint_address: Pubkey,
     pub token_decimal_amount: u8,
     pub supply_apy: u16,

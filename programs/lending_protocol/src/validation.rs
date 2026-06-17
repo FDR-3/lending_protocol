@@ -50,8 +50,7 @@ pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lend
 
 pub fn validate_and_return_token_reserve_account<'info>(
     program_id: Pubkey,
-    token_reserve_account_serialized: &AccountInfo<'info>,
-    token_mint_address: Pubkey) -> Result<TokenReserve>
+    token_reserve_account_serialized: &AccountInfo<'info>) -> Result<TokenReserve>
 {
     let mut data_slice: &[u8] = &token_reserve_account_serialized.data.borrow();
 
@@ -60,15 +59,15 @@ pub fn validate_and_return_token_reserve_account<'info>(
     let seeds = &
     [
         b"tokenReserve",
-        token_mint_address.as_ref(),
+        token_reserve.token_mint_address.as_ref(), //Using the mint address from the account. Token Reserve accounts can only be created by the CEO and checks in refresh_user_health_chunk_and_token_reserves that ensure the token_mint_address is correct one by cross references it with the lending user tab account
         &[token_reserve.bump]
     ];
 
-    //Verify SubMarket PDA is a valid PDA
+    //Verify Token Reserve PDA is a valid PDA
     let expected_pda = Pubkey::create_program_address(seeds, &program_id)
     .map_err(|_| LendingError::UnexpectedTokenReserveAccount)?;
 
-    //Verify SubMarket Address is the expected PDA
+    //Verify Token Reserve Address is the expected PDA
     require_keys_eq!(expected_pda.key(), token_reserve_account_serialized.key(), LendingError::UnexpectedTokenReserveAccount);
 
     Ok(token_reserve)

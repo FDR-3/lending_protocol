@@ -14,6 +14,7 @@ import { PublicKey,
 } from '@solana/web3.js'
 import { Token, ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token"
 import { sign } from 'tweetnacl'
+import * as borsh from "@coral-xyz/borsh"
 
 describe("lending_protocol", () =>
 {
@@ -29,7 +30,7 @@ describe("lending_protocol", () =>
   if(!program.provider)
     throw new Error("Program provider is not defined")
 
-  const programProvider = program.provider as anchor.AnchorProvider;
+  const programProvider = program.provider as anchor.AnchorProvider
   var programProviderPublicKey: PublicKey
   var programProviderPublicKeyString = ""
   if(programProvider.publicKey)
@@ -59,7 +60,7 @@ describe("lending_protocol", () =>
   const incorrectOrderOfTabAccountsErrorMsg = "You must provide the sub user's tab accounts ordered by user_tab_account_index"
   const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
   const unexpectedTabAccountErrorMsg = "Unexpected Tab Account PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index"
-  const unexpectedTokenReserveErrorMsg = "Unexpected Token Reserve Account PDA detected"
+  const missingExpectedTokenReserveErrorMsg = "Expected Token Reserve missing for user refresh"
   const unexpectedSubMarketErrorMsg = "Unexpected SubMarket Account PDA detected"
   const unexpectedMonthlyStatementErrorMsg = "Unexpected Monthly Statement Account PDA detected"
   const notFeeCollectorErrorMsg = "Only the Fee Collector can claim the fees"
@@ -85,8 +86,6 @@ describe("lending_protocol", () =>
   const solTokenDecimalAmount = 9
   const oneSol = new anchor.BN(LAMPORTS_PER_SOL)
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
-  const solTestPriceBN = new anchor.BN(10_000_000_000)//8 Decimal Price
-  const solCantLiquidatePriceBN = new anchor.BN(87_500_000_100)//9 Decimal Price for testing
   var solTestPrice: PriceData
   var solCantLiquidatePrice: PriceData
   var solLiquidationPrice: PriceData
@@ -106,7 +105,6 @@ describe("lending_protocol", () =>
   const overBorrowUSDCAmount = new anchor.BN(71_000_000)
   const lessThan10PercentOfBorrowedAmount = new anchor.BN(6_999_999) 
   const supplierUSDCAmount = new anchor.BN(100_000_000)
-  const usdcTestPriceBN = new anchor.BN(100_000_000)//8 Decimal Price
   var usdcTestPrice: PriceData
   var usdcTokenReserveRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcSubMarketRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
@@ -176,8 +174,8 @@ describe("lending_protocol", () =>
   const accountName26Characters = "Lorem ipsum dolor sit amet"
 
   //Load the keypair from config file
-  const keypairPath = '/home/fdr-3/.config/solana/id.json';
-  const keypairData = JSON.parse(fs.readFileSync(keypairPath, 'utf8'));
+  const keypairPath = '/home/fdr-3/.config/solana/id.json'
+  const keypairData = JSON.parse(fs.readFileSync(keypairPath, 'utf8'))
   const testingWalletKeypair = Keypair.fromSecretKey(Uint8Array.from(keypairData))
   const successorWalletKeypair = anchor.web3.Keypair.generate()
   const borrowerWalletKeypair = anchor.web3.Keypair.generate()
@@ -274,19 +272,22 @@ describe("lending_protocol", () =>
     //Set Test Prices (Scaled to 18 Decimals)
     solTestPrice = 
     {
-      tokenMintAddress: solTokenMintAddress,
+      //tokenMintAddress: solTokenMintAddress,
+      tokenId: 1,
       normalizedPrice18Decimals: new anchor.BN("100000000000000000000") //$100.00 USD
     }
     solCantLiquidatePrice = 
     {
-      tokenMintAddress: solTokenMintAddress,
+      //tokenMintAddress: solTokenMintAddress,
+      tokenId: 1,
       normalizedPrice18Decimals: new anchor.BN("875000001000000000000") //$875.000001 USD
     }
     if(!runInsolventTest)
     {
       solLiquidationPrice = 
       {
-        tokenMintAddress: solTokenMintAddress,
+        //tokenMintAddress: solTokenMintAddress,
+        tokenId: 1,
         normalizedPrice18Decimals: new anchor.BN("87500000000000000000") //$87.50 USD
       }
     }
@@ -294,14 +295,16 @@ describe("lending_protocol", () =>
     {
       solLiquidationPrice = 
       {
-        tokenMintAddress: solTokenMintAddress,
+        //tokenMintAddress: solTokenMintAddress,
+        tokenId: 1,
         normalizedPrice18Decimals: new anchor.BN("70000000000000000000") //$70.00 USD
       }
     }
     
     usdcTestPrice = 
     {
-      tokenMintAddress: usdcMint.publicKey,
+      //tokenMintAddress: usdcMint.publicKey,
+      tokenId: 2,
       normalizedPrice18Decimals: new anchor.BN("1000000000000000000") //$1.00 USD
     }
 
@@ -581,7 +584,7 @@ describe("lending_protocol", () =>
     .rpc()
     
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
-    assert(tokenReserve.tokenReserveProtocolIndex == 0)
+    assert(tokenReserve.tokenId == 1)
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
@@ -782,7 +785,7 @@ describe("lending_protocol", () =>
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
-    assert(tokenReserve.tokenReserveProtocolIndex == 0)
+    assert(tokenReserve.tokenId == 1)
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(twoSol))
@@ -947,7 +950,7 @@ describe("lending_protocol", () =>
     await sendVersionedTrasaction([withdrawInstruction], [successorWalletKeypair])
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
-    assert(tokenReserve.tokenReserveProtocolIndex == 0)
+    assert(tokenReserve.tokenId == 1)
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
@@ -1015,7 +1018,7 @@ describe("lending_protocol", () =>
     .rpc()
     
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    assert(tokenReserve.tokenReserveProtocolIndex == 1)
+    assert(tokenReserve.tokenId == 2)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
@@ -1078,7 +1081,7 @@ describe("lending_protocol", () =>
     .rpc()
    
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    assert(tokenReserve.tokenReserveProtocolIndex == 1)
+    assert(tokenReserve.tokenId == 2)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(supplierUSDCAmount))
@@ -1341,7 +1344,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == unexpectedTokenReserveErrorMsg)
+    assert(errorMessage == missingExpectedTokenReserveErrorMsg)
   })
 
   it("Verifies you Can't Refresh User's Health Without the Right SubMarket", async () => 
@@ -2841,7 +2844,7 @@ describe("lending_protocol", () =>
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
     const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcMint.publicKey, programProviderPublicKey, testSubMarketIndex))
-    assert(tokenReserve.tokenReserveProtocolIndex == 1)
+    assert(tokenReserve.tokenId == 2)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
@@ -3056,7 +3059,7 @@ describe("lending_protocol", () =>
     .rpc()
 
     const daiTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(daiMint.publicKey))
-    assert(daiTokenReserve.tokenReserveProtocolIndex == 2)
+    assert(daiTokenReserve.tokenId == 3)
     assert(daiTokenReserve.tokenMintAddress.toBase58() == daiMint.publicKey.toBase58())
     assert(daiTokenReserve.tokenDecimalAmount == daiTokenDecimalAmount)
     assert(daiTokenReserve.depositedAmount.eq(bnZero))
@@ -3065,7 +3068,7 @@ describe("lending_protocol", () =>
     assert(daiTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
 
     const wethTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(wethMint.publicKey))
-    assert(wethTokenReserve.tokenReserveProtocolIndex == 3)
+    assert(wethTokenReserve.tokenId == 4)
     assert(wethTokenReserve.tokenMintAddress.toBase58() == wethMint.publicKey.toBase58())
     assert(wethTokenReserve.tokenDecimalAmount == wethTokenDecimalAmount)
     assert(wethTokenReserve.depositedAmount.eq(bnZero))
@@ -3074,7 +3077,7 @@ describe("lending_protocol", () =>
     assert(wethTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
 
     const wbtcTokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(wbtcMint.publicKey))
-    assert(wbtcTokenReserve.tokenReserveProtocolIndex == 4)
+    assert(wbtcTokenReserve.tokenId == 5)
     assert(wbtcTokenReserve.tokenMintAddress.toBase58() == wbtcMint.publicKey.toBase58())
     assert(wbtcTokenReserve.tokenDecimalAmount == wbtcTokenDecimalAmount)
     assert(wbtcTokenReserve.depositedAmount.eq(bnZero))
@@ -3626,7 +3629,7 @@ describe("lending_protocol", () =>
     transaction.feePayer = walletKeyPair.publicKey
 
     //3. Sign the transaction
-    transaction.sign(walletKeyPair);
+    transaction.sign(walletKeyPair)
     //const signedTransaction = await programProvider.wallet.signTransaction(transaction)
 
     //4. Send the signed transaction to the network.
@@ -3653,7 +3656,7 @@ describe("lending_protocol", () =>
     )
 
     //2. Send the transaction
-    await programProvider.sendAndConfirm(transaction);
+    await programProvider.sendAndConfirm(transaction)
   }
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -3733,84 +3736,76 @@ describe("lending_protocol", () =>
     await timeOutFunction(1)
   }
 
-  type PriceData = 
+  type PriceData =
   {
-    tokenMintAddress: PublicKey,
-    normalizedPrice18Decimals: anchor.BN
+    tokenId: number; //u8
+    normalizedPrice18Decimals: anchor.BN //u128
   }
 
-  async function setPrice(priceData: PriceData[], signedByTrueOracle = true, stale = false)
+  type UnverifiedPriceData =
   {
-    var unverifiedPriceData = []
-    var slot
-    var signature
-
-    if(!stale)
-      slot = new anchor.BN(await program.provider.connection.getSlot("processed"))
-    else
-      slot = new anchor.BN(await program.provider.connection.getSlot("processed") - 1)
-
-    for(var i=0; i<priceData.length; i++)
+    payload:
     {
-      if(signedByTrueOracle)
-        signature = performED25519Signature(priceData[i].tokenMintAddress, 
-          priceData[i].normalizedPrice18Decimals,
-          slot,
-          priceValidatorKeypair)
-      else
-        signature = performED25519Signature(priceData[i].tokenMintAddress, 
-          priceData[i].normalizedPrice18Decimals,
-          slot,
-          borrowerWalletKeypair)
-
-      var newUnverifiedPriceData = 
-      {
-        tokenMintAddress: priceData[i].tokenMintAddress,
-        normalizedPrice18Decimals: priceData[i].normalizedPrice18Decimals,
-        slot: slot,
-        signature: signature
-      }
-
-      unverifiedPriceData.push(newUnverifiedPriceData)  
-    }
-
-    return unverifiedPriceData
+      tokenIds: Buffer;
+      normalizedPrices18Decimals: anchor.BN[];
+      slot: anchor.BN
+    };
+    signature: number[] //number[64]
   }
 
-  function performED25519Signature(tokenMintAddress: PublicKey, normalizedPrice18Decimals: anchor.BN, slot: anchor.BN, oracleKeypair: Keypair)
+  async function setPrice(priceData: PriceData[], signedByTrueOracle = true, stale = false): Promise<UnverifiedPriceData>
   {
-    //1. Allocate a flat 56-byte buffer space
-    //32 bytes (TokenMintAddress) + 16 bytes (Price) + 8 bytes (Slot) = 56 bytes
-    const messageBuffer = new Uint8Array(56)
+    
+    let slotNumber = await program.provider.connection.getSlot("processed")
+    if(stale)
+      slotNumber = slotNumber - 1 //If feature = "dev", max age is 0 slots, so subtracting 1 makes it instantly stale
 
-    //2. Extract the raw 32-byte array from the Solana Public Key string
-    const tokenMintBytes = tokenMintAddress.toBytes() //Uint8Array of length 32
+  const slot = new anchor.BN(slotNumber)
 
-    //3. Write the 32-byte mint directly into the front of our buffer (Bytes 0 to 31)
-    messageBuffer.set(tokenMintBytes, 0)
+  // Extract arrays to match your new payload format
+  const tokenIds = Buffer.from(priceData.map(p => p.tokenId))
+  const normalizedPrices18Decimals = priceData.map(p => p.normalizedPrice18Decimals)
 
-    //4. Use a DataView to write the remaining 64-bit numbers right after the mint bytes
-    //We point the DataView specifically at the memory buffer
-    const view = new DataView(messageBuffer.buffer)
-
-    const priceBigInt = BigInt(normalizedPrice18Decimals.toString())
-    const mask = BigInt("0xFFFFFFFFFFFFFFFF")
-
-    // Write the 16-byte u128 Price (Little Endian) in two 64-bit chunks
-    // Bytes 32-39: Lower 8 bytes of the price
-    view.setBigUint64(32, priceBigInt & mask, true)
-    // Bytes 40-47: Upper 8 bytes of the price
-    view.setBigUint64(40, priceBigInt >> BigInt(64), true)
-
-    //Bytes 48-55: Slot (Offsets by 48 bytes)
-    view.setBigUint64(48, BigInt(slot.toString()), true)
-
-    //5. Generate Ed25519 signature
-    //Oracle signs message as valid
-    const signatureBytes = sign.detached(messageBuffer, oracleKeypair.secretKey)
-
-    return Array.from(Buffer.from(signatureBytes))
+  const payload =
+  {
+    tokenIds,
+    normalizedPrices18Decimals,
+    slot
   }
+
+  const oracleKeypair = signedByTrueOracle ? priceValidatorKeypair : borrowerWalletKeypair
+  const signature = performED25519Signature(payload, oracleKeypair)
+
+  return {
+    payload,
+    signature
+  }
+}
+
+function performED25519Signature(
+  payload: { tokenIds: Buffer; normalizedPrices18Decimals: anchor.BN[]; slot: anchor.BN }, 
+  oracleKeypair: Keypair): number[]
+{
+  
+  //1. Define Borsh layout matching your Rust struct: PriceDataPayload
+  const layout = borsh.struct([
+    borsh.vecU8("tokenIds"),
+    borsh.vec(borsh.u128(), "normalizedPrices18Decimals"),
+    borsh.u64("slot"),
+  ])
+
+  //2. Dynamically allocate buffer size based on payload data lengths
+  const buffer = Buffer.alloc(layout.span + payload.tokenIds.length + (payload.normalizedPrices18Decimals.length * 16) + 20)
+  const length = layout.encode(payload, buffer)
+  
+  //3. Trim the buffer to exactly matches the serialized payload size
+  const messageBuffer = buffer.subarray(0, length)
+
+  //4. Generate the Ed25519 Signature
+  const signatureBytes = sign.detached(messageBuffer, oracleKeypair.secretKey)
+
+  return Array.from(signatureBytes)
+}
 
   async function sendVersionedTrasaction(instructions: anchor.web3.TransactionInstruction[], signerKeypair: Keypair[])
   {
@@ -3859,7 +3854,7 @@ describe("lending_protocol", () =>
       lookUpTableArray.push(supplierLookUpTableAccount as anchor.web3.AddressLookupTableAccount)
 
     const modifyComputeUnits = anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })
-    const finalizedInstructions = [modifyComputeUnits, ...instructions];
+    const finalizedInstructions = [modifyComputeUnits, ...instructions]
 
     const messageV0 = new TransactionMessage(
     {

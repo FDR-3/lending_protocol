@@ -138,7 +138,7 @@ pub enum LendingError
     InsufficientLiquidity,
     #[msg("You can't pay back more funds than you've borrowed")]
     TooManyFunds,
-    #[msg("Token Reserve missing for user refresh")]
+    #[msg("Expected Token Reserve missing for user refresh")]
     MissingTokenReserveAccountForRefresh,
     #[msg("Token Reserve or lending user health data was stale")]
     StaleTokenReserveOrLendingUser,
