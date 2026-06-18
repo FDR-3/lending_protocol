@@ -614,7 +614,9 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, programProviderPublicKey, subMarketFeeRateAbove100Percent, null).rpc()
+      await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRateAbove100Percent, null)
+      .accounts({ tokenMintAddress: solTokenMintAddress, feeCollectorAddress: programProviderPublicKey })
+      .rpc()
     }
     catch(error: any)
     {
@@ -630,7 +632,9 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, programProviderPublicKey, subMarketFeeRateBelove0Percent, null).rpc()
+      await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRateBelove0Percent, null)
+      .accounts({ tokenMintAddress: solTokenMintAddress, feeCollectorAddress: programProviderPublicKey })
+      .rpc()
     }
     catch(error: any)
     {
@@ -646,7 +650,9 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, programProviderPublicKey, subMarketFeeRate8Percent, null).rpc()
+      await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRate8Percent, null)
+      .accounts({ tokenMintAddress: solTokenMintAddress, feeCollectorAddress: programProviderPublicKey })
+      .rpc()
     }
     catch(error: any)
     {
@@ -660,18 +666,20 @@ describe("lending_protocol", () =>
   {
     mainSubMarketOwnerLookUpTableAddress = await initLookUpTable()
     
-    await program.methods.createSubMarket(solTokenMintAddress, testSubMarketIndex, programProviderPublicKey, subMarketFeeRate8Percent, mainSubMarketOwnerLookUpTableAddress).rpc()
+    await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRate8Percent, mainSubMarketOwnerLookUpTableAddress)
+    .accounts({ tokenMintAddress: solTokenMintAddress, feeCollectorAddress: programProviderPublicKey })
+    .rpc()
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTokenMintAddress, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
     
     assert(subMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeCollectorAddress.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
-    assert(subMarket.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
+    assert(subMarket.tokenId == solTestPrice.tokenId)
     assert(subMarket.subMarketIndex == testSubMarketIndex)
 
     //Populate SOL SubMarket Remaining Account
-    const solSubMarketPDA = getSubMarketPDA(solTokenMintAddress, programProviderPublicKey, testSubMarketIndex)
+    const solSubMarketPDA = getSubMarketPDA(solTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex)
     solSubMarketRemainingAccount = 
     {
       pubkey: solSubMarketPDA,
@@ -688,14 +696,16 @@ describe("lending_protocol", () =>
 
   it("Edits a wSOL SubMarket", async () => 
   {
-    await program.methods.editSubMarket(solTokenMintAddress, testSubMarketIndex, successorWalletKeypair.publicKey, subMarketFeeRate100Percent).rpc()
+    await program.methods.editSubMarket(solTestPrice.tokenId, testSubMarketIndex, subMarketFeeRate100Percent)
+    .accounts({ feeCollectorAddress: successorWalletKeypair.publicKey })
+    .rpc()
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTokenMintAddress, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
     
     assert(subMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeCollectorAddress.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(subMarket.feeOnInterestEarnedRate == subMarketFeeRate100Percent)
-    assert(subMarket.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
+    assert(subMarket.tokenId == solTestPrice.tokenId)
     assert(subMarket.subMarketIndex == testSubMarketIndex)
   })
 
@@ -706,8 +716,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.editSubMarket(solTokenMintAddress, testSubMarketIndex, successorWalletKeypair.publicKey, subMarketFeeRate100Percent)
-      .accounts({ signer: successorWalletKeypair.publicKey })
+      await program.methods.editSubMarket(solTestPrice.tokenId, testSubMarketIndex, subMarketFeeRate100Percent)
+      .accounts({ feeCollectorAddress: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -748,8 +758,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit1, solvencyInsuranceFeeRate8Percent)
-      .accounts({ signer: successorWalletKeypair.publicKey })
+      await program.methods.updateTokenReserve(borrowAPY7Percent, true, globalLimit1, solvencyInsuranceFeeRate8Percent)
+      .accounts({ tokenMintAddress: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -763,7 +773,9 @@ describe("lending_protocol", () =>
 
   it("Updates Token Reserve Borrow APY, Global Limit, and Solvency Insurance Rate", async () => 
   {
-    await program.methods.updateTokenReserve(solTokenMintAddress, borrowAPY7Percent, true, globalLimit2, solvencyInsuranceFeeRate7Percent).rpc()
+    await program.methods.updateTokenReserve(borrowAPY7Percent, true, globalLimit2, solvencyInsuranceFeeRate7Percent)
+    .accounts({ tokenMintAddress: solTokenMintAddress })
+    .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
     assert(tokenReserve.borrowApy == borrowAPY7Percent)
@@ -805,7 +817,7 @@ describe("lending_protocol", () =>
 
     const successorSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -814,7 +826,7 @@ describe("lending_protocol", () =>
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(successorSOLLendingUserTabAccountPDA)
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
+    assert(lendingUserTabAccount.tokenId == solTestPrice.tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 0)
@@ -825,7 +837,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -957,7 +969,7 @@ describe("lending_protocol", () =>
 
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -965,7 +977,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
+    assert(lendingUserTabAccount.tokenId == solTestPrice.tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 0)
@@ -980,7 +992,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1044,17 +1056,19 @@ describe("lending_protocol", () =>
 
   it("Creates a USDC SubMarket", async () => 
   {
-    await program.methods.createSubMarket(usdcMint.publicKey, testSubMarketIndex, programProviderPublicKey, subMarketFeeRate8Percent, null).rpc()
+    await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRate8Percent, null)
+    .accounts({ tokenMintAddress: usdcMint.publicKey, feeCollectorAddress: programProviderPublicKey })
+    .rpc()
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcMint.publicKey, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
     assert(subMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeCollectorAddress.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
-    assert(subMarket.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
+    assert(subMarket.tokenId == usdcTestPrice.tokenId)
     assert(subMarket.subMarketIndex == testSubMarketIndex)
 
     //Populate USDC SubMarket Remaining Account
-    const usdcSubMarketPDA = getSubMarketPDA(usdcMint.publicKey, programProviderPublicKey, testSubMarketIndex)
+    const usdcSubMarketPDA = getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex)
     usdcSubMarketRemainingAccount = 
     {
       pubkey: usdcSubMarketPDA,
@@ -1095,7 +1109,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1103,7 +1117,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
+    assert(lendingUserTabAccount.tokenId == usdcTestPrice.tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 1)
@@ -1114,7 +1128,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1132,7 +1146,7 @@ describe("lending_protocol", () =>
     //Populate Supplier USDC Tab Remaining Account
     const usdcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1151,7 +1165,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1194,7 +1208,7 @@ describe("lending_protocol", () =>
     //Populate Borrower SOL Tab Remaining Account
     const borrowerSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1210,7 +1224,7 @@ describe("lending_protocol", () =>
     //Populate Borrower USDC Tab Remaining Account
     const borrowerUSDCLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1228,7 +1242,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1246,7 +1260,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1633,7 +1647,7 @@ describe("lending_protocol", () =>
     
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2272,7 +2286,7 @@ describe("lending_protocol", () =>
 
     var liquidatiRepaymentLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2282,7 +2296,7 @@ describe("lending_protocol", () =>
 
     var liquidatiLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2386,7 +2400,7 @@ describe("lending_protocol", () =>
 
     const liquidatorLiquidationLendingUserTabPDA = getLendingUserTabAccountPDA
     (
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -2400,7 +2414,7 @@ describe("lending_protocol", () =>
 
     var liquidatiRepaymentLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2411,7 +2425,7 @@ describe("lending_protocol", () =>
 
     var liquidatiLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2426,7 +2440,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2439,7 +2453,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2453,7 +2467,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -2539,7 +2553,7 @@ describe("lending_protocol", () =>
 
     const supplierLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -2548,7 +2562,7 @@ describe("lending_protocol", () =>
 
     const borrowerLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2706,7 +2720,7 @@ describe("lending_protocol", () =>
 
     const borrowerLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2827,7 +2841,7 @@ describe("lending_protocol", () =>
 
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -2835,7 +2849,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
+    assert(lendingUserTabAccount.tokenId == usdcTestPrice.tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 1)
@@ -2843,7 +2857,7 @@ describe("lending_protocol", () =>
     assert(lendingUserTabAccount.depositedAmount.eq(bnZero))
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcMint.publicKey, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
     assert(tokenReserve.tokenId == 2)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
@@ -2864,7 +2878,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -2922,7 +2936,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -2932,7 +2946,7 @@ describe("lending_protocol", () =>
     //Claiming SubMarket Fees just puts it in the Fee Collector's Tab Account
     assert(parseInt(tokenReserveUSDCATABalance.value.amount) >= Number(lendingUserTabAccount.depositedAmount) + Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount))
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcMint.publicKey, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
     assert(subMarket.uncollectedSubMarketFeesAmount.eq(bnZero))
   })
 
@@ -2980,7 +2994,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcMint.publicKey,
+      usdcTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -3030,7 +3044,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTokenMintAddress,
+      solTestPrice.tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -3123,33 +3137,36 @@ describe("lending_protocol", () =>
 
   it("Creates a DAI, WEth, and WBtc SubMarket", async () => 
   {
-    await program.methods.createSubMarket(daiMint.publicKey, testSubMarketIndex, programProviderPublicKey, subMarketFeeRate8Percent, null).rpc()
-    await program.methods.createSubMarket(wethMint.publicKey, testSubMarketIndex, programProviderPublicKey, subMarketFeeRate8Percent, null).rpc()
-    await program.methods.createSubMarket(wbtcMint.publicKey, testSubMarketIndex, programProviderPublicKey, subMarketFeeRate8Percent, null).rpc()
+    await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRate8Percent, null)
+    .accounts({ tokenMintAddress: daiMint.publicKey, feeCollectorAddress: programProviderPublicKey }).rpc()
+    await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRate8Percent, null)
+    .accounts({ tokenMintAddress: wethMint.publicKey, feeCollectorAddress: programProviderPublicKey }).rpc()
+    await program.methods.createSubMarket(testSubMarketIndex, subMarketFeeRate8Percent, null)
+    .accounts({ tokenMintAddress: wbtcMint.publicKey, feeCollectorAddress: programProviderPublicKey }).rpc()
 
-    const daiSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(daiMint.publicKey, programProviderPublicKey, testSubMarketIndex))
+    const daiSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(3, programProviderPublicKey, testSubMarketIndex))
     assert(daiSubMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(daiSubMarket.feeCollectorAddress.toBase58() == programProviderPublicKeyString)
     assert(daiSubMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
-    assert(daiSubMarket.tokenMintAddress.toBase58() == daiMint.publicKey.toBase58())
+    assert(daiSubMarket.tokenId == 3)
     assert(daiSubMarket.subMarketIndex == testSubMarketIndex)
 
-    const wethSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(wethMint.publicKey, programProviderPublicKey, testSubMarketIndex))
+    const wethSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(4, programProviderPublicKey, testSubMarketIndex))
     assert(wethSubMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(wethSubMarket.feeCollectorAddress.toBase58() == programProviderPublicKeyString)
     assert(wethSubMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
-    assert(wethSubMarket.tokenMintAddress.toBase58() == wethMint.publicKey.toBase58())
+    assert(wethSubMarket.tokenId == 4)
     assert(wethSubMarket.subMarketIndex == testSubMarketIndex)
 
-    const wbtcSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(wbtcMint.publicKey, programProviderPublicKey, testSubMarketIndex))
+    const wbtcSubMarket = await program.account.subMarket.fetch(getSubMarketPDA(5, programProviderPublicKey, testSubMarketIndex))
     assert(wbtcSubMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(wbtcSubMarket.feeCollectorAddress.toBase58() == programProviderPublicKeyString)
     assert(wbtcSubMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
-    assert(wbtcSubMarket.tokenMintAddress.toBase58() == wbtcMint.publicKey.toBase58())
+    assert(wbtcSubMarket.tokenId == 5)
     assert(wbtcSubMarket.subMarketIndex == testSubMarketIndex)
 
     //Populate DAI SubMarket Remaining Account
-    const daiSubMarketPDA = getSubMarketPDA(daiMint.publicKey, programProviderPublicKey, testSubMarketIndex)
+    const daiSubMarketPDA = getSubMarketPDA(3, programProviderPublicKey, testSubMarketIndex)
     daiSubMarketRemainingAccount = 
     {
       pubkey: daiSubMarketPDA,
@@ -3158,7 +3175,7 @@ describe("lending_protocol", () =>
     }
 
     //Populate WEth SubMarket Remaining Account
-    const wethSubMarketPDA = getSubMarketPDA(wethMint.publicKey, programProviderPublicKey, testSubMarketIndex)
+    const wethSubMarketPDA = getSubMarketPDA(4, programProviderPublicKey, testSubMarketIndex)
     wethSubMarketRemainingAccount = 
     {
       pubkey: wethSubMarketPDA,
@@ -3167,7 +3184,7 @@ describe("lending_protocol", () =>
     }
 
     //Populate WBtc SubMarket Remaining Account
-    const wbtcSubMarketPDA = getSubMarketPDA(wbtcMint.publicKey, programProviderPublicKey, testSubMarketIndex)
+    const wbtcSubMarketPDA = getSubMarketPDA(5, programProviderPublicKey, testSubMarketIndex)
     wbtcSubMarketRemainingAccount = 
     {
       pubkey: wbtcSubMarketPDA,
@@ -3214,7 +3231,7 @@ describe("lending_protocol", () =>
     //Populate Supplier DAI Tab Remaining Account
     const successorDAILendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      daiMint.publicKey,
+      3,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -3230,7 +3247,7 @@ describe("lending_protocol", () =>
     //Populate Supplier WEth Tab Remaining Account
     const successorWEthLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      wethMint.publicKey,
+      4,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -3246,7 +3263,7 @@ describe("lending_protocol", () =>
     //Populate Supplier WBtc Tab Remaining Account
     const successorWBtcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      wbtcMint.publicKey,
+      5,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -3264,7 +3281,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      daiMint.publicKey,
+      3,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -3282,7 +3299,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      wethMint.publicKey,
+      4,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -3300,7 +3317,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      wbtcMint.publicKey,
+      5,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -3496,13 +3513,13 @@ describe("lending_protocol", () =>
     return tokenReservePDA
   }
 
-  function getSubMarketPDA(tokenMintAddress: PublicKey, subMarketOwner: PublicKey, subMarketIndex: number)
+  function getSubMarketPDA(tokenId: number, subMarketOwner: PublicKey, subMarketIndex: number)
   {
     const [subMarketPDA] = anchor.web3.PublicKey.findProgramAddressSync
     (
       [
         new TextEncoder().encode("subMarket"),
-        tokenMintAddress.toBuffer(),
+        new anchor.BN(tokenId).toBuffer('le', 1),
         subMarketOwner.toBuffer(),
         new anchor.BN(subMarketIndex).toBuffer('le', 2)
       ],
@@ -3525,7 +3542,7 @@ describe("lending_protocol", () =>
     return lendingUserTabAccountPDA
   }
 
-  function getLendingUserTabAccountPDA(tokenMintAddress: PublicKey,
+  function getLendingUserTabAccountPDA(tokenId: number,
     subMarketOwner: PublicKey,
     subMarketIndex: number,
     lendingUserAddress: PublicKey,
@@ -3535,7 +3552,7 @@ describe("lending_protocol", () =>
     (
       [
         new TextEncoder().encode("lendingUserTabAccount"),
-        tokenMintAddress.toBuffer(),
+        new anchor.BN(tokenId).toBuffer('le', 1),
         subMarketOwner.toBuffer(),
         new anchor.BN(subMarketIndex).toBuffer('le', 2),
         lendingUserAddress.toBuffer(),
@@ -3548,7 +3565,7 @@ describe("lending_protocol", () =>
 
   function getlendingUserMonthlyStatementAccountPDA(statementMonth: number,
     statementYear: number,
-    tokenMintAddress: PublicKey,
+    tokenId: number,
     subMarketOwnerAddress: PublicKey,
     subMarketIndex: number,
     lendingUserAddress: PublicKey,
@@ -3560,7 +3577,7 @@ describe("lending_protocol", () =>
         new TextEncoder().encode("userMonthlyStatementAccount"),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         new anchor.BN(statementMonth).toBuffer('le', 1),
         new anchor.BN(statementYear).toBuffer('le', 2),
-        tokenMintAddress.toBuffer(),
+        new anchor.BN(tokenId).toBuffer('le', 1),
         subMarketOwnerAddress.toBuffer(),
         new anchor.BN(subMarketIndex).toBuffer('le', 2),
         lendingUserAddress.toBuffer(),
@@ -3762,7 +3779,7 @@ describe("lending_protocol", () =>
 
   const slot = new anchor.BN(slotNumber)
 
-  // Extract arrays to match your new payload format
+  //Extract arrays to match your new payload format
   const tokenIds = Buffer.from(priceData.map(p => p.tokenId))
   const normalizedPrices18Decimals = priceData.map(p => p.normalizedPrice18Decimals)
 
@@ -3798,7 +3815,7 @@ function performED25519Signature(
   const buffer = Buffer.alloc(layout.span + payload.tokenIds.length + (payload.normalizedPrices18Decimals.length * 16) + 20)
   const length = layout.encode(payload, buffer)
   
-  //3. Trim the buffer to exactly matches the serialized payload size
+  //3. Trim the buffer to exactly match the serialized payload size
   const messageBuffer = buffer.subarray(0, length)
 
   //4. Generate the Ed25519 Signature

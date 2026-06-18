@@ -76,19 +76,20 @@ pub fn validate_and_return_token_reserve_account<'info>(
 pub fn validate_and_return_sub_market_account<'info>(
     program_id: Pubkey,
     sub_market_account_serialized: &AccountInfo<'info>,
-    token_mint_address: Pubkey,
+    token_id: u8,
     sub_market_owner_address: Pubkey,
     sub_market_index: u16) -> Result<SubMarket>
 {
     let mut data_slice: &[u8] = &sub_market_account_serialized.data.borrow();
 
+    let token_id_to_le_bytes = token_id.to_le_bytes();
     let sub_market = SubMarket::try_deserialize(&mut data_slice)?;
     let sub_market_index_to_le_bytes = sub_market_index.to_le_bytes();
 
     let seeds = &
     [
         b"subMarket",
-        token_mint_address.as_ref(),
+        token_id_to_le_bytes.as_ref(),
         sub_market_owner_address.as_ref(),
         sub_market_index_to_le_bytes.as_ref(),
         &[sub_market.bump]
@@ -107,7 +108,7 @@ pub fn validate_and_return_sub_market_account<'info>(
 pub fn validate_and_return_lending_user_tab_account<'info>(
     program_id: Pubkey,
     tab_account_serialized: &AccountInfo<'info>,
-    token_mint_address: Pubkey,
+    token_id: u8,
     sub_market_owner_address: Pubkey,
     sub_market_index: u16,
     user_account_owner_address: Pubkey,
@@ -117,12 +118,13 @@ pub fn validate_and_return_lending_user_tab_account<'info>(
 
     let lending_user_tab_account = LendingUserTabAccount::try_deserialize(&mut data_slice)?;
 
+    let token_id_to_le_bytes = token_id.to_le_bytes();
     let user_account_index_to_le_bytes = user_account_index.to_le_bytes();
     let sub_market_index_to_le_bytes = sub_market_index.to_le_bytes();
     let seeds = &
     [
         b"lendingUserTabAccount",
-        token_mint_address.as_ref(),
+        token_id_to_le_bytes.as_ref(),
         sub_market_owner_address.as_ref(),
         sub_market_index_to_le_bytes.as_ref(),
         user_account_owner_address.as_ref(),
@@ -145,7 +147,7 @@ pub fn validate_and_return_lending_user_monthly_state_account<'info>(
     monthly_statement_account_serialized: &AccountInfo<'info>,
     current_statement_month: u8,
     current_statement_year: u16,
-    token_mint_address: Pubkey,
+    token_id: u8,
     sub_market_owner_address: Pubkey,
     sub_market_index: u16,
     user_account_owner_address: Pubkey,
@@ -157,6 +159,7 @@ pub fn validate_and_return_lending_user_monthly_state_account<'info>(
 
     let current_statement_month_to_le_bytes = current_statement_month.to_le_bytes();
     let current_statement_year_to_le_bytes = current_statement_year.to_le_bytes();
+    let token_id_to_le_bytes = token_id.to_le_bytes();
     let sub_market_index_to_le_bytes = sub_market_index.to_le_bytes();
     let user_account_index_to_le_bytes = user_account_index.to_le_bytes();
     let seeds = &
@@ -164,7 +167,7 @@ pub fn validate_and_return_lending_user_monthly_state_account<'info>(
         b"userMonthlyStatementAccount",
         current_statement_month_to_le_bytes.as_ref(),
         current_statement_year_to_le_bytes.as_ref(),
-        token_mint_address.as_ref(),
+        token_id_to_le_bytes.as_ref(),
         sub_market_owner_address.as_ref(),
         sub_market_index_to_le_bytes.as_ref(),
         user_account_owner_address.as_ref(),
