@@ -104,16 +104,6 @@ pub enum LendingError
     MissingLendingUserLookUpTable,
     #[msg("You must provide the sub user's tab accounts ordered by user_tab_account_index")]
     IncorrectOrderOfTabAccounts,
-    #[msg("Unexpected Oracle Price Validator PDA detected")]
-    UnexpectedOraclePriceValidatorAccount,
-    #[msg("Unexpected Lending Stats PDA detected")]
-    UnexpectedLendingStatsAccount,
-    #[msg("Unexpected Tab Account PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index")]
-    UnexpectedTabAccount,
-    #[msg("Unexpected Slot Hash Account Quote Account detected")]
-    UnexpectedSlotHashAccount,
-    #[msg("Unexpected Instructions Account detected")]
-    UnexpectedInstructionsAccount,
     #[msg("This price wasn't signed by the Oracle")]
     InvalidOracleSignature,
     #[msg("Oracle data missing or incorrectly formated")]
@@ -122,12 +112,30 @@ pub enum LendingError
     OracleDataStale,
     #[msg("Oracle price not found")]
     OraclePriceNotFound,
+    #[msg("Unexpected Lending Stats PDA detected")]
+    UnexpectedLendingStatsAccount,
     #[msg("Unexpected Token Reserve Account PDA detected")]
     UnexpectedTokenReserveAccount,
     #[msg("Unexpected SubMarket Account PDA detected")]
     UnexpectedSubMarketAccount,
+    #[msg("Unexpected Lending User Account PDA detected")]
+    UnexpectedLendingUserAccount,
+    #[msg("Unexpected Tab Account PDA detected")]
+    UnexpectedTabAccount,
     #[msg("Unexpected Monthly Statement Account PDA detected")]
     UnexpectedMonthlyStatementAccount,
+    #[msg("Unexpected Oracle Price Validator PDA detected")]
+    UnexpectedOraclePriceValidatorAccount,
+    #[msg("Unexpected Slot Hash Account Quote Account detected")]
+    UnexpectedSlotHashAccount,
+    #[msg("Unexpected Instructions Account detected")]
+    UnexpectedInstructionsAccount,
+    #[msg("Invalid Token Account")]
+    InvalidTokenAccount,
+    #[msg("Invalid Token Account Mint")]
+    InvalidTokenAccountMint,
+    #[msg("Invalid Token Account Owner")]
+    InvalidTokenAccountOwner,
     #[msg("Lending User Account name can't be longer than 25 characters")]
     LendingUserAccountNameTooLong,
     #[msg("You can't deposit more than the global limit")]

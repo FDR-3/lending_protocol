@@ -49,7 +49,7 @@ describe("lending_protocol", () =>
   const globalLimitExceededErrorMsg = "You can't deposit more than the global limit"
   const expectedThisAccountToExistErrorMsg = "The program expected this account to be already initialized"
   const insufficientFundsErrorMsg = "You can't withdraw more funds than you've deposited"
-  const ataDoesNotExistErrorMsg = "failed to get token account balance: Invalid param: could not find account"
+  const ataDoesNotExistErrorMsg = "failed to get token account balance: Account "
   const debtExceeding70PercentOfCollateralErrorMsg = "You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral"
   const insufficientLiquidityErrorMsg = "Not enough liquidity in the Token Reserve for this withdraw or borrow"
   const notLiquidatableErrorMsg = "You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral"
@@ -59,7 +59,7 @@ describe("lending_protocol", () =>
   const griefingErrorMsg = "You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'"
   const incorrectOrderOfTabAccountsErrorMsg = "You must provide the sub user's tab accounts ordered by user_tab_account_index"
   const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
-  const unexpectedTabAccountErrorMsg = "Unexpected Tab Account PDA detected. Feed in only legitimate PDA's ordered by user_tab_account_index"
+  const unexpectedTabAccountErrorMsg = "Unexpected Tab Account PDA detected"
   const missingExpectedTokenReserveErrorMsg = "Expected Token Reserve missing for user refresh"
   const unexpectedSubMarketErrorMsg = "Unexpected SubMarket Account PDA detected"
   const unexpectedMonthlyStatementErrorMsg = "Unexpected Monthly Statement Account PDA detected"
@@ -79,6 +79,7 @@ describe("lending_protocol", () =>
   var liquidatorLookUpTableAddress: PublicKey
   var liquidatorLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
 
+  var borrowerLendingUserRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var oraclePriceValidatorRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var lendingStatsRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
@@ -90,6 +91,7 @@ describe("lending_protocol", () =>
   var solCantLiquidatePrice: PriceData
   var solLiquidationPrice: PriceData
   var solTokenReserveRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var solTokenReserveATARemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var solSubMarketRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var supplierSOLLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var borrowerSOLLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
@@ -107,6 +109,7 @@ describe("lending_protocol", () =>
   const supplierUSDCAmount = new anchor.BN(100_000_000)
   var usdcTestPrice: PriceData
   var usdcTokenReserveRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
+  var usdcTokenReserveATARemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcSubMarketRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var supplierUSDCLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var borrowerUSDCLendingUserTabRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
@@ -600,6 +603,13 @@ describe("lending_protocol", () =>
       isSigner: false,
       isWritable: true
     }
+    const tokenReserveSolATA = await deriveATA(getTokenReservePDA(solTokenMintAddress), solTokenMintAddress, true)
+    solTokenReserveATARemainingAccount = 
+    {
+      pubkey: tokenReserveSolATA,
+      isSigner: false,
+      isWritable: true
+    }
 
     //Add Token Reserve to Address Lookup Table
     await addAddressToLookUpTable(protocolLookUpTableAddress, solTokenReservePDA, "SOL Token Reserve")
@@ -1019,8 +1029,8 @@ describe("lending_protocol", () =>
     {
       errorMessage = error.message
     }
-    
-    assert(errorMessage == ataDoesNotExistErrorMsg)
+
+    assert(errorMessage == ataDoesNotExistErrorMsg + userATA + " not found")
   })
   
   it("Adds a USDC Token Reserve", async () => 
@@ -1043,6 +1053,13 @@ describe("lending_protocol", () =>
     usdcTokenReserveRemainingAccount = 
     {
       pubkey: usdcTokenReservePDA,
+      isSigner: false,
+      isWritable: true
+    }
+    const tokenReserveUSDCATA = await deriveATA(getTokenReservePDA(usdcMint.publicKey), usdcMint.publicKey, true)
+    usdcTokenReserveATARemainingAccount = 
+    {
+      pubkey: tokenReserveUSDCATA,
       isSigner: false,
       isWritable: true
     }
@@ -1204,6 +1221,12 @@ describe("lending_protocol", () =>
       borrowerWalletKeypair.publicKey,
       testUserAccountIndex
     )
+    borrowerLendingUserRemainingAccount = 
+    {
+      pubkey: borrowerLendingUserAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
 
     //Populate Borrower SOL Tab Remaining Account
     const borrowerSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
@@ -1518,7 +1541,7 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         1,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([borrowerWalletKeypair])
       .instruction()
@@ -1569,7 +1592,7 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         1,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([borrowerWalletKeypair])
       .instruction()
@@ -1600,7 +1623,6 @@ describe("lending_protocol", () =>
 
   it("Borrows USDC From the Token Reserve", async () => 
   {
-    try{
     //Borrowing from the USDC that the Successor deposited
     const refreshingRemainingAccounts =
     [
@@ -1617,7 +1639,7 @@ describe("lending_protocol", () =>
       testUserAccountIndex,
       1,
       unverifiedPriceData)
-    .accounts({lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
+    .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
     .remainingAccounts(refreshingRemainingAccounts)
     .signers([borrowerWalletKeypair])
     .instruction()
@@ -1655,12 +1677,6 @@ describe("lending_protocol", () =>
     ))
 
     assert(lendingUserTabAccount.borrowedAmount.eq(borrowerUSDCAmount))
-  }
-  catch(error)
-  {
-    console.log(error)
-    assert.fail()
-  }
   })
 
   it("Verifies that you can't Withdraw an Amount that Would Cause Your Debt to be More than 70% of the Value of your Collateral", async () => 
@@ -1692,7 +1708,7 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         2,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([borrowerWalletKeypair])
       .instruction()
@@ -1755,7 +1771,7 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         2,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([successorWalletKeypair])
       .instruction()
@@ -1814,7 +1830,7 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         2,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([successorWalletKeypair])
       .instruction()
@@ -1871,12 +1887,15 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         2,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: borrowerWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .instruction()
       
       const liquidationRemainingAccounts =
       [
+        borrowerLendingUserRemainingAccount,
+        usdcTokenReserveATARemainingAccount,
+        solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
@@ -1951,12 +1970,15 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         2,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: borrowerWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .instruction()
 
       const liquidationRemainingAccounts =
       [
+        borrowerLendingUserRemainingAccount,
+        usdcTokenReserveATARemainingAccount,
+        solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
@@ -2031,12 +2053,15 @@ describe("lending_protocol", () =>
         testUserAccountIndex,
         2,
         unverifiedPriceData)
-      .accounts({lendingUserOwner: borrowerWalletKeypair.publicKey })
+      .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .instruction()
 
       const liquidationRemainingAccounts =
       [
+        borrowerLendingUserRemainingAccount,
+        usdcTokenReserveATARemainingAccount,
+        solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
@@ -2212,6 +2237,9 @@ describe("lending_protocol", () =>
 
       const liquidationRemainingAccounts =
       [
+        borrowerLendingUserRemainingAccount,
+        usdcTokenReserveATARemainingAccount,
+        solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
@@ -2334,6 +2362,9 @@ describe("lending_protocol", () =>
 
     const liquidationRemainingAccounts =
     [
+      borrowerLendingUserRemainingAccount,
+      usdcTokenReserveATARemainingAccount,
+      solTokenReserveATARemainingAccount,
       oraclePriceValidatorRemainingAccount,
       lendingStatsRemainingAccount,
       usdcSubMarketRemainingAccount,
@@ -3719,7 +3750,7 @@ describe("lending_protocol", () =>
   {
     console.log("Creating Lookup Table")
 
-    const slot = await program.provider.connection.getSlot("finalized")
+    const slot = await program.provider.connection.getSlot()
 
     const [createInstruction, lookUpTableAddress] = 
     AddressLookupTableProgram.createLookupTable({

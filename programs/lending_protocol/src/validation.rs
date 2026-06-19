@@ -73,6 +73,24 @@ pub fn validate_and_return_token_reserve_account<'info>(
     Ok(token_reserve)
 }
 
+pub fn validate_token_reserve_ata<'info>(
+    ata_account_info: &AccountInfo<'info>,
+    expected_mint: Pubkey,
+    expected_authority: Pubkey) -> Result<()>
+{
+    let mut data = &ata_account_info.data.borrow()[..];
+    let token_account = TokenAccount::try_deserialize(&mut data)
+        .map_err(|_| LendingError::InvalidTokenAccount)?;
+
+    //3. Verify Mint
+    require_keys_eq!(token_account.mint, expected_mint, LendingError::InvalidTokenAccountMint);
+
+    //4. Verify Authority (Owner)
+    require_keys_eq!(token_account.owner, expected_authority, LendingError::InvalidTokenAccountOwner);
+
+    Ok(())
+}
+
 pub fn validate_and_return_sub_market_account<'info>(
     program_id: Pubkey,
     sub_market_account_serialized: &AccountInfo<'info>,
@@ -103,6 +121,36 @@ pub fn validate_and_return_sub_market_account<'info>(
     require_keys_eq!(expected_pda.key(), sub_market_account_serialized.key(), LendingError::UnexpectedSubMarketAccount);
 
     Ok(sub_market)
+}
+
+pub fn validate_and_return_lending_user_account<'info>(
+    program_id: Pubkey,
+    lending_user_account_serialized: &AccountInfo<'info>,
+    user_account_owner_address: Pubkey,
+    user_account_index: u8) -> Result<LendingUserAccount>
+{
+    let mut data_slice: &[u8] = &lending_user_account_serialized.data.borrow();
+
+    let lending_user_account = LendingUserAccount::try_deserialize(&mut data_slice)?;
+
+    let user_account_index_to_le_bytes = user_account_index.to_le_bytes();
+
+    let seeds = &
+    [
+        b"lendingUserAccount",
+        user_account_owner_address.as_ref(),
+        user_account_index_to_le_bytes.as_ref(),
+        &[lending_user_account.bump]
+    ];
+
+    //Verify Lending User Account PDA is a valid PDA
+    let expected_pda = Pubkey::create_program_address(seeds, &program_id)
+    .map_err(|_| LendingError::UnexpectedLendingUserAccount)?;
+
+    //Verify Lending User Account Address is the expected PDA
+    require_keys_eq!(expected_pda.key(), lending_user_account_serialized.key(), LendingError::UnexpectedLendingUserAccount);
+
+    Ok(lending_user_account)
 }
 
 pub fn validate_and_return_lending_user_tab_account<'info>(
