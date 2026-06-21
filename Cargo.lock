@@ -579,18 +579,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brine-ed25519"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "536f8bb9c3ff933cec479bc6e2e109326aa0740a1bb24ac6064d142f85ae6195"
-dependencies = [
- "curve25519-dalek",
- "sha2 0.10.9",
- "solana-address 2.6.1",
- "solana-program-error 3.0.1",
-]
-
-[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1058,7 +1046,6 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang 1.0.2",
  "anchor-spl",
- "brine-ed25519",
  "ra-solana-math",
  "solana-security-txt",
 ]

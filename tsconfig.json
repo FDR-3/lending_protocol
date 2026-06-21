@@ -5,6 +5,11 @@
     "lib": ["es2015"],
     "module": "commonjs",
     "target": "es6",
-    "esModuleInterop": true
-  }
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./tests/*"]
+    }
+  },
+  "include": ["tests/**/*.ts", "target/types/**/*.ts"]
 }

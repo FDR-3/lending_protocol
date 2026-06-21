@@ -10,8 +10,6 @@ pub mod validation;
 pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
-use brine_ed25519::hasher::Sha512;
-use brine_ed25519::verify;
 
 declare_id!("2RYYqg5qpA5NWCn7gb9iobaDr6zmhn2XdLtTXdBGr4qh");
 
@@ -442,67 +440,44 @@ fn update_user_previous_interest_accrued<'info>(
     Ok(())
 }
 
-fn verify_token_prices(
-    unverified_price_data: &UnverifiedPriceData,
-    price_validator_publickey: &Pubkey,
-    current_slot: u64
-)-> Result<Vec<VerifiedPriceData>>
+fn check_token_price_staleness(price_data_clock_slot: u64, current_clock_slot: u64) -> Result<()>
 {
-    let token_ids = &unverified_price_data.payload.token_ids;
-    let normalized_prices_18_decimals = &unverified_price_data.payload.normalized_prices_18_decimals;
-    require!(token_ids.len() == normalized_prices_18_decimals.len(),LendingError::OracleDataMissingOrIncorrect);
-
-    let payload = &unverified_price_data.payload;
-
     #[cfg(feature = "local")] 
     //Allow a max age of 40 slots (approx 16 seconds) 1 slot is about 400ms
-    if current_slot.saturating_sub(payload.slot) > 40
+    if current_clock_slot.saturating_sub(price_data_clock_slot) > 7//40
     {
-        msg!("Current Slot: {}", current_slot);
-        msg!("Data Slot: {}", payload.slot);
+        msg!("Current Slot: {}", current_clock_slot);
+        msg!("Data Slot: {}", price_data_clock_slot);
         return Err(error!(LendingError::OracleDataStale));
     }
 
     #[cfg(feature = "dev")]
     //Allow a max age of 0 slots (approx 0 seconds)
-    if current_slot.saturating_sub(payload.slot) > 0
+    if current_clock_slot.saturating_sub(price_data_clock_slot) > 0
     {
-        msg!("Current Slot: {}", current_slot);
-        msg!("Data Slot: {}", payload.slot);
+        msg!("Current Slot: {}", current_clock_slot);
+        msg!("Data Slot: {}", price_data_clock_slot);
         return Err(error!(LendingError::OracleDataStale));
     }
 
-    let mut verified_prices = Vec::with_capacity(token_ids.len());
-    let mut message_bytes: Vec<u8> = Vec::new();
-    payload.serialize(&mut message_bytes).map_err(|_| anchor_lang::prelude::ProgramError::InvalidInstructionData)?;
-    let message_slices: &[&[u8]] = &[&message_bytes];
-    let signature = unverified_price_data.signature;
-    let validator_publickey_bytes = price_validator_publickey.to_bytes();
-    let validator_address = brine_ed25519::Address::from(validator_publickey_bytes);
+    Ok(())
+}
 
-    //Execute runtime cryptographic check using brine-ed25519
-    //If a single bit of data was mutated by a hacker on the frontend, this throws an error.
-    verify::<Sha512>(&validator_address, &signature, message_slices)
-        .map_err(|_| error!(LendingError::InvalidOracleSignature))?;
+fn refund_oracle_temp_account_fees(temp_price_account_info: &AccountInfo, oracle_account_info: &AccountInfo)
+{
 
-    //Loop through and evaluate each chunk sequentially
-    for i in 0..token_ids.len()
-    {
-        let token_id = token_ids[i];
-        let normalized_price_18_decimals = normalized_prices_18_decimals[i];
+    //Refund price fee Lamports (Rent) back to the oracle
+    let dest_starting_lamports = oracle_account_info.lamports();
+    **oracle_account_info.lamports.borrow_mut() = dest_starting_lamports
+        .checked_add(temp_price_account_info.lamports())
+        .unwrap();
+    **temp_price_account_info.lamports.borrow_mut() = 0;
 
-        msg!("Token: {}", token_id);
-        msg!("price: {}", normalized_price_18_decimals);
-        
-        //Push validated data into results
-        verified_prices.push(VerifiedPriceData
-        {
-            token_id,
-            normalized_price_18_decimals
-        });
-    }
+    let mut temp_data = temp_price_account_info.data.borrow_mut();
+    temp_data.fill(0);
 
-    Ok(verified_prices)
+    //Zero out the data and reassign to System Program (Standard Solana cleanup)
+    temp_price_account_info.assign(&system_program::ID);
 }
 
 fn get_verified_token_price(verified_token_prices: &[VerifiedPriceData], token_id: u8) -> Result<u128>
@@ -745,7 +720,7 @@ pub mod lending_protocol
 {
     use super::*;
 
-    pub fn initialize_lending_protocol(ctx: Context<InitializeLendingProtocol>, statement_month: u8, statement_year: u16, look_up_table_address: Pubkey) -> Result<()> 
+    pub fn initialize_lending_protocol(ctx: Context<InitializeLendingProtocol>, statement_month: u8, statement_year: u16) -> Result<()> 
     {
         //Only the initial CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), INITIAL_CEO_ADDRESS, LendingError::NotCEO);
@@ -766,7 +741,7 @@ pub mod lending_protocol
         let lending_protocol = &mut ctx.accounts.lending_protocol;
         lending_protocol.current_statement_month = statement_month;
         lending_protocol.current_statement_year = statement_year;
-        lending_protocol.look_up_table_address = look_up_table_address;
+        lending_protocol.look_up_table_address = ctx.accounts.look_up_table_address.key();
 
         let lending_stats = &mut ctx.accounts.lending_stats;
         lending_stats.bump = ctx.bumps.lending_stats;
@@ -779,49 +754,49 @@ pub mod lending_protocol
         Ok(())
     }
 
-    pub fn pass_on_lending_protocol_ceo(ctx: Context<PassOnLendingProtocolCEO>, new_ceo_address: Pubkey) -> Result<()> 
+    pub fn pass_on_lending_protocol_ceo(ctx: Context<PassOnLendingProtocolCEO>) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
         msg!("The Lending Protocol CEO has passed on the title to a new CEO");
-        msg!("New CEO: {}", new_ceo_address.key());
+        msg!("New CEO: {}", ctx.accounts.new_ceo_address.key());
 
-        ceo.address = new_ceo_address.key();
+        ceo.address = ctx.accounts.new_ceo_address.key();
 
         Ok(())
     }
 
-    pub fn pass_on_solvency_treasurer(ctx: Context<PassOnSolvencyTreasurer>, new_treasurer_address: Pubkey) -> Result<()> 
+    pub fn pass_on_solvency_treasurer(ctx: Context<PassOnSolvencyTreasurer>) -> Result<()> 
     {
         let solvency_treasurer = &mut ctx.accounts.solvency_treasurer;
         //Only the Treasurer can call this function
         require_keys_eq!(ctx.accounts.signer.key(), solvency_treasurer.address.key(), LendingError::NotSolvencyTreasurer);
 
         msg!("The Solvency Treasurer has passed on the title to a new Treasurer");
-        msg!("New Treasurer: {}", new_treasurer_address.key());
+        msg!("New Treasurer: {}", ctx.accounts.new_treasurer_address.key());
 
-        solvency_treasurer.address = new_treasurer_address.key();
+        solvency_treasurer.address = ctx.accounts.new_treasurer_address.key();
 
         Ok(())
     }
 
-    pub fn pass_on_liquidation_treasurer(ctx: Context<PassOnLiquidationTreasurer>, new_treasurer_address: Pubkey) -> Result<()> 
+    pub fn pass_on_liquidation_treasurer(ctx: Context<PassOnLiquidationTreasurer>) -> Result<()> 
     {
         let liquidation_treasurer = &mut ctx.accounts.liquidation_treasurer;
         //Only the Treasurer can call this function
         require_keys_eq!(ctx.accounts.signer.key(), liquidation_treasurer.address.key(), LendingError::NotLiquidationTreasurer);
 
         msg!("The Liquidation Treasurer has passed on the title to a new Treasurer");
-        msg!("New Treasurer: {}", new_treasurer_address.key());
+        msg!("New Treasurer: {}", ctx.accounts.new_treasurer_address.key());
 
-        liquidation_treasurer.address = new_treasurer_address.key();
+        liquidation_treasurer.address = ctx.accounts.new_treasurer_address.key();
 
         Ok(())
     }
 
-    pub fn set_oracle_price_validator(ctx: Context<SetOraclePriceValidator>, new_price_validator_address: Pubkey) -> Result<()> 
+    pub fn set_oracle_price_validator(ctx: Context<SetOraclePriceValidator>) -> Result<()> 
     {
         let ceo = &ctx.accounts.ceo;
         //Only the CEO can call this function
@@ -830,9 +805,24 @@ pub mod lending_protocol
         let price_validator = &mut ctx.accounts.price_validator;
 
         msg!("A new Oracle Price Validator has been set");
-        msg!("New Price Validator: {}", new_price_validator_address.key());
+        msg!("New Price Validator: {}", ctx.accounts.new_price_validator_address.key());
 
-        price_validator.address = new_price_validator_address.key();
+        price_validator.address = ctx.accounts.new_price_validator_address.key();
+
+        Ok(())
+    }
+
+    pub fn create_temp_oracle_price_data(ctx: Context<CreateTempOraclePriceData>, payload: PriceDataPayload) -> Result<()> 
+    {
+        let price_validator = &ctx.accounts.price_validator;
+        //Only the Price Oracle can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), price_validator.address.key(), LendingError::NotPriceOracle);
+
+        let temp_price_account = &mut ctx.accounts.temp_price_account;
+
+        temp_price_account.bump = ctx.bumps.temp_price_account;
+        temp_price_account.data = payload.data;
+        temp_price_account.slot = payload.slot;
 
         Ok(())
     }
@@ -1183,8 +1173,7 @@ pub mod lending_protocol
         sub_market_index: u16,
         user_account_index: u8,
         amount: u64,
-        withdraw_max: bool,
-        unverified_price_data: Option<UnverifiedPriceData>
+        withdraw_max: bool
     ) -> Result<()> 
     {
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -1257,20 +1246,28 @@ pub mod lending_protocol
 
         if lending_user_account.total_borrowed_usd_value > 0
         {
-            let unverified_data = match &unverified_price_data
-            {
-                Some(data) => data,
-                None => return Err(error!(LendingError::OracleDataMissingOrIncorrect)),
-            };
+            ////////////////////////////
+            //Validate Oracle Price Data
+            let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+            let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+            let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
+                temp_price_account_serialized,
+                ctx.accounts.signer.key())?;
 
-            let verified_token_prices = verify_token_prices(&unverified_data, &price_validator.address, clock_slot)?;
-            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
+            check_token_price_staleness(temp_price_account.slot, clock_slot)?;
+            
+            let normalized_price_18_decimals = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
             let new_user_deposited_usd_value = lending_user_account.total_deposited_usd_value - ((withdraw_amount as u128 * normalized_price_18_decimals) / token_conversion_number);
 
             //Multiply before dividing to help keep precision
             let user_deposited_usd_value_x_70 = new_user_deposited_usd_value * 70;
             let seventy_percent_of_new_deposited_usd_value = user_deposited_usd_value_x_70 / 100;
+
+            //Refund Oracle price account fees back to Oracle
+            let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+            require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+            refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
 
             //You can't withdraw an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
             require!(seventy_percent_of_new_deposited_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
@@ -1330,8 +1327,7 @@ pub mod lending_protocol
     pub fn borrow_tokens(ctx: Context<BorrowTokens>,
         sub_market_index: u16,
         user_account_index: u8,
-        amount: u64,
-        unverified_price_data: UnverifiedPriceData
+        amount: u64
     ) -> Result<()> 
     {
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -1390,8 +1386,17 @@ pub mod lending_protocol
             )?;
         }
 
-        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
-        let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
+        ////////////////////////////
+        //Validate Oracle Price Data
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+        let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
+            temp_price_account_serialized,
+            ctx.accounts.signer.key())?;
+
+        check_token_price_staleness(temp_price_account.slot, clock_slot)?;
+
+        let normalized_price_18_decimals = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
         
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
         lending_user_account.total_borrowed_usd_value += (amount as u128 * normalized_price_18_decimals) / token_conversion_number;
@@ -1406,6 +1411,11 @@ pub mod lending_protocol
         //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
         let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
         require!(available_token_amount >= amount as u128, LendingError::InsufficientLiquidity);
+
+        //Refund Oracle price account fees back to Oracle
+        let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+        refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
 
         let user_token_data = TokenAccount::try_deserialize(&mut &ctx.accounts.user_ata.to_account_info().data.borrow()[..])?;
         let balance_after_withdrawal = user_token_data.amount.saturating_sub(amount);
@@ -1461,8 +1471,7 @@ pub mod lending_protocol
         sub_market_index: u16,
         _user_account_index: u8,
         amount: u64,
-        pay_off_loan: bool,
-        unverified_price_data: UnverifiedPriceData
+        pay_off_loan: bool
     ) -> Result<()> 
     {
         let price_validator = &ctx.accounts.price_validator;
@@ -1525,8 +1534,17 @@ pub mod lending_protocol
             should_close
         )?;
 
-        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
-        let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
+        ////////////////////////////
+        //Validate Oracle Price Data
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+        let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
+            temp_price_account_serialized,
+            ctx.accounts.signer.key())?;
+
+        check_token_price_staleness(temp_price_account.slot, clock_slot)?;
+
+        let normalized_price_18_decimals = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
 
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
 
@@ -1538,6 +1556,11 @@ pub mod lending_protocol
         lending_user_account.total_borrowed_usd_value = lending_user_account
             .total_borrowed_usd_value
             .saturating_sub(repayment_usd_value);
+
+        //Refund Oracle price account fees back to Oracle
+        let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+        refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
 
         //Update Values and Stat Listener
         lending_stats.repayments += 1;
@@ -1586,8 +1609,7 @@ pub mod lending_protocol
         paying_off_insolvent_account: bool,
         send_reward_to_wallet: bool,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
-        look_up_table_address: Option<Pubkey>, //Needed when a user initializes their Lending User Account
-        unverified_price_data: UnverifiedPriceData
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()>
     {
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
@@ -1598,7 +1620,7 @@ pub mod lending_protocol
 
         /////////////////////////////////
         ////Validate Liquidati Lending User Account Account
-        let liquidati_lending_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_lending_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_lending_account = validate_and_return_lending_user_account(*ctx.program_id,
             liquidati_lending_account_serialized,
             liquidati_account_owner_address,
@@ -1621,8 +1643,8 @@ pub mod lending_protocol
         let liquidator_liquidation_monthly_statement_account = &mut ctx.accounts.liquidator_liquidation_monthly_statement_account;
 
         //Validate remaining accounts
-        let repayment_token_reserve_ata_info = remaining_accounts_iter.next().unwrap();
-        let liquidation_token_reserve_ata_info = remaining_accounts_iter.next().unwrap();//.next().ok_or(LendingError::MissingAccount)?;
+        let repayment_token_reserve_ata_info = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let liquidation_token_reserve_ata_info = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
 
         //Repayment Token Reserve ATA
         validate_token_reserve_ata(
@@ -1640,17 +1662,24 @@ pub mod lending_protocol
 
         ///////////////
         //Oracle Price Validator
-        let price_validator_serialized = remaining_accounts_iter.next().unwrap();
+        let price_validator_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let price_validator = validate_and_return_price_validator_account(*ctx.program_id, price_validator_serialized)?;
+
+        ////////////////////////////
+        //Oracle Price Data
+        let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
+            temp_price_account_serialized,
+            ctx.accounts.signer.key())?;
 
         ///////////////
         //Lending Stats
-        let lending_stats_serialized = remaining_accounts_iter.next().unwrap();
+        let lending_stats_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut lending_stats = validate_and_return_lending_stats_account(*ctx.program_id, lending_stats_serialized)?;
 
         /////////////////////////////
         //Repayment SubMarket Account
-        let repayment_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
+        let repayment_sub_market_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut repayment_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
             repayment_sub_market_account_serialized,
             repayment_token_reserve.token_id,
@@ -1659,7 +1688,7 @@ pub mod lending_protocol
 
         ///////////////////////////////
         //Liquidation SubMarket Account
-        let liquidation_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidation_sub_market_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidation_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
             liquidation_sub_market_account_serialized,
             liquidation_token_reserve.token_id,
@@ -1668,7 +1697,7 @@ pub mod lending_protocol
 
         /////////////////////////////////
         //Liquidati Repayment Tab Account
-        let liquidati_repayment_tab_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_repayment_tab_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_repayment_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
             liquidati_repayment_tab_account_serialized,
             repayment_token_reserve.token_id,
@@ -1679,7 +1708,7 @@ pub mod lending_protocol
 
         ///////////////////////////////////
         //Liquidati Liquidation Tab Account
-        let liquidati_liquidation_tab_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_liquidation_tab_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_liquidation_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
             liquidati_liquidation_tab_account_serialized,
             liquidation_token_reserve.token_id,
@@ -1690,7 +1719,7 @@ pub mod lending_protocol
 
         ///////////////////////////////////////////////
         //Liquidati Repayment Monthly Statement Account
-        let liquidati_repayment_monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_repayment_monthly_statement_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_repayment_monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
             liquidati_repayment_monthly_statement_account_serialized,
             lending_protocol.current_statement_month,
@@ -1703,7 +1732,7 @@ pub mod lending_protocol
 
         ///////////////////////////////////////////////
         //Liquidati Liquidation Monthly Statement Account
-        let liquidati_liquidation_monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_liquidation_monthly_statement_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_liquidation_monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
             liquidati_liquidation_monthly_statement_account_serialized,
             lending_protocol.current_statement_month,
@@ -1715,11 +1744,11 @@ pub mod lending_protocol
             liquidati_account_index)?;
 
         let repayment_amount;
-        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
+        check_token_price_staleness(temp_price_account.slot, clock_slot)?;
 
         //Get USD value of Repayment Amount
         let repayment_token_conversion_number = BASE_10_INT.pow(repayment_token_reserve.token_decimal_amount as u32); 
-        let repayment_token_usd_value = get_verified_token_price(&verified_token_prices, repayment_token_reserve.token_id)?;
+        let repayment_token_usd_value = get_verified_token_price(&temp_price_account.data, repayment_token_reserve.token_id)?;
         let mut repayment_amount_usd_value = 0;
 
         //Check if Account is liquidatable and set repayment_amount
@@ -1917,7 +1946,7 @@ pub mod lending_protocol
 
         //Get USD value of Liquidation Token
         let liquidation_token_conversion_number = BASE_10_INT.pow(liquidation_token_reserve.token_decimal_amount as u32); 
-        let liquidation_token_usd_value = get_verified_token_price(&verified_token_prices, liquidation_token_reserve.token_id)?;
+        let liquidation_token_usd_value = get_verified_token_price(&temp_price_account.data, liquidation_token_reserve.token_id)?;
 
         let amount_to_be_liquidated = ((repayment_amount_usd_value * liquidation_token_conversion_number) / liquidation_token_usd_value) as u64;
 
@@ -1996,6 +2025,11 @@ pub mod lending_protocol
             liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
             liquidator_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidator_liquidation_tab_account.deposited_amount;
         }
+
+        //Refund Oracle price account fees back to Oracle
+        let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+        refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
         
         //Update Stat Listener
         lending_stats.liquidations += 1;
@@ -2074,8 +2108,7 @@ pub mod lending_protocol
         paying_off_insolvent_account: bool,
         send_reward_to_wallet: bool,
         account_name: Option<String>, //Optional variable. Use null on front end when not needed
-        look_up_table_address: Option<Pubkey>, //Needed when a user initializes their Lending User Account
-        unverified_price_data: UnverifiedPriceData
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
@@ -2100,14 +2133,21 @@ pub mod lending_protocol
 
         //Validate Accounts
 
+        ////////////////////////////
+        //Oracle Price Data
+        let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
+            temp_price_account_serialized,
+            ctx.accounts.signer.key())?;
+
         ///////////////
         //Lending Stats
-        let lending_stats_serialized = remaining_accounts_iter.next().unwrap();
+        let lending_stats_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut lending_stats = validate_and_return_lending_stats_account(*ctx.program_id, lending_stats_serialized)?;
 
         /////////////////////////////
         //Repayment SubMarket Account
-        let repayment_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
+        let repayment_sub_market_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut repayment_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
             repayment_sub_market_account_serialized,
             token_reserve.token_id,
@@ -2116,7 +2156,7 @@ pub mod lending_protocol
 
         ///////////////////////////////
         //Liquidation SubMarket Account
-        let liquidation_sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidation_sub_market_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidation_sub_market = validate_and_return_sub_market_account(*ctx.program_id,
             liquidation_sub_market_account_serialized,
             token_reserve.token_id,
@@ -2125,7 +2165,7 @@ pub mod lending_protocol
 
         /////////////////////////////////
         //Liquidati Repayment Tab Account
-        let liquidati_repayment_tab_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_repayment_tab_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_repayment_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
             liquidati_repayment_tab_account_serialized,
             token_reserve.token_id,
@@ -2136,7 +2176,7 @@ pub mod lending_protocol
 
         ///////////////////////////////////
         //Liquidati Liquidation Tab Account
-        let liquidati_liquidation_tab_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_liquidation_tab_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_liquidation_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
             liquidati_liquidation_tab_account_serialized,
             token_reserve.token_id,
@@ -2147,7 +2187,7 @@ pub mod lending_protocol
 
         ///////////////////////////////////////////////
         //Liquidati Repayment Monthly Statement Account
-        let liquidati_repayment_monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_repayment_monthly_statement_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_repayment_monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
             liquidati_repayment_monthly_statement_account_serialized,
             lending_protocol.current_statement_month,
@@ -2160,7 +2200,7 @@ pub mod lending_protocol
 
         ///////////////////////////////////////////////
         //Liquidati Liquidation Monthly Statement Account
-        let liquidati_liquidation_monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
+        let liquidati_liquidation_monthly_statement_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let mut liquidati_liquidation_monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
             liquidati_liquidation_monthly_statement_account_serialized,
             lending_protocol.current_statement_month,
@@ -2172,11 +2212,11 @@ pub mod lending_protocol
             liquidati_account_index)?;
 
         let repayment_amount;
-        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
+        check_token_price_staleness(temp_price_account.slot, clock_slot)?;
 
         //Get USD value of Repayment Amount
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-        let token_usd_value = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
+        let token_usd_value = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
         let mut repayment_amount_usd_value = 0;
 
         //Check if Account is liquidatable and set repayment_amount
@@ -2450,6 +2490,11 @@ pub mod lending_protocol
             liquidator_liquidation_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
             liquidator_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidator_liquidation_tab_account.deposited_amount;
         }
+
+        //Refund Oracle price account fees back to Oracle
+        let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+        refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
         
         //Update Stat Listener
         lending_stats.liquidations += 1;
@@ -2525,7 +2570,9 @@ pub mod lending_protocol
     pub fn refresh_user_health_chunk_and_token_reserves(ctx: Context<RefreshUserHealthChunkAndTokenReserves>,
         user_account_index: u8,
         refresh_token_reserve_count: u8, //The number of token reserves being refreshed may not be the number of unverified_price_data, ie when borrowing from a token reserve the user has never interacted with before
-        unverified_price_data: UnverifiedPriceData
+        set_count: u8, //The number of LendingUserTabAccount, Submarket, and LendingUserMonthlyStatementAccount sets being fed in
+        close_price_account: bool //When just wanting to refresh the account without borrowing, set this flag to true so it closes the price account since you don't have a burrow-like instruction that will need it.
+        //Note Withdraw, Borrow, Repay, and Liquidate will close the price account when they are done.
     ) -> Result<()> 
     {
         let user_account_owner_address = ctx.accounts.lending_user_owner.key();
@@ -2554,23 +2601,31 @@ pub mod lending_protocol
             lending_user_account.refresh_clock_slot = clock_slot;
         }
 
-        let verified_token_prices = verify_token_prices(&unverified_price_data, &price_validator.address, clock_slot)?;
+        ////////////////////////////
+        //Validate Oracle Price Data
+        let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
+            temp_price_account_serialized,
+            ctx.accounts.signer.key())?;
+
+        check_token_price_staleness(temp_price_account.slot, clock_slot)?;
 
         let mut token_reserves: Vec<(&AccountInfo, TokenReserve)> = Vec::with_capacity(refresh_token_reserve_count.into());
         for _i in 0..refresh_token_reserve_count.into()
         {
-            let token_reserve_account_serialized = remaining_accounts_iter.next().unwrap();
+            let token_reserve_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
             let token_reserve = validate_and_return_token_reserve_account(*ctx.program_id,
                 token_reserve_account_serialized)?;
             token_reserves.push((token_reserve_account_serialized, token_reserve)); 
         }
 
-        while let Some(tab_account_serialized) = remaining_accounts_iter.next()
+        for _i in 0..set_count.into()
         {
             //Validate Remaining Accounts
             
             /////////////
             //Tab Account
+            let tab_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
             let data_ref = tab_account_serialized.data.borrow();
             let mut data_slice: &[u8] = data_ref.deref();
 
@@ -2598,7 +2653,7 @@ pub mod lending_protocol
 
             ///////////////////
             //SubMarket Account
-            let sub_market_account_serialized = remaining_accounts_iter.next().unwrap();
+            let sub_market_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
             let mut sub_market = validate_and_return_sub_market_account(*ctx.program_id,
                 sub_market_account_serialized,
                 lending_user_tab_account.token_id,
@@ -2607,7 +2662,7 @@ pub mod lending_protocol
 
             ///////////////////////////
             //Monthly Statement Account
-            let monthly_statement_account_serialized = remaining_accounts_iter.next().unwrap();
+            let monthly_statement_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
             let mut monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
                 monthly_statement_account_serialized,
                 lending_protocol.current_statement_month,
@@ -2646,7 +2701,7 @@ pub mod lending_protocol
             lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
 
             //Get normalized price with 8 decimals
-            let normalized_price_18_decimals = get_verified_token_price(&verified_token_prices, token_reserve.token_id)?;
+            let normalized_price_18_decimals = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
             
             //Update temp deposited and borrow values
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
@@ -2679,6 +2734,14 @@ pub mod lending_protocol
             ctx.accounts.signer.key(),
             user_account_owner_address.key(),
             user_account_index);
+        }
+
+        if close_price_account
+        {
+            //Refund Oracle price account fees back to Oracle
+            let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+            require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+            refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
         }
 
         Ok(())
@@ -3280,6 +3343,9 @@ pub mod lending_protocol
 #[derive(Accounts)]
 pub struct InitializeLendingProtocol<'info> 
 {
+    ///CHECK: This is the new address of the Lending Protocol Look Up Table Account
+    pub look_up_table_address: UncheckedAccount<'info>,
+
     #[account(
         init, 
         payer = signer,
@@ -3360,6 +3426,9 @@ pub struct InitializeLendingProtocol<'info>
 #[derive(Accounts)]
 pub struct PassOnLendingProtocolCEO<'info> 
 {
+    ///CHECK: This is the address of the new Lending CEO
+    pub new_ceo_address: UncheckedAccount<'info>,
+
     #[account(
         mut,
         seeds = [b"lendingProtocolCEO".as_ref()],
@@ -3374,6 +3443,9 @@ pub struct PassOnLendingProtocolCEO<'info>
 #[derive(Accounts)]
 pub struct PassOnSolvencyTreasurer<'info> 
 {
+    ///CHECK: This is the address of the new Solvency Treasurer
+    pub new_treasurer_address: UncheckedAccount<'info>,
+
     #[account(
         mut,
         seeds = [b"solvencyTreasurer".as_ref()],
@@ -3388,6 +3460,9 @@ pub struct PassOnSolvencyTreasurer<'info>
 #[derive(Accounts)]
 pub struct PassOnLiquidationTreasurer<'info> 
 {
+    ///CHECK: This is the address of the new Liquidation Treasurer
+    pub new_treasurer_address: UncheckedAccount<'info>,
+
     #[account(
         mut,
         seeds = [b"liquidationTreasurer".as_ref()],
@@ -3402,6 +3477,9 @@ pub struct PassOnLiquidationTreasurer<'info>
 #[derive(Accounts)]
 pub struct SetOraclePriceValidator<'info> 
 {
+    ///CHECK: This is the address of the new Oracle Price Validator
+    pub new_price_validator_address: UncheckedAccount<'info>,
+
     #[account(
         seeds = [b"lendingProtocolCEO".as_ref()],
         bump)]
@@ -3412,6 +3490,32 @@ pub struct SetOraclePriceValidator<'info>
         seeds = [b"oraclePriceValidator".as_ref()],
         bump)]
     pub price_validator: Account<'info, OraclePriceValidator>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+#[instruction(payload: PriceDataPayload)]
+pub struct CreateTempOraclePriceData<'info> 
+{
+    ///CHECK: This is the address of the lending user requesting the price data
+    pub lending_user_address: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
+
+    #[account(
+        init_if_needed, 
+        payer = signer,
+        seeds = [b"oraclePriceData".as_ref(), lending_user_address.key().as_ref()], 
+        bump,
+        space = (5 * 17) + 1 + 4 + 8 + 8)]//5 Possible Tokens * (token_id(1byte) + normalized_price_18_decimals(16bytes) = 17bytes)
+        //1(Bump) + 4(Borsh Vector Prefix) + 8(slot) + 8(Anchor Discriminator)
+    pub temp_price_account: Account<'info, TempOraclePriceAccount>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -4675,22 +4779,15 @@ pub struct ClaimLiquidationFees<'info>
 }
 
 //Internal Structs
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+#[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct PriceDataPayload
 {
-    pub token_ids: Vec<u8>,
-    pub normalized_prices_18_decimals: Vec<u128>,
+    pub data: Vec<VerifiedPriceData>,
     pub slot: u64
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
-pub struct UnverifiedPriceData
-{
-    pub payload: PriceDataPayload,
-    pub signature: [u8; 64]
-}
-
-struct VerifiedPriceData
+pub struct VerifiedPriceData
 {
     pub token_id: u8,
     pub normalized_price_18_decimals: u128
@@ -4720,6 +4817,14 @@ pub struct OraclePriceValidator
 {
     pub bump: u8,
     pub address: Pubkey
+}
+
+#[account]
+pub struct TempOraclePriceAccount
+{
+    pub bump: u8,
+    pub data: Vec<VerifiedPriceData>,
+    pub slot: u64
 }
 
 #[account]

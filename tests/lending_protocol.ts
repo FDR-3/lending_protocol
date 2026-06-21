@@ -9,12 +9,29 @@ import { PublicKey,
   Keypair,
   VersionedTransaction,
   TransactionMessage,
-  ComputeBudgetProgram,
-  AddressLookupTableProgram
+  AddressLookupTableProgram,
+  AccountMeta
 } from '@solana/web3.js'
+import { getLendingProtocolPDA,
+  getLendingStatsPDA,
+  getLendingProtocolCEOPDA,
+  getSolvencyTreasurerPDA,
+  getLiquidationTreasurerPDA,
+  getOraclePriceValidatorPDA,
+  getPriceAccountPDA,
+  getTokenReservePDA,
+  getSubMarketPDA,
+  getLendingUserAccountPDA,
+  getLendingUserTabAccountPDA,
+  getlendingUserMonthlyStatementAccountPDA } from "./get_pdas"
 import { Token, ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token"
-import { sign } from 'tweetnacl'
-import * as borsh from "@coral-xyz/borsh"
+import { errors } from "./errors"
+import { borrowWaitTimeInSeconds, useUSDCFixedBorrowAPY, fixedBorrowAPY, runInsolventTest } from "./test_settings"
+import type { PriceDataPayload } from "./types"
+import { solTestPriceDataPayload,
+  solAndUSDCTestPriceDataPayload,
+  solLiquidatePriceWithUSDCDataPayload,
+  usdcTestPriceDataPayload } from "./test_prices"
 
 describe("lending_protocol", () =>
 {
@@ -39,35 +56,6 @@ describe("lending_protocol", () =>
     programProviderPublicKeyString = programProviderPublicKey.toBase58()
   }
   
-  const notCEOErrorMsg = "Only the CEO can call this function"
-  const notSolvencyTreasurerErrorMsg = "Only the Solvency Treasurer can call this function"
-  const notLiquidationTreasurerErrorMsg = "Only the Liquidation Treasurer can call this function"
-  const solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg = "The solvency insurance fee on interest earned rate can't be greater than 100%"
-  const outOfRangeError = "ERR_OUT_OF_RANGE"
-  const subMarketFeeOnInterestEarnedRateTooHighErrorMsg = "The Sub Market fee on interest earned rate can't be greater than 100%"
-  const subMarketOwnerLookUpTableMissingErrorMsg = "You must include a Look Up Table Address when a user creates their first Sub Market"
-  const globalLimitExceededErrorMsg = "You can't deposit more than the global limit"
-  const expectedThisAccountToExistErrorMsg = "The program expected this account to be already initialized"
-  const insufficientFundsErrorMsg = "You can't withdraw more funds than you've deposited"
-  const ataDoesNotExistErrorMsg = "failed to get token account balance: Account "
-  const debtExceeding70PercentOfCollateralErrorMsg = "You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral"
-  const insufficientLiquidityErrorMsg = "Not enough liquidity in the Token Reserve for this withdraw or borrow"
-  const notLiquidatableErrorMsg = "You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral"
-  const overLiquidationErrorMsg = "You can't repay more than 50% of a liquidati's debt position"
-  const notInsolventErrorMsg = "You can't zero out an account whose borrow liabilities aren't 100% or more of their deposited collateral"
-  const tooManyFundsErrorMsg = "You can't pay back more funds than you've borrowed"
-  const griefingErrorMsg = "You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'"
-  const incorrectOrderOfTabAccountsErrorMsg = "You must provide the sub user's tab accounts ordered by user_tab_account_index"
-  const accountNameTooLongErrorMsg = "Lending User Account name can't be longer than 25 characters"
-  const unexpectedTabAccountErrorMsg = "Unexpected Tab Account PDA detected"
-  const missingExpectedTokenReserveErrorMsg = "Expected Token Reserve missing for user refresh"
-  const unexpectedSubMarketErrorMsg = "Unexpected SubMarket Account PDA detected"
-  const unexpectedMonthlyStatementErrorMsg = "Unexpected Monthly Statement Account PDA detected"
-  const notFeeCollectorErrorMsg = "Only the Fee Collector can claim the fees"
-  const staleTokenReserveOrLendingUserErrorMsg = "Token Reserve or lending user health data was stale"
-  const oraclePriceNotFoundErrorMsg = "Oracle price not found"
-  const invalidOracleSignatureErrorMsg = "This price wasn't signed by the Oracle"
-  
   var protocolLookUpTableAddress: PublicKey
   var protocolLookUpTableAccount: anchor.web3.AddressLookupTableAccount | null
   var mainSubMarketOwnerLookUpTableAddress: PublicKey
@@ -87,9 +75,6 @@ describe("lending_protocol", () =>
   const solTokenDecimalAmount = 9
   const oneSol = new anchor.BN(LAMPORTS_PER_SOL)
   const twoSol = new anchor.BN(LAMPORTS_PER_SOL * 2)
-  var solTestPrice: PriceData
-  var solCantLiquidatePrice: PriceData
-  var solLiquidationPrice: PriceData
   var solTokenReserveRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var solTokenReserveATARemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var solSubMarketRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
@@ -107,7 +92,6 @@ describe("lending_protocol", () =>
   const overBorrowUSDCAmount = new anchor.BN(71_000_000)
   const lessThan10PercentOfBorrowedAmount = new anchor.BN(6_999_999) 
   const supplierUSDCAmount = new anchor.BN(100_000_000)
-  var usdcTestPrice: PriceData
   var usdcTokenReserveRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcTokenReserveATARemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var usdcSubMarketRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
@@ -149,7 +133,6 @@ describe("lending_protocol", () =>
   var supplierWBtcMonthlyStatementRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var borrowerWBtcMonthlyStatementRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
-  const borrowAPY5Percent = 500 //5.00%
   const borrowAPY7Percent = 700 //7.00%
   const globalLimitLow = new anchor.BN(1)
   const globalLimit1 = new anchor.BN(10_000_000_000)
@@ -184,14 +167,20 @@ describe("lending_protocol", () =>
   const borrowerWalletKeypair = anchor.web3.Keypair.generate()
   const priceValidatorKeypair = anchor.web3.Keypair.generate()
 
-  //Test Settings
-  const borrowWaitTimeInSeconds = 30
-  //const borrowWaitTimeInSeconds = 0
-  const useUSDCFixedBorrowAPY = false
-  const runInsolventTest = false
+  //Populate Oracle Address remaining account
+  const oracleAddressRemainingAccount = 
+  {
+    pubkey: priceValidatorKeypair.publicKey,
+    isSigner: false,
+    isWritable: true
+  }
 
   before(async () =>
   {
+    //Fund Price Validator Wallet
+    console.log("Funding Price Validator Wallet")
+    await airDropSol(priceValidatorKeypair.publicKey)
+
     //Fund Successor Wallet
     console.log("Funding Sucessor Wallet")
     await airDropSol(successorWalletKeypair.publicKey)
@@ -272,45 +261,6 @@ describe("lending_protocol", () =>
     await createATAForWallet(successorWalletKeypair, wbtcMint.publicKey, successorWalletWBTCATA)
     await mintTokenToWallet(wbtcMint.publicKey, successorWalletWBTCATA)
 
-    //Set Test Prices (Scaled to 18 Decimals)
-    solTestPrice = 
-    {
-      //tokenMintAddress: solTokenMintAddress,
-      tokenId: 1,
-      normalizedPrice18Decimals: new anchor.BN("100000000000000000000") //$100.00 USD
-    }
-    solCantLiquidatePrice = 
-    {
-      //tokenMintAddress: solTokenMintAddress,
-      tokenId: 1,
-      normalizedPrice18Decimals: new anchor.BN("875000001000000000000") //$875.000001 USD
-    }
-    if(!runInsolventTest)
-    {
-      solLiquidationPrice = 
-      {
-        //tokenMintAddress: solTokenMintAddress,
-        tokenId: 1,
-        normalizedPrice18Decimals: new anchor.BN("87500000000000000000") //$87.50 USD
-      }
-    }
-    else
-    {
-      solLiquidationPrice = 
-      {
-        //tokenMintAddress: solTokenMintAddress,
-        tokenId: 1,
-        normalizedPrice18Decimals: new anchor.BN("70000000000000000000") //$70.00 USD
-      }
-    }
-    
-    usdcTestPrice = 
-    {
-      //tokenMintAddress: usdcMint.publicKey,
-      tokenId: 2,
-      normalizedPrice18Decimals: new anchor.BN("1000000000000000000") //$1.00 USD
-    }
-
     console.log("Setup Complete")
   })
 
@@ -318,7 +268,9 @@ describe("lending_protocol", () =>
   {
     protocolLookUpTableAddress = await initLookUpTable()
 
-    await program.methods.initializeLendingProtocol(statementMonth, statementYear, protocolLookUpTableAddress).rpc()
+    await program.methods.initializeLendingProtocol(statementMonth, statementYear)
+    .accounts({ lookUpTableAddress: protocolLookUpTableAddress })
+    .rpc()
 
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOPDA())
     assert(ceoAccount.address.toBase58() == programProviderPublicKeyString)
@@ -361,8 +313,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.passOnLendingProtocolCeo(programProviderPublicKey)
-      .accounts({ signer: successorWalletKeypair.publicKey })
+      await program.methods.passOnLendingProtocolCeo()
+      .accounts({ newCeoAddress: programProviderPublicKey, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -371,12 +323,14 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notCEOErrorMsg)
+    assert(errorMessage == errors.notCEOErrorMsg)
   })
 
   it("Passes on the Lending Protocol CEO Account", async () => 
   {
-    await program.methods.passOnLendingProtocolCeo(successorWalletKeypair.publicKey).rpc()
+    await program.methods.passOnLendingProtocolCeo()
+    .accounts({ newCeoAddress: successorWalletKeypair.publicKey })
+    .rpc()
     
     var ceoAccount = await program.account.lendingProtocolCeo.fetch(getLendingProtocolCEOPDA())
     assert(ceoAccount.address.toBase58() == successorWalletKeypair.publicKey.toBase58())
@@ -384,8 +338,8 @@ describe("lending_protocol", () =>
   
   it("Passes back the Lending Protocol CEO Account", async () => 
   {
-    await program.methods.passOnLendingProtocolCeo(programProviderPublicKey)
-    .accounts({ signer: successorWalletKeypair.publicKey })
+    await program.methods.passOnLendingProtocolCeo()
+    .accounts({ newCeoAddress: programProviderPublicKey, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
     
@@ -399,8 +353,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.passOnSolvencyTreasurer(programProviderPublicKey)
-      .accounts({ signer: successorWalletKeypair.publicKey })
+      await program.methods.passOnSolvencyTreasurer()
+      .accounts({ newTreasurerAddress: programProviderPublicKey, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -409,12 +363,14 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notSolvencyTreasurerErrorMsg)
+    assert(errorMessage == errors.notSolvencyTreasurerErrorMsg)
   })
 
   it("Passes on the Solvency Treasurer Account", async () => 
   {
-    await program.methods.passOnSolvencyTreasurer(successorWalletKeypair.publicKey).rpc()
+    await program.methods.passOnSolvencyTreasurer()
+      .accounts({ newTreasurerAddress: successorWalletKeypair.publicKey })
+      .rpc()
 
     var treasurerAccount = await program.account.solvencyTreasurer.fetch(getSolvencyTreasurerPDA())
     assert(treasurerAccount.address.toBase58() == successorWalletKeypair.publicKey.toBase58())
@@ -422,8 +378,8 @@ describe("lending_protocol", () =>
   
   it("Passes back the Solvency Treasurer Account", async () => 
   {
-    await program.methods.passOnSolvencyTreasurer(programProviderPublicKey)
-    .accounts({ signer: successorWalletKeypair.publicKey })
+    await program.methods.passOnSolvencyTreasurer()
+    .accounts({ newTreasurerAddress: programProviderPublicKey, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
     
@@ -437,8 +393,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.passOnLiquidationTreasurer(programProviderPublicKey)
-      .accounts({ signer: successorWalletKeypair.publicKey })
+      await program.methods.passOnLiquidationTreasurer()
+      .accounts({ newTreasurerAddress: programProviderPublicKey, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -447,12 +403,14 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notLiquidationTreasurerErrorMsg)
+    assert(errorMessage == errors.notLiquidationTreasurerErrorMsg)
   })
 
   it("Passes on the Liquidation Treasurer Account", async () => 
   {
-    await program.methods.passOnLiquidationTreasurer(successorWalletKeypair.publicKey).rpc()
+    await program.methods.passOnLiquidationTreasurer()
+    .accounts({ newTreasurerAddress: successorWalletKeypair.publicKey })
+    .rpc()
 
     var treasurerAccount = await program.account.liquidationTreasurer.fetch(getLiquidationTreasurerPDA())
     assert(treasurerAccount.address.toBase58() == successorWalletKeypair.publicKey.toBase58())
@@ -460,8 +418,8 @@ describe("lending_protocol", () =>
   
   it("Passes back the Liquidation Treasurer Account", async () => 
   {
-    await program.methods.passOnLiquidationTreasurer(programProviderPublicKey)
-    .accounts({ signer: successorWalletKeypair.publicKey })
+    await program.methods.passOnLiquidationTreasurer()
+    .accounts({ newTreasurerAddress: programProviderPublicKey, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .rpc()
     
@@ -475,8 +433,8 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.setOraclePriceValidator(priceValidatorKeypair.publicKey)
-      .accounts({ signer: successorWalletKeypair.publicKey })
+      await program.methods.setOraclePriceValidator()
+      .accounts({ newPriceValidatorAddress: priceValidatorKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
     }
@@ -485,12 +443,14 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notCEOErrorMsg)
+    assert(errorMessage == errors.notCEOErrorMsg)
   })
 
   it("Sets Price Validator", async () => 
   {
-    await program.methods.setOraclePriceValidator(priceValidatorKeypair.publicKey).rpc()
+    await program.methods.setOraclePriceValidator()
+    .accounts({ newPriceValidatorAddress: priceValidatorKeypair.publicKey })
+    .rpc()
     
     var oraclePriceValidator = await program.account.oraclePriceValidator.fetch(getOraclePriceValidatorPDA())
     assert(oraclePriceValidator.address.toBase58() == priceValidatorKeypair.publicKey.toBase58())
@@ -512,7 +472,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notCEOErrorMsg)
+    assert(errorMessage == errors.notCEOErrorMsg)
   })
 
   it("Updates Lending Protocol Statement Month and Year", async () => 
@@ -531,7 +491,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenDecimalAmount, borrowAPY5Percent, true, globalLimit1, solvencyInsuranceFeeRate8Percent)
+      await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimit1, solvencyInsuranceFeeRate8Percent)
       .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -541,7 +501,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notCEOErrorMsg)
+    assert(errorMessage == errors.notCEOErrorMsg)
   })
 
   it("Verifies That a Token Reserve Can't be Created With a Solvency Insurance Fee on Interest Rate Higher than 100%", async () => 
@@ -550,7 +510,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenDecimalAmount, borrowAPY5Percent, true, globalLimitLow, solvencyInsuranceFeeRateAbove100Percent)
+      await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRateAbove100Percent)
       .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
       .rpc()
     }
@@ -559,7 +519,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg)
+    assert(errorMessage == errors.solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg)
   })
 
   it("Verifies That a Token Reserve Can't be Created With a Solvency Insurance Fee on Interest Rate Below 0%", async () => 
@@ -568,7 +528,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenDecimalAmount, borrowAPY5Percent, true, globalLimitLow, solvencyInsuranceFeeRateBelove0Percent)
+      await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRateBelove0Percent)
       .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
       .rpc()
     }
@@ -577,12 +537,12 @@ describe("lending_protocol", () =>
       errorMessage = error.code
     }
 
-    assert(errorMessage == outOfRangeError)
+    assert(errorMessage == errors.outOfRangeError)
   })
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(solTokenDecimalAmount, borrowAPY5Percent, true, globalLimitLow, solvencyInsuranceFeeRate8Percent)
+    await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRate8Percent)
     .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
     .rpc()
     
@@ -591,7 +551,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(tokenReserve.borrowApy == borrowAPY5Percent)
+    assert(tokenReserve.borrowApy == fixedBorrowAPY)
     assert(tokenReserve.globalLimit.eq(globalLimitLow))
     assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
 
@@ -633,7 +593,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == subMarketFeeOnInterestEarnedRateTooHighErrorMsg)
+    assert(errorMessage == errors.subMarketFeeOnInterestEarnedRateTooHighErrorMsg)
   })
 
   it("Verifies That a SubMarket Can't be Created With a Fee on Interest Rate Below 0%", async () => 
@@ -651,7 +611,7 @@ describe("lending_protocol", () =>
       errorMessage = error.code
     }
 
-    assert(errorMessage == outOfRangeError)
+    assert(errorMessage == errors.outOfRangeError)
   })
 
   it("Verifies That a Look Up Table Address is Required when a Sub Market Owner Creates Their First Sub Market", async () => 
@@ -669,7 +629,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == subMarketOwnerLookUpTableMissingErrorMsg)
+    assert(errorMessage == errors.subMarketOwnerLookUpTableMissingErrorMsg)
   })
 
   it("Creates a wSOL SubMarket", async () => 
@@ -680,16 +640,16 @@ describe("lending_protocol", () =>
     .accounts({ tokenMintAddress: solTokenMintAddress, feeCollectorAddress: programProviderPublicKey })
     .rpc()
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTestPriceDataPayload.data[0].tokenId, programProviderPublicKey, testSubMarketIndex))
     
     assert(subMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeCollectorAddress.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
-    assert(subMarket.tokenId == solTestPrice.tokenId)
+    assert(subMarket.tokenId == solTestPriceDataPayload.data[0].tokenId)
     assert(subMarket.subMarketIndex == testSubMarketIndex)
 
     //Populate SOL SubMarket Remaining Account
-    const solSubMarketPDA = getSubMarketPDA(solTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex)
+    const solSubMarketPDA = getSubMarketPDA(solTestPriceDataPayload.data[0].tokenId, programProviderPublicKey, testSubMarketIndex)
     solSubMarketRemainingAccount = 
     {
       pubkey: solSubMarketPDA,
@@ -706,16 +666,16 @@ describe("lending_protocol", () =>
 
   it("Edits a wSOL SubMarket", async () => 
   {
-    await program.methods.editSubMarket(solTestPrice.tokenId, testSubMarketIndex, subMarketFeeRate100Percent)
+    await program.methods.editSubMarket(solTestPriceDataPayload.data[0].tokenId, testSubMarketIndex, subMarketFeeRate100Percent)
     .accounts({ feeCollectorAddress: successorWalletKeypair.publicKey })
     .rpc()
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(solTestPriceDataPayload.data[0].tokenId, programProviderPublicKey, testSubMarketIndex))
     
     assert(subMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeCollectorAddress.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(subMarket.feeOnInterestEarnedRate == subMarketFeeRate100Percent)
-    assert(subMarket.tokenId == solTestPrice.tokenId)
+    assert(subMarket.tokenId == solTestPriceDataPayload.data[0].tokenId)
     assert(subMarket.subMarketIndex == testSubMarketIndex)
   })
 
@@ -726,7 +686,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.editSubMarket(solTestPrice.tokenId, testSubMarketIndex, subMarketFeeRate100Percent)
+      await program.methods.editSubMarket(solTestPriceDataPayload.data[0].tokenId, testSubMarketIndex, subMarketFeeRate100Percent)
       .accounts({ feeCollectorAddress: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -736,7 +696,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == expectedThisAccountToExistErrorMsg)
+    assert(errorMessage == errors.expectedThisAccountToExistErrorMsg)
   })
 
   it("Verifies you can't Deposit Over the Global Limit", async () => 
@@ -759,7 +719,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == globalLimitExceededErrorMsg)
+    assert(errorMessage == errors.globalLimitExceededErrorMsg)
   })
 
   it("Verifies That Only the CEO Can Update the Token Reserve", async () => 
@@ -778,7 +738,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notCEOErrorMsg)
+    assert(errorMessage == errors.notCEOErrorMsg)
   })
 
   it("Updates Token Reserve Borrow APY, Global Limit, and Solvency Insurance Rate", async () => 
@@ -827,7 +787,7 @@ describe("lending_protocol", () =>
 
     const successorSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -836,7 +796,7 @@ describe("lending_protocol", () =>
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(successorSOLLendingUserTabAccountPDA)
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenId == solTestPrice.tokenId)
+    assert(lendingUserTabAccount.tokenId == solTestPriceDataPayload.data[0].tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 0)
@@ -847,7 +807,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -903,7 +863,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == accountNameTooLongErrorMsg)
+    assert(errorMessage == errors.accountNameTooLongErrorMsg)
   })
 
   it("Verifies a User Can Change Their Account Names", async () => 
@@ -932,8 +892,7 @@ describe("lending_protocol", () =>
         testSubMarketIndex,
         testUserAccountIndex,
         tooMuchSol,
-        false,
-        null)
+        false)
       .accounts({
         tokenMint: solTokenMintAddress,
         subMarketOwner: programProviderPublicKey,
@@ -949,7 +908,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(insufficientFundsErrorMsg))
+    assert(errorMessage.includes(errors.insufficientFundsErrorMsg))
   })
 
   it("Withdraws wSOL From the Token Reserve", async () => 
@@ -958,9 +917,7 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       twoSol,
-      true,
-      null
-    )
+      true)
     .accounts({
       tokenMint: solTokenMintAddress,
       subMarketOwner: programProviderPublicKey,
@@ -979,7 +936,7 @@ describe("lending_protocol", () =>
 
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -987,7 +944,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenId == solTestPrice.tokenId)
+    assert(lendingUserTabAccount.tokenId == solTestPriceDataPayload.data[0].tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 0)
@@ -1002,7 +959,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1030,12 +987,12 @@ describe("lending_protocol", () =>
       errorMessage = error.message
     }
 
-    assert(errorMessage == ataDoesNotExistErrorMsg + userATA + " not found")
+    assert(errorMessage == errors.ataDoesNotExistErrorMsg + userATA + " not found")
   })
   
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcTokenDecimalAmount, borrowAPY5Percent, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
+    await program.methods.addTokenReserve(usdcTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
     .accounts({ tokenMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
     
@@ -1044,7 +1001,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(tokenReserve.borrowApy == borrowAPY5Percent)
+    assert(tokenReserve.borrowApy == fixedBorrowAPY)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
     assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
 
@@ -1077,15 +1034,15 @@ describe("lending_protocol", () =>
     .accounts({ tokenMintAddress: usdcMint.publicKey, feeCollectorAddress: programProviderPublicKey })
     .rpc()
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPriceDataPayload.data[0].tokenId, programProviderPublicKey, testSubMarketIndex))
     assert(subMarket.owner.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeCollectorAddress.toBase58() == programProviderPublicKeyString)
     assert(subMarket.feeOnInterestEarnedRate == subMarketFeeRate8Percent)
-    assert(subMarket.tokenId == usdcTestPrice.tokenId)
+    assert(subMarket.tokenId == usdcTestPriceDataPayload.data[0].tokenId)
     assert(subMarket.subMarketIndex == testSubMarketIndex)
 
     //Populate USDC SubMarket Remaining Account
-    const usdcSubMarketPDA = getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex)
+    const usdcSubMarketPDA = getSubMarketPDA(usdcTestPriceDataPayload.data[0].tokenId, programProviderPublicKey, testSubMarketIndex)
     usdcSubMarketRemainingAccount = 
     {
       pubkey: usdcSubMarketPDA,
@@ -1126,7 +1083,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1134,7 +1091,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenId == usdcTestPrice.tokenId)
+    assert(lendingUserTabAccount.tokenId == usdcTestPriceDataPayload.data[0].tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 1)
@@ -1145,7 +1102,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1163,7 +1120,7 @@ describe("lending_protocol", () =>
     //Populate Supplier USDC Tab Remaining Account
     const usdcLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1182,7 +1139,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -1231,7 +1188,7 @@ describe("lending_protocol", () =>
     //Populate Borrower SOL Tab Remaining Account
     const borrowerSOLLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1247,7 +1204,7 @@ describe("lending_protocol", () =>
     //Populate Borrower USDC Tab Remaining Account
     const borrowerUSDCLendingUserTabAccountPDA = getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1265,7 +1222,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1283,7 +1240,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1314,28 +1271,46 @@ describe("lending_protocol", () =>
     borrowerLookUpTableAccount = (await program.provider.connection.getAddressLookupTable(borrowerLookUpTableAddress)).value
   })
 
+  it("Verifies only the Oracle Price Validator can set prices", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.createTempOraclePriceData(solTestPriceDataPayload)
+      .accounts({ lendingUserAddress: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
+      .signers([borrowerWalletKeypair])
+      .rpc()
+    }
+    catch(error: any)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == errors.notPriceOracle)
+  })
+
   it("Verifies you Can't Refresh User's Health Without Their Tab Account", async () => 
   {
     var errorMessage = ""
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, successorWalletKeypair.publicKey)
+
       //Refresh Token Reserve and User Health
       const remainingAccounts =
       [
+        priceRemainingAccount,
         solTokenReserveRemainingAccount,
         borrowerSOLLendingUserTabRemainingAccount,
         solSubMarketRemainingAccount,
         supplierSOLMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        1,
-        unverifiedPriceData)
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
+        
+      await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 1, 1, true)
       .accounts({lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
@@ -1346,7 +1321,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == unexpectedTabAccountErrorMsg)
+    assert(errorMessage == errors.unexpectedTabAccountErrorMsg)
   })
 
   it("Verifies you Can't Refresh User's Health Without the Right Token Reserve", async () => 
@@ -1355,22 +1330,21 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, successorWalletKeypair.publicKey)
+      
       //Refresh Token Reserve and User Health
       const remainingAccounts =
       [
+        priceRemainingAccount,
         usdcTokenReserveRemainingAccount,
         supplierSOLLendingUserTabRemainingAccount,
         solSubMarketRemainingAccount,
         supplierSOLMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
 
-      await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        1,
-        unverifiedPriceData)
+      await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 1, 1, true)
       .accounts({lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
@@ -1381,7 +1355,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == missingExpectedTokenReserveErrorMsg)
+    assert(errorMessage == errors.missingExpectedTokenReserveErrorMsg)
   })
 
   it("Verifies you Can't Refresh User's Health Without the Right SubMarket", async () => 
@@ -1390,22 +1364,21 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, successorWalletKeypair.publicKey)
+
       //Refresh Token Reserve and User Health
       const remainingAccounts =
       [
+        priceRemainingAccount,
         solTokenReserveRemainingAccount,
         supplierSOLLendingUserTabRemainingAccount,
         usdcSubMarketRemainingAccount,
         supplierSOLMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
 
-      await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        1,
-        unverifiedPriceData)
+      await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 1, 1, true)
       .accounts({lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
@@ -1416,7 +1389,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == unexpectedSubMarketErrorMsg)
+    assert(errorMessage == errors.unexpectedSubMarketErrorMsg)
   })
 
   it("Verifies you Can't Refresh User's Health Without the Right Monthly Statement", async () => 
@@ -1425,22 +1398,21 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, successorWalletKeypair.publicKey)
+
       //Refresh Token Reserve and User Health
       const remainingAccounts =
       [
+        priceRemainingAccount,
         solTokenReserveRemainingAccount,
         supplierSOLLendingUserTabRemainingAccount,
         solSubMarketRemainingAccount,
         borrowerSOLMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
 
-      await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        1,
-        unverifiedPriceData)
+      await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 1, 1, true)
       .accounts({lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(remainingAccounts)
       .signers([successorWalletKeypair])
@@ -1451,42 +1423,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == unexpectedMonthlyStatementErrorMsg)
-  })
-
-  it("Verifies you Can't Refresh User's Health With Price Data with an Invalid Signature", async () => 
-  {
-    var errorMessage = ""
-
-    try
-    {
-      //Refresh Token Reserve and User Health
-      const remainingAccounts =
-      [
-        solTokenReserveRemainingAccount,
-        supplierSOLLendingUserTabRemainingAccount,
-        solSubMarketRemainingAccount,
-        supplierSOLMonthlyStatementRemainingAccount
-      ]
-      
-      const priceData = [solTestPrice]
-      const unverifiedPriceData = await setPrice(priceData, false)
-
-      await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        1,
-        unverifiedPriceData)
-      .accounts({lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
-      .remainingAccounts(remainingAccounts)
-      .signers([successorWalletKeypair])
-      .rpc()
-    }
-    catch(error: any)
-    {
-      errorMessage = error.error.errorMessage
-    }
-
-    assert(errorMessage == invalidOracleSignatureErrorMsg)
+    assert(errorMessage == errors.unexpectedMonthlyStatementErrorMsg)
   })
 
   it("Verifies a User Can't Borrow When the Lending User's Health Data is Stale", async () => 
@@ -1495,15 +1432,10 @@ describe("lending_protocol", () =>
 
     try
     {
-      const priceData = [solTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
       await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        overBorrowUSDCAmount,
-        unverifiedPriceData
-      )
+        overBorrowUSDCAmount)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
@@ -1517,7 +1449,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == staleTokenReserveOrLendingUserErrorMsg)
+    assert(errorMessage == errors.staleTokenReserveOrLendingUserErrorMsg)
   })
 
   it("Verifies that you can't Borrow More than 70% of the Value of your Collateral", async () => 
@@ -1526,21 +1458,18 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, borrowerWalletKeypair.publicKey)
+
       const refreshingRemainingAccounts =
       [
+        priceRemainingAccount,
         solTokenReserveRemainingAccount,
         borrowerSOLLendingUserTabRemainingAccount,
         solSubMarketRemainingAccount,
         borrowerSOLMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        1,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 1, 1, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([borrowerWalletKeypair])
@@ -1549,16 +1478,17 @@ describe("lending_protocol", () =>
       const borrowInstruction = await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        overBorrowUSDCAmount,
-        unverifiedPriceData
-      )
+        overBorrowUSDCAmount)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         signer: borrowerWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount])
       .signers([borrowerWalletKeypair])
       .instruction()
+
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
 
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, borrowInstruction], [borrowerWalletKeypair])
     }
@@ -1567,7 +1497,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(debtExceeding70PercentOfCollateralErrorMsg))
+    assert(errorMessage.includes(errors.debtExceeding70PercentOfCollateralErrorMsg))
   })
 
   it("Verifies that you can't Borrow from a new reserve (new to the user) without including it's price data", async () => 
@@ -1576,22 +1506,19 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, borrowerWalletKeypair.publicKey)
+
       //Borrowing from the USDC that the Successor deposited
       const refreshingRemainingAccounts =
       [
+        priceRemainingAccount,
         solTokenReserveRemainingAccount,
         borrowerSOLLendingUserTabRemainingAccount,
         solSubMarketRemainingAccount,
         borrowerSOLMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        1,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 1, 1, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([borrowerWalletKeypair])
@@ -1600,16 +1527,17 @@ describe("lending_protocol", () =>
       const borrowInstruction = await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        borrowerUSDCAmount,
-        unverifiedPriceData
-      )
+        borrowerUSDCAmount)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         signer: borrowerWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount])
       .signers([borrowerWalletKeypair])
       .instruction()
+
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
 
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, borrowInstruction], [borrowerWalletKeypair])
     }
@@ -1618,27 +1546,24 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(oraclePriceNotFoundErrorMsg))
+    assert(errorMessage.includes(errors.oraclePriceNotFoundErrorMsg))
   })
 
   it("Borrows USDC From the Token Reserve", async () => 
   {
+    const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, borrowerWalletKeypair.publicKey)
+
     //Borrowing from the USDC that the Successor deposited
     const refreshingRemainingAccounts =
     [
+      priceRemainingAccount,
       solTokenReserveRemainingAccount,
       borrowerSOLLendingUserTabRemainingAccount,
       solSubMarketRemainingAccount,
       borrowerSOLMonthlyStatementRemainingAccount
     ]
 
-    const priceData = [solTestPrice, usdcTestPrice]
-    const unverifiedPriceData = await setPrice(priceData)
-
-    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-      testUserAccountIndex,
-      1,
-      unverifiedPriceData)
+    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 1, 1, false)
     .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
     .remainingAccounts(refreshingRemainingAccounts)
     .signers([borrowerWalletKeypair])
@@ -1647,17 +1572,17 @@ describe("lending_protocol", () =>
     const borrowInstruction = await program.methods.borrowTokens(
       testSubMarketIndex,
       testUserAccountIndex,
-      borrowerUSDCAmount,
-      unverifiedPriceData
-    )
+      borrowerUSDCAmount)
     .accounts({
       subMarketOwner: programProviderPublicKey,
       tokenMint: usdcMint.publicKey,
       tokenProgram: TOKEN_2022_PROGRAM_ID,
       signer: borrowerWalletKeypair.publicKey })
+    .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
     .signers([borrowerWalletKeypair])
     .instruction()
 
+    await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
     await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, borrowInstruction], [borrowerWalletKeypair])
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
@@ -1669,7 +1594,7 @@ describe("lending_protocol", () =>
     
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -1685,8 +1610,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, borrowerWalletKeypair.publicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -1701,13 +1631,7 @@ describe("lending_protocol", () =>
         borrowerUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([borrowerWalletKeypair])
@@ -1717,17 +1641,17 @@ describe("lending_protocol", () =>
         testSubMarketIndex,
         testUserAccountIndex,
         new anchor.BN(1),
-        false,
-        unverifiedPriceData
-      )
+        false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: solTokenMintAddress,
         tokenProgram: TOKEN_PROGRAM_ID,
         signer: borrowerWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
       .signers([borrowerWalletKeypair])
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, withdrawInstruction], [borrowerWalletKeypair])
     }
     catch(error: any)
@@ -1735,7 +1659,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
     
-    assert(errorMessage.includes(debtExceeding70PercentOfCollateralErrorMsg))
+    assert(errorMessage.includes(errors.debtExceeding70PercentOfCollateralErrorMsg))
 
     //Allow some time after borrow for interest to increase
     //This was placed here and not the previous borrow test to allow this test to pass. Can't have interest already being earned, increasing the withdrawable amount.
@@ -1748,8 +1672,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, successorWalletKeypair.publicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -1764,13 +1693,7 @@ describe("lending_protocol", () =>
         supplierUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([successorWalletKeypair])
@@ -1780,17 +1703,17 @@ describe("lending_protocol", () =>
         testSubMarketIndex,
         testUserAccountIndex,
         borrowerUSDCAmount,
-        true,
-        unverifiedPriceData
-      )
+        true)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         signer: successorWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
       .signers([successorWalletKeypair])
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, withdrawInstruction], [successorWalletKeypair])
     }
     catch(error: any)
@@ -1798,7 +1721,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(insufficientLiquidityErrorMsg))
+    assert(errorMessage.includes(errors.insufficientLiquidityErrorMsg))
   })
 
   it("Verifies you can't Borrow When too many Tokens are Currently Being Borrowed.", async () => 
@@ -1807,8 +1730,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, successorWalletKeypair.publicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -1823,13 +1751,7 @@ describe("lending_protocol", () =>
         supplierUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solTestPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .signers([successorWalletKeypair])
@@ -1838,16 +1760,17 @@ describe("lending_protocol", () =>
       const borrowInstruction = await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        borrowerUSDCAmount,
-        unverifiedPriceData)
+        borrowerUSDCAmount)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         signer: successorWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
       .signers([successorWalletKeypair])
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, borrowInstruction], [successorWalletKeypair])
     }
     catch(error: any)
@@ -1855,7 +1778,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(insufficientLiquidityErrorMsg))
+    assert(errorMessage.includes(errors.insufficientLiquidityErrorMsg))
   })
 
   it("Verifies you can't liquidate an Account whose Debt Value is less than 80% of its Collateral Value", async () => 
@@ -1864,8 +1787,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, programProviderPublicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -1880,13 +1808,7 @@ describe("lending_protocol", () =>
         borrowerUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solCantLiquidatePrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .instruction()
@@ -1897,13 +1819,15 @@ describe("lending_protocol", () =>
         usdcTokenReserveATARemainingAccount,
         solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
+        priceRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
         solSubMarketRemainingAccount,
         borrowerUSDCLendingUserTabRemainingAccount,
         borrowerSOLLendingUserTabRemainingAccount,
         borrowerUSDCMonthlyStatementRemainingAccount,
-        borrowerSOLMonthlyStatementRemainingAccount
+        borrowerSOLMonthlyStatementRemainingAccount,
+        oracleAddressRemainingAccount
       ]
 
       const liquidateInstruction = await program.methods.liquidateAccount(
@@ -1916,9 +1840,7 @@ describe("lending_protocol", () =>
         false,
         false,
         null,
-        null,
-        unverifiedPriceData
-      )
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -1930,6 +1852,7 @@ describe("lending_protocol", () =>
       .remainingAccounts(liquidationRemainingAccounts)
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction], [])
       await sendVersionedTrasaction([liquidateInstruction], [])
     }
@@ -1938,7 +1861,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(notLiquidatableErrorMsg))
+    assert(errorMessage.includes(errors.notLiquidatableErrorMsg))
   })
 
   it("Verifies a liquidator can't zero out an Account whose Debt Value is less than 100% of its Collateral Value", async () => 
@@ -1947,8 +1870,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, programProviderPublicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -1963,13 +1891,7 @@ describe("lending_protocol", () =>
         borrowerUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solCantLiquidatePrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .instruction()
@@ -1980,13 +1902,15 @@ describe("lending_protocol", () =>
         usdcTokenReserveATARemainingAccount,
         solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
+        priceRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
         solSubMarketRemainingAccount,
         borrowerUSDCLendingUserTabRemainingAccount,
         borrowerSOLLendingUserTabRemainingAccount,
         borrowerUSDCMonthlyStatementRemainingAccount,
-        borrowerSOLMonthlyStatementRemainingAccount
+        borrowerSOLMonthlyStatementRemainingAccount,
+        oracleAddressRemainingAccount
       ]
 
       const liquidateInstruction = await program.methods.liquidateAccount(
@@ -1999,9 +1923,7 @@ describe("lending_protocol", () =>
         true,
         false,
         null,
-        null,
-        unverifiedPriceData
-      )
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -2013,6 +1935,7 @@ describe("lending_protocol", () =>
       .remainingAccounts(liquidationRemainingAccounts)
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction], [])
       await sendVersionedTrasaction([liquidateInstruction], [])
     }
@@ -2021,7 +1944,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(notInsolventErrorMsg))
+    assert(errorMessage.includes(errors.notInsolventErrorMsg))
   })
 
   it("Verifies a liquidator can't repay more than 50% of someone's debt when liquidating an account that is in a bad state but not completely insolvent", async () => 
@@ -2030,8 +1953,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, programProviderPublicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -2046,13 +1974,7 @@ describe("lending_protocol", () =>
         borrowerUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solLiquidationPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .instruction()
@@ -2063,13 +1985,15 @@ describe("lending_protocol", () =>
         usdcTokenReserveATARemainingAccount,
         solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
+        priceRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
         solSubMarketRemainingAccount,
         borrowerUSDCLendingUserTabRemainingAccount,
         borrowerSOLLendingUserTabRemainingAccount,
         borrowerUSDCMonthlyStatementRemainingAccount,
-        borrowerSOLMonthlyStatementRemainingAccount
+        borrowerSOLMonthlyStatementRemainingAccount,
+        oracleAddressRemainingAccount
       ]
 
       const liquidateInstruction = await program.methods.liquidateAccount(
@@ -2082,9 +2006,7 @@ describe("lending_protocol", () =>
         false,
         false,
         null,
-        null,
-        unverifiedPriceData
-      )
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -2096,6 +2018,7 @@ describe("lending_protocol", () =>
       .remainingAccounts(liquidationRemainingAccounts)
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction], [])
       await sendVersionedTrasaction([liquidateInstruction], [])
     }
@@ -2104,7 +2027,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(overLiquidationErrorMsg))
+    assert(errorMessage.includes(errors.overLiquidationErrorMsg))
   })
 
   it("Verifies a User Can't Repay When the Lending User's Health Data is Stale", async () => 
@@ -2113,26 +2036,23 @@ describe("lending_protocol", () =>
 
     try
     {
-      const priceData = [solLiquidationPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, programProviderPublicKey)
 
       const repayTokenInstruction = await program.methods.repayTokens(
       testSubMarketIndex,
       testUserAccountIndex,
       lessThan10PercentOfBorrowedAmount,
-      false,
-      unverifiedPriceData
-      )
+      false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         signer: borrowerWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
       .signers([borrowerWalletKeypair])
       .instruction()
 
-      await timeOutFunction(1)
-
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([repayTokenInstruction], [borrowerWalletKeypair])
     }
     catch(error: any)
@@ -2140,7 +2060,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(staleTokenReserveOrLendingUserErrorMsg))
+    assert(errorMessage.includes(errors.staleTokenReserveOrLendingUserErrorMsg))
   })
 
   it("Verifies a Borrower can't Repay less than 10% when their account is in a bad state to prevent 'griefing'.", async () => 
@@ -2149,8 +2069,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, borrowerWalletKeypair.publicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -2165,13 +2090,7 @@ describe("lending_protocol", () =>
         borrowerUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solLiquidationPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .signers([borrowerWalletKeypair])
       .remainingAccounts(refreshingRemainingAccounts)
@@ -2181,17 +2100,17 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       lessThan10PercentOfBorrowedAmount,
-      false,
-      unverifiedPriceData
-      )
+      false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         signer: borrowerWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
       .signers([borrowerWalletKeypair])
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, repayTokenInstruction], [borrowerWalletKeypair])
     }
     catch(error: any)
@@ -2199,7 +2118,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(griefingErrorMsg))
+    assert(errorMessage.includes(errors.griefingErrorMsg))
   })
 
   it("Verifies a liquidator can't repay less than 10% of an account in a bad state to prevent 'griefing'", async () => 
@@ -2208,8 +2127,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, programProviderPublicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -2224,13 +2148,7 @@ describe("lending_protocol", () =>
         borrowerUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solLiquidationPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
       .remainingAccounts(refreshingRemainingAccounts)
       .instruction()
@@ -2241,13 +2159,15 @@ describe("lending_protocol", () =>
         usdcTokenReserveATARemainingAccount,
         solTokenReserveATARemainingAccount,
         oraclePriceValidatorRemainingAccount,
+        priceRemainingAccount,
         lendingStatsRemainingAccount,
         usdcSubMarketRemainingAccount,
         solSubMarketRemainingAccount,
         borrowerUSDCLendingUserTabRemainingAccount,
         borrowerSOLLendingUserTabRemainingAccount,
         borrowerUSDCMonthlyStatementRemainingAccount,
-        borrowerSOLMonthlyStatementRemainingAccount
+        borrowerSOLMonthlyStatementRemainingAccount,
+        oracleAddressRemainingAccount
       ]
 
       const liquidateInstruction = await program.methods.liquidateAccount(
@@ -2260,9 +2180,7 @@ describe("lending_protocol", () =>
         false,
         false,
         null,
-        null,
-        unverifiedPriceData
-      )
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -2274,6 +2192,7 @@ describe("lending_protocol", () =>
       .remainingAccounts(liquidationRemainingAccounts)
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction], [])
       await sendVersionedTrasaction([liquidateInstruction], [])
     }
@@ -2282,7 +2201,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(griefingErrorMsg))
+    assert(errorMessage.includes(errors.griefingErrorMsg))
   })
 
   //Liquidation test type controlled by "runInsolventTest" variable
@@ -2314,7 +2233,7 @@ describe("lending_protocol", () =>
 
     var liquidatiRepaymentLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2324,7 +2243,7 @@ describe("lending_protocol", () =>
 
     var liquidatiLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2333,8 +2252,13 @@ describe("lending_protocol", () =>
     console.log("Liquidati Deposited Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidati Liquidated Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
 
+    const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, programProviderPublicKey)
+    
     const refreshingRemainingAccounts =
     [
+      //Price Account
+      priceRemainingAccount,
+
       //Token Reserves
       solTokenReserveRemainingAccount,
       usdcTokenReserveRemainingAccount,
@@ -2349,13 +2273,7 @@ describe("lending_protocol", () =>
       borrowerUSDCMonthlyStatementRemainingAccount
     ]
 
-    const priceData = [solLiquidationPrice, usdcTestPrice]
-    const unverifiedPriceData = await setPrice(priceData)
-
-    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-      testUserAccountIndex,
-      2,
-      unverifiedPriceData)
+    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
     .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey })
     .remainingAccounts(refreshingRemainingAccounts)
     .instruction()
@@ -2366,13 +2284,15 @@ describe("lending_protocol", () =>
       usdcTokenReserveATARemainingAccount,
       solTokenReserveATARemainingAccount,
       oraclePriceValidatorRemainingAccount,
+      priceRemainingAccount,
       lendingStatsRemainingAccount,
       usdcSubMarketRemainingAccount,
       solSubMarketRemainingAccount,
       borrowerUSDCLendingUserTabRemainingAccount,
       borrowerSOLLendingUserTabRemainingAccount,
       borrowerUSDCMonthlyStatementRemainingAccount,
-      borrowerSOLMonthlyStatementRemainingAccount
+      borrowerSOLMonthlyStatementRemainingAccount,
+      oracleAddressRemainingAccount
     ]
 
     const liquidateInstruction = await program.methods.liquidateAccount(
@@ -2385,9 +2305,7 @@ describe("lending_protocol", () =>
       runInsolventTest,
       false,
       null,
-      liquidatorLookUpTableAddress,
-      unverifiedPriceData
-    )
+      liquidatorLookUpTableAddress)
     .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -2399,6 +2317,7 @@ describe("lending_protocol", () =>
     .remainingAccounts(liquidationRemainingAccounts)
     .instruction()
 
+    await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
     await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction], [])
     await sendVersionedTrasactionWithHigherCompute([liquidateInstruction], [])
 
@@ -2431,7 +2350,7 @@ describe("lending_protocol", () =>
 
     const liquidatorLiquidationLendingUserTabPDA = getLendingUserTabAccountPDA
     (
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -2445,7 +2364,7 @@ describe("lending_protocol", () =>
 
     var liquidatiRepaymentLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2456,7 +2375,7 @@ describe("lending_protocol", () =>
 
     var liquidatiLiquidationLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2471,7 +2390,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2484,7 +2403,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2498,7 +2417,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -2524,9 +2443,15 @@ describe("lending_protocol", () =>
  
   it("Refreshes Token Reserves and Supplier's/Borrower's Health Status", async () => 
   {
+    try{
+    const [supplierUpdatePricesTransaction, supplierPriceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, successorWalletKeypair.publicKey)
+    
     //Refresh Supplier
     const refreshingSupplierRemainingAccounts =
     [
+      //Price Account
+      supplierPriceRemainingAccount,
+      
       //Token Reserves
       solTokenReserveRemainingAccount,
       usdcTokenReserveRemainingAccount,
@@ -2538,24 +2463,28 @@ describe("lending_protocol", () =>
 
       supplierUSDCLendingUserTabRemainingAccount,
       usdcSubMarketRemainingAccount,
-      supplierUSDCMonthlyStatementRemainingAccount
+      supplierUSDCMonthlyStatementRemainingAccount,
+
+      //Oracle Account
+      oracleAddressRemainingAccount
     ]
 
-    const priceData = [solLiquidationPrice, usdcTestPrice]
-    const unverifiedPriceData = await setPrice(priceData)
+    await program.provider.connection.sendRawTransaction(supplierUpdatePricesTransaction.serialize(), { skipPreflight: false })
 
-    await program.methods.refreshUserHealthChunkAndTokenReserves(
-      testUserAccountIndex,
-      2,
-      unverifiedPriceData)
+    await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, true)
     .accounts({ lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
     .remainingAccounts(refreshingSupplierRemainingAccounts)
     .signers([successorWalletKeypair])
     .rpc()
 
     //Refresh Borrower
+    const [borrowerUpdatePricesTransaction, borrowerPriceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, borrowerWalletKeypair.publicKey)
+
     const refreshingBorrowerRemainingAccounts =
     [
+      //Price Account
+      borrowerPriceRemainingAccount,
+
       //Token Reserves
       solTokenReserveRemainingAccount,
       usdcTokenReserveRemainingAccount,
@@ -2567,13 +2496,15 @@ describe("lending_protocol", () =>
 
       borrowerUSDCLendingUserTabRemainingAccount,
       usdcSubMarketRemainingAccount,
-      borrowerUSDCMonthlyStatementRemainingAccount
+      borrowerUSDCMonthlyStatementRemainingAccount,
+
+      //Oracle Account
+      oracleAddressRemainingAccount
     ]
 
-    await program.methods.refreshUserHealthChunkAndTokenReserves(
-      testUserAccountIndex,
-      2,
-      unverifiedPriceData)
+    await program.provider.connection.sendRawTransaction(borrowerUpdatePricesTransaction.serialize(), { skipPreflight: false })
+
+    await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, true)
     .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
     .remainingAccounts(refreshingBorrowerRemainingAccounts)
     .signers([borrowerWalletKeypair])
@@ -2584,7 +2515,7 @@ describe("lending_protocol", () =>
 
     const supplierLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -2593,7 +2524,7 @@ describe("lending_protocol", () =>
 
     const borrowerLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2618,6 +2549,11 @@ describe("lending_protocol", () =>
     console.log("Borrower Interest Accrued: ", Number(borrowerLendingUserTabAccount.interestAccruedAmount))
     console.log("Borrower SubMarket Fees Generated: ", Number(borrowerLendingUserTabAccount.subMarketFeesGeneratedAmount))
     console.log("Borrower Solvency Insurance Generated: ", Number(borrowerLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount), "\n")
+  }
+  catch(error)
+  {
+    console.log(error)
+  }
   })
 
   it("Verifies you can't Over Repay.", async () => 
@@ -2626,8 +2562,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, borrowerWalletKeypair.publicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -2642,13 +2583,7 @@ describe("lending_protocol", () =>
         borrowerUSDCMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solLiquidationPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
       .signers([borrowerWalletKeypair])
       .remainingAccounts(refreshingRemainingAccounts)
@@ -2658,17 +2593,17 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       overBorrowUSDCAmount,
-      false,
-      unverifiedPriceData
-      )
+      false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         signer: borrowerWalletKeypair.publicKey })
+      .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
       .signers([borrowerWalletKeypair])
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, repayTokenInstruction], [borrowerWalletKeypair])
     }
     catch(error: any)
@@ -2676,7 +2611,7 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(tooManyFundsErrorMsg))
+    assert(errorMessage.includes(errors.tooManyFundsErrorMsg))
   })
 
   it("Repays Borrowed USDC To the Token Reserve", async () => 
@@ -2694,8 +2629,13 @@ describe("lending_protocol", () =>
     else
       throw new Error("tokenReserveUSDCATABalance.value.uiAmount undefined")
 
+    const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, borrowerWalletKeypair.publicKey)
+
     const refreshingRemainingAccounts =
     [
+      //Price Account
+      priceRemainingAccount,
+
       //Token Reserves
       solTokenReserveRemainingAccount,
       usdcTokenReserveRemainingAccount,
@@ -2710,13 +2650,7 @@ describe("lending_protocol", () =>
       borrowerUSDCMonthlyStatementRemainingAccount
     ]
 
-    const priceData = [solLiquidationPrice, usdcTestPrice]
-    const unverifiedPriceData = await setPrice(priceData)
-
-    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-      testUserAccountIndex,
-      2,
-      unverifiedPriceData)
+    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
     .accounts({ lendingUserOwner: borrowerWalletKeypair.publicKey, signer: borrowerWalletKeypair.publicKey })
     .signers([borrowerWalletKeypair])
     .remainingAccounts(refreshingRemainingAccounts)
@@ -2726,17 +2660,17 @@ describe("lending_protocol", () =>
     testSubMarketIndex,
     testUserAccountIndex,
     borrowerUSDCAmount,
-    true,
-    unverifiedPriceData
-    )
+    true)
     .accounts({
       subMarketOwner: programProviderPublicKey,
       tokenMint: usdcMint.publicKey,
       tokenProgram: TOKEN_2022_PROGRAM_ID,
       signer: borrowerWalletKeypair.publicKey })
+    .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
     .signers([borrowerWalletKeypair])
     .instruction()
 
+    await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
     await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, repayTokenInstruction], [borrowerWalletKeypair])
 
     var tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
@@ -2751,7 +2685,7 @@ describe("lending_protocol", () =>
 
     const borrowerLendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       borrowerWalletKeypair.publicKey,
@@ -2772,8 +2706,13 @@ describe("lending_protocol", () =>
 
     try
     {
+      const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, successorWalletKeypair.publicKey)
+
       const refreshingRemainingAccounts =
       [
+        //Price Account
+        priceRemainingAccount,
+
         //Token Reserves
         solTokenReserveRemainingAccount,
         usdcTokenReserveRemainingAccount,
@@ -2788,13 +2727,7 @@ describe("lending_protocol", () =>
         supplierSOLMonthlyStatementRemainingAccount
       ]
 
-      const priceData = [solLiquidationPrice, usdcTestPrice]
-      const unverifiedPriceData = await setPrice(priceData)
-
-      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-        testUserAccountIndex,
-        2,
-        unverifiedPriceData)
+      const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
       .accounts({ lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .remainingAccounts(refreshingRemainingAccounts)
@@ -2804,16 +2737,16 @@ describe("lending_protocol", () =>
         testSubMarketIndex,
         testUserAccountIndex,
         borrowerUSDCAmount,
-        true,
-        unverifiedPriceData)
+        true)
       .accounts({
-      subMarketOwner: programProviderPublicKey,
-      tokenMint: usdcMint.publicKey,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      signer: successorWalletKeypair.publicKey })
+        subMarketOwner: programProviderPublicKey,
+        tokenMint: usdcMint.publicKey,
+        tokenProgram: TOKEN_2022_PROGRAM_ID,
+        signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .instruction()
 
+      await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
       await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, withdrawInstruction], [successorWalletKeypair])
     }
     catch(error: any)
@@ -2821,13 +2754,18 @@ describe("lending_protocol", () =>
       errorMessage = error.transactionLogs.toString()
     }
 
-    assert(errorMessage.includes(incorrectOrderOfTabAccountsErrorMsg))
+    assert(errorMessage.includes(errors.incorrectOrderOfTabAccountsErrorMsg))
   })
 
   it("Withdraws USDC From the Token Reserve", async () => 
   {
+    const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, successorWalletKeypair.publicKey)
+
     const refreshingRemainingAccounts =
     [
+      //Price Account
+      priceRemainingAccount,
+
       //Token Reserves
       solTokenReserveRemainingAccount,
       usdcTokenReserveRemainingAccount,
@@ -2842,13 +2780,7 @@ describe("lending_protocol", () =>
       supplierUSDCMonthlyStatementRemainingAccount  
     ]
 
-    const priceData = [solLiquidationPrice, usdcTestPrice]
-    const unverifiedPriceData = await setPrice(priceData)
-
-    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(
-      testUserAccountIndex,
-      2,
-      unverifiedPriceData)
+    const refreshUserHealthAndTokenReservesInstruction = await program.methods.refreshUserHealthChunkAndTokenReserves(testUserAccountIndex, 2, 2, false)
     .accounts({ lendingUserOwner: successorWalletKeypair.publicKey, signer: successorWalletKeypair.publicKey })
     .signers([successorWalletKeypair])
     .remainingAccounts(refreshingRemainingAccounts)
@@ -2858,21 +2790,22 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       borrowerUSDCAmount,
-      true,
-      unverifiedPriceData)
-      .accounts({
-        subMarketOwner: programProviderPublicKey,
-        tokenMint: usdcMint.publicKey,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        signer: successorWalletKeypair.publicKey })
-      .signers([successorWalletKeypair])
-      .instruction()
+      true)
+    .accounts({
+      subMarketOwner: programProviderPublicKey,
+      tokenMint: usdcMint.publicKey,
+      tokenProgram: TOKEN_2022_PROGRAM_ID,
+      signer: successorWalletKeypair.publicKey })
+    .remainingAccounts([priceRemainingAccount, oracleAddressRemainingAccount])
+    .signers([successorWalletKeypair])
+    .instruction()
 
+    await program.provider.connection.sendRawTransaction(updatePricesTransaction.serialize(), { skipPreflight: false })
     await sendVersionedTrasaction([refreshUserHealthAndTokenReservesInstruction, withdrawInstruction], [successorWalletKeypair])
 
     var lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -2880,7 +2813,7 @@ describe("lending_protocol", () =>
     ))
     assert(lendingUserTabAccount.owner.toBase58() == successorWalletKeypair.publicKey.toBase58())
     assert(lendingUserTabAccount.userAccountIndex == testUserAccountIndex)
-    assert(lendingUserTabAccount.tokenId == usdcTestPrice.tokenId)
+    assert(lendingUserTabAccount.tokenId == usdcTestPriceDataPayload.data[0].tokenId)
     assert(lendingUserTabAccount.subMarketOwnerAddress.toBase58() == programProviderPublicKeyString)
     assert(lendingUserTabAccount.subMarketIndex == testSubMarketIndex)
     assert(lendingUserTabAccount.userTabAccountIndex == 1)
@@ -2888,7 +2821,7 @@ describe("lending_protocol", () =>
     assert(lendingUserTabAccount.depositedAmount.eq(bnZero))
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(usdcMint.publicKey))
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPriceDataPayload.data[0].tokenId, programProviderPublicKey, testSubMarketIndex))
     assert(tokenReserve.tokenId == 2)
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
@@ -2909,7 +2842,7 @@ describe("lending_protocol", () =>
     (
       newStatementMonth,
       newStatementYear,
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       successorWalletKeypair.publicKey,
@@ -2947,7 +2880,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notFeeCollectorErrorMsg)
+    assert(errorMessage == errors.notFeeCollectorErrorMsg)
   })
 
   it("Claims SubMarket Fees", async () => 
@@ -2967,7 +2900,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -2977,7 +2910,7 @@ describe("lending_protocol", () =>
     //Claiming SubMarket Fees just puts it in the Fee Collector's Tab Account
     assert(parseInt(tokenReserveUSDCATABalance.value.amount) >= Number(lendingUserTabAccount.depositedAmount) + Number(tokenReserve.uncollectedSolvencyInsuranceFeesAmount))
 
-    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPrice.tokenId, programProviderPublicKey, testSubMarketIndex))
+    const subMarket = await program.account.subMarket.fetch(getSubMarketPDA(usdcTestPriceDataPayload.data[0].tokenId, programProviderPublicKey, testSubMarketIndex))
     assert(subMarket.uncollectedSubMarketFeesAmount.eq(bnZero))
   })
 
@@ -3006,7 +2939,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notSolvencyTreasurerErrorMsg)
+    assert(errorMessage == errors.notSolvencyTreasurerErrorMsg)
   })
 
   it("Claims Token Reserve Solvency Insurance Fees", async () => 
@@ -3025,7 +2958,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      usdcTestPrice.tokenId,
+      usdcTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -3059,7 +2992,7 @@ describe("lending_protocol", () =>
       errorMessage = error.error.errorMessage
     }
 
-    assert(errorMessage == notLiquidationTreasurerErrorMsg)
+    assert(errorMessage == errors.notLiquidationTreasurerErrorMsg)
   })
 
   it("Claims Token Reserve Liquidation Fees", async () => 
@@ -3075,7 +3008,7 @@ describe("lending_protocol", () =>
 
     const lendingUserTabAccount = await program.account.lendingUserTabAccount.fetch(getLendingUserTabAccountPDA
     (
-      solTestPrice.tokenId,
+      solTestPriceDataPayload.data[0].tokenId,
       programProviderPublicKey,
       testSubMarketIndex,
       programProviderPublicKey,
@@ -3091,15 +3024,15 @@ describe("lending_protocol", () =>
 
   it("Adds a DAI, WEth, and WBtc Token Reserves", async () => 
   {
-    await program.methods.addTokenReserve(daiTokenDecimalAmount, borrowAPY5Percent, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
+    await program.methods.addTokenReserve(daiTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
     .accounts({ tokenMint: daiMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
 
-    await program.methods.addTokenReserve(wethTokenDecimalAmount, borrowAPY5Percent, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
+    await program.methods.addTokenReserve(wethTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
     .accounts({ tokenMint: wethMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
 
-    await program.methods.addTokenReserve(wbtcTokenDecimalAmount, borrowAPY5Percent, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
+    await program.methods.addTokenReserve(wbtcTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate8Percent)
     .accounts({ tokenMint: wbtcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
 
@@ -3108,7 +3041,7 @@ describe("lending_protocol", () =>
     assert(daiTokenReserve.tokenMintAddress.toBase58() == daiMint.publicKey.toBase58())
     assert(daiTokenReserve.tokenDecimalAmount == daiTokenDecimalAmount)
     assert(daiTokenReserve.depositedAmount.eq(bnZero))
-    assert(daiTokenReserve.borrowApy == borrowAPY5Percent)
+    assert(daiTokenReserve.borrowApy == fixedBorrowAPY)
     assert(daiTokenReserve.globalLimit.eq(globalLimit1))
     assert(daiTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
 
@@ -3117,7 +3050,7 @@ describe("lending_protocol", () =>
     assert(wethTokenReserve.tokenMintAddress.toBase58() == wethMint.publicKey.toBase58())
     assert(wethTokenReserve.tokenDecimalAmount == wethTokenDecimalAmount)
     assert(wethTokenReserve.depositedAmount.eq(bnZero))
-    assert(wethTokenReserve.borrowApy == borrowAPY5Percent)
+    assert(wethTokenReserve.borrowApy == fixedBorrowAPY)
     assert(wethTokenReserve.globalLimit.eq(globalLimit1))
     assert(wethTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
 
@@ -3126,7 +3059,7 @@ describe("lending_protocol", () =>
     assert(wbtcTokenReserve.tokenMintAddress.toBase58() == wbtcMint.publicKey.toBase58())
     assert(wbtcTokenReserve.tokenDecimalAmount == wbtcTokenDecimalAmount)
     assert(wbtcTokenReserve.depositedAmount.eq(bnZero))
-    assert(wbtcTokenReserve.borrowApy == borrowAPY5Percent)
+    assert(wbtcTokenReserve.borrowApy == fixedBorrowAPY)
     assert(wbtcTokenReserve.globalLimit.eq(globalLimit1))
     assert(wbtcTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate8Percent)
 
@@ -3412,9 +3345,7 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       daiHalfDepositAmount,
-      false,
-      null
-    )
+      false)
     .accounts({
       subMarketOwner: programProviderPublicKey,
       tokenMint: daiMint.publicKey,
@@ -3427,9 +3358,7 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       wethHalfDepositAmount,
-      false,
-      null
-    )
+      false)
     .accounts({
       subMarketOwner: programProviderPublicKey,
       tokenMint: wethMint.publicKey,
@@ -3442,9 +3371,7 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       wbtcHalfDepositAmount,
-      false,
-      null
-    )
+      false)
     .accounts({
       subMarketOwner: programProviderPublicKey,
       tokenMint: wbtcMint.publicKey,
@@ -3457,167 +3384,6 @@ describe("lending_protocol", () =>
     await sendVersionedTrasaction([withdrawWEthInstruction], [successorWalletKeypair])
     await sendVersionedTrasaction([withdrawWBtcInstruction], [successorWalletKeypair])
   })
-
-  function getLendingStatsPDA()
-  {
-    const [lendingStatsPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("lendingStats")
-      ],
-      program.programId
-    )
-    return lendingStatsPDA
-  }
-
-  function getLendingProtocolCEOPDA()
-  {
-    const [lendingProtocolCEOPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("lendingProtocolCEO")
-      ],
-      program.programId
-    )
-    return lendingProtocolCEOPDA
-  }
-
-  function getSolvencyTreasurerPDA()
-  {
-    const [solvencyTreasurerPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("solvencyTreasurer")
-      ],
-      program.programId
-    )
-    return solvencyTreasurerPDA
-  }
-
-  function getLiquidationTreasurerPDA()
-  {
-    const [liquidationTreasurerPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("liquidationTreasurer")
-      ],
-      program.programId
-    )
-    return liquidationTreasurerPDA
-  }
-
-  function getOraclePriceValidatorPDA()
-  {
-    const [oraclePriceValidatorPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("oraclePriceValidator")
-      ],
-      program.programId
-    )
-    return oraclePriceValidatorPDA
-  }
-
-  function getLendingProtocolPDA()
-  {
-    const [lendingProtocolCEOPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("lendingProtocol")
-      ],
-      program.programId
-    )
-    return lendingProtocolCEOPDA
-  }
-
-  function getTokenReservePDA(tokenMintAddress: PublicKey)
-  {
-    const [tokenReservePDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("tokenReserve"),
-        tokenMintAddress.toBuffer()
-
-      ],
-      program.programId
-    )
-    return tokenReservePDA
-  }
-
-  function getSubMarketPDA(tokenId: number, subMarketOwner: PublicKey, subMarketIndex: number)
-  {
-    const [subMarketPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("subMarket"),
-        new anchor.BN(tokenId).toBuffer('le', 1),
-        subMarketOwner.toBuffer(),
-        new anchor.BN(subMarketIndex).toBuffer('le', 2)
-      ],
-      program.programId
-    )
-    return subMarketPDA
-  }
-
-  function getLendingUserAccountPDA(lendingUserAddress: PublicKey, lendingUserAccountIndex: number)
-  {
-    const [lendingUserTabAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("lendingUserAccount"),
-        lendingUserAddress.toBuffer(),
-        new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
-      ],
-      program.programId
-    )
-    return lendingUserTabAccountPDA
-  }
-
-  function getLendingUserTabAccountPDA(tokenId: number,
-    subMarketOwner: PublicKey,
-    subMarketIndex: number,
-    lendingUserAddress: PublicKey,
-    lendingUserAccountIndex: number)
-  {
-    const [lendingUserTabAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("lendingUserTabAccount"),
-        new anchor.BN(tokenId).toBuffer('le', 1),
-        subMarketOwner.toBuffer(),
-        new anchor.BN(subMarketIndex).toBuffer('le', 2),
-        lendingUserAddress.toBuffer(),
-        new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
-      ],
-      program.programId
-    )
-    return lendingUserTabAccountPDA
-  }
-
-  function getlendingUserMonthlyStatementAccountPDA(statementMonth: number,
-    statementYear: number,
-    tokenId: number,
-    subMarketOwnerAddress: PublicKey,
-    subMarketIndex: number,
-    lendingUserAddress: PublicKey,
-    lendingUserAccountIndex: number)
-  {
-    const [lendingUserMonthlyStatementAccountPDA] = anchor.web3.PublicKey.findProgramAddressSync
-    (
-      [
-        new TextEncoder().encode("userMonthlyStatementAccount"),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
-        new anchor.BN(statementMonth).toBuffer('le', 1),
-        new anchor.BN(statementYear).toBuffer('le', 2),
-        new anchor.BN(tokenId).toBuffer('le', 1),
-        subMarketOwnerAddress.toBuffer(),
-        new anchor.BN(subMarketIndex).toBuffer('le', 2),
-        lendingUserAddress.toBuffer(),
-        new anchor.BN(lendingUserAccountIndex).toBuffer('le', 1),
-      ],
-      program.programId
-    )
-    return lendingUserMonthlyStatementAccountPDA
-  }
 
   async function airDropSol(walletPublicKey: PublicKey)
   {
@@ -3784,76 +3550,39 @@ describe("lending_protocol", () =>
     await timeOutFunction(1)
   }
 
-  type PriceData =
+  async function generateOracleTransactionAndRemainingPriceAccount(payload: PriceDataPayload, lendingUserAdress: PublicKey): Promise<[Transaction, AccountMeta]>
   {
-    tokenId: number; //u8
-    normalizedPrice18Decimals: anchor.BN //u128
-  }
+    let transaction = new Transaction
+    const latestBlockhash = await program.provider.connection.getLatestBlockhash()
+    transaction.recentBlockhash = latestBlockhash.blockhash
+    transaction.feePayer = priceValidatorKeypair.publicKey
 
-  type UnverifiedPriceData =
-  {
-    payload:
-    {
-      tokenIds: Buffer;
-      normalizedPrices18Decimals: anchor.BN[];
-      slot: anchor.BN
-    };
-    signature: number[] //number[64]
-  }
+    payload.slot = new anchor.BN(await program.provider.connection.getSlot())
 
-  async function setPrice(priceData: PriceData[], signedByTrueOracle = true, stale = false): Promise<UnverifiedPriceData>
-  {
+    const createTempOraclePriceDataInstruction = await program.methods.createTempOraclePriceData(payload)
+      .accounts({ lendingUserAddress: lendingUserAdress, signer: priceValidatorKeypair.publicKey })
+      .signers([priceValidatorKeypair])
+      .instruction()
     
-    let slotNumber = await program.provider.connection.getSlot("processed")
-    if(stale)
-      slotNumber = slotNumber - 1 //If feature = "dev", max age is 0 slots, so subtracting 1 makes it instantly stale
+    transaction.add(createTempOraclePriceDataInstruction)
 
-  const slot = new anchor.BN(slotNumber)
+    const priceAccountPDA = getPriceAccountPDA(lendingUserAdress)
+    const priceRemainingAccount = 
+    {
+      pubkey: priceAccountPDA,
+      isSigner: false,
+      isWritable: true
+    }
+      
+    transaction.sign(priceValidatorKeypair)
+    
+    //const signedTransaction = await program.provider.wallet?.signTransaction(transaction)
 
-  //Extract arrays to match your new payload format
-  const tokenIds = Buffer.from(priceData.map(p => p.tokenId))
-  const normalizedPrices18Decimals = priceData.map(p => p.normalizedPrice18Decimals)
+    //if(!signedTransaction)
+      //throw new Error("Failed to Sign Transaction")
 
-  const payload =
-  {
-    tokenIds,
-    normalizedPrices18Decimals,
-    slot
+    return [transaction, priceRemainingAccount]
   }
-
-  const oracleKeypair = signedByTrueOracle ? priceValidatorKeypair : borrowerWalletKeypair
-  const signature = performED25519Signature(payload, oracleKeypair)
-
-  return {
-    payload,
-    signature
-  }
-}
-
-function performED25519Signature(
-  payload: { tokenIds: Buffer; normalizedPrices18Decimals: anchor.BN[]; slot: anchor.BN }, 
-  oracleKeypair: Keypair): number[]
-{
-  
-  //1. Define Borsh layout matching your Rust struct: PriceDataPayload
-  const layout = borsh.struct([
-    borsh.vecU8("tokenIds"),
-    borsh.vec(borsh.u128(), "normalizedPrices18Decimals"),
-    borsh.u64("slot"),
-  ])
-
-  //2. Dynamically allocate buffer size based on payload data lengths
-  const buffer = Buffer.alloc(layout.span + payload.tokenIds.length + (payload.normalizedPrices18Decimals.length * 16) + 20)
-  const length = layout.encode(payload, buffer)
-  
-  //3. Trim the buffer to exactly match the serialized payload size
-  const messageBuffer = buffer.subarray(0, length)
-
-  //4. Generate the Ed25519 Signature
-  const signatureBytes = sign.detached(messageBuffer, oracleKeypair.secretKey)
-
-  return Array.from(signatureBytes)
-}
 
   async function sendVersionedTrasaction(instructions: anchor.web3.TransactionInstruction[], signerKeypair: Keypair[])
   {

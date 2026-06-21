@@ -25,6 +25,32 @@ pub fn validate_and_return_price_validator_account<'info>(program_id: Pubkey, pr
     Ok(price_validator)
 }
 
+pub fn validate_and_return_temp_price_account<'info>(
+    program_id: Pubkey,
+    temp_price_account_serialized: &AccountInfo<'info>,
+    signer_address: Pubkey) -> Result<TempOraclePriceAccount>
+{
+    let mut data_slice: &[u8] = &temp_price_account_serialized.data.borrow();
+
+    let temp_oracle_price_account = TempOraclePriceAccount::try_deserialize(&mut data_slice)?;
+
+    let seeds = &
+    [
+        b"oraclePriceData".as_ref(),
+        signer_address.as_ref(),
+        &[temp_oracle_price_account.bump]
+    ];
+    msg!("here1");
+    //Verify Oracle Price Account PDA is a valid PDA
+    let expected_pda = Pubkey::create_program_address(seeds, &program_id)
+    .map_err(|_| LendingError::UnexpectedOraclePriceDataAccount)?;
+    msg!("here2");
+    //Verify Oracle Price Account Address is the expected PDA
+    require_keys_eq!(expected_pda.key(), temp_price_account_serialized.key(), LendingError::UnexpectedOraclePriceDataAccount);
+    msg!("here3");
+    Ok(temp_oracle_price_account)
+}
+
 pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lending_stats_serialized: &AccountInfo<'info>) -> Result<LendingStats>
 {
     let mut data_slice: &[u8] = &lending_stats_serialized.data.borrow();

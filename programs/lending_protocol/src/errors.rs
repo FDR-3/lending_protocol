@@ -92,22 +92,22 @@ pub enum LendingError
     NotLiquidationTreasurer,
     #[msg("Only the Fee Collector can claim the fees")]
     NotFeeCollector,
+    #[msg("Only the Price Oracle can call this function")]
+    NotPriceOracle,
+    #[msg("Price Oracle Public Key did not match")]
+    PriceOracleKeyMisMatched,
+    #[msg("Expected remaining account missing")]
+    MissingRemainingAccount,
     #[msg("You must include a Look Up Table Address when a user creates their first Sub Market")]
     MissingSubMarketLookUpTable,
     #[msg("The Sub Market fee on interest earned rate can't be greater than 100%")]
     InvalidSubMarketFeeRate,
     #[msg("The solvency insurance fee on interest earned rate can't be greater than 100%")]
     InvalidSolvencyInsuranceFeeRate,
-    #[msg("You must provide all of the sub user's tab accounts")]
-    IncorrectNumberOfTabAccounts,
     #[msg("You must include a Look Up Table Address when a user initializes their Lending User Account")]
     MissingLendingUserLookUpTable,
     #[msg("You must provide the sub user's tab accounts ordered by user_tab_account_index")]
     IncorrectOrderOfTabAccounts,
-    #[msg("This price wasn't signed by the Oracle")]
-    InvalidOracleSignature,
-    #[msg("Oracle data missing or incorrectly formated")]
-    OracleDataMissingOrIncorrect,
     #[msg("Oracle price was stale")]
     OracleDataStale,
     #[msg("Oracle price not found")]
@@ -126,10 +126,8 @@ pub enum LendingError
     UnexpectedMonthlyStatementAccount,
     #[msg("Unexpected Oracle Price Validator PDA detected")]
     UnexpectedOraclePriceValidatorAccount,
-    #[msg("Unexpected Slot Hash Account Quote Account detected")]
-    UnexpectedSlotHashAccount,
-    #[msg("Unexpected Instructions Account detected")]
-    UnexpectedInstructionsAccount,
+    #[msg("Unexpected Oracle Price Data PDA detected")]
+    UnexpectedOraclePriceDataAccount,
     #[msg("Invalid Token Account")]
     InvalidTokenAccount,
     #[msg("Invalid Token Account Mint")]
