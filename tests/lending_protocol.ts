@@ -1330,6 +1330,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(successorWalletKeypair.publicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, successorWalletKeypair.publicKey)
       
       //Refresh Token Reserve and User Health
@@ -1364,6 +1365,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(successorWalletKeypair.publicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, successorWalletKeypair.publicKey)
 
       //Refresh Token Reserve and User Health
@@ -1398,6 +1400,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(successorWalletKeypair.publicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, successorWalletKeypair.publicKey)
 
       //Refresh Token Reserve and User Health
@@ -1435,7 +1438,8 @@ describe("lending_protocol", () =>
       await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        overBorrowUSDCAmount)
+        overBorrowUSDCAmount,
+        false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
@@ -1478,7 +1482,8 @@ describe("lending_protocol", () =>
       const borrowInstruction = await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        overBorrowUSDCAmount)
+        overBorrowUSDCAmount,
+        false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
@@ -1506,6 +1511,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(borrowerWalletKeypair.publicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solTestPriceDataPayload, borrowerWalletKeypair.publicKey)
 
       //Borrowing from the USDC that the Successor deposited
@@ -1527,7 +1533,8 @@ describe("lending_protocol", () =>
       const borrowInstruction = await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        borrowerUSDCAmount)
+        borrowerUSDCAmount,
+        false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
@@ -1551,6 +1558,7 @@ describe("lending_protocol", () =>
 
   it("Borrows USDC From the Token Reserve", async () => 
   {
+    await closeUserPreviousTempOraclePriceDataAccount(borrowerWalletKeypair.publicKey)
     const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, borrowerWalletKeypair.publicKey)
 
     //Borrowing from the USDC that the Successor deposited
@@ -1572,7 +1580,8 @@ describe("lending_protocol", () =>
     const borrowInstruction = await program.methods.borrowTokens(
       testSubMarketIndex,
       testUserAccountIndex,
-      borrowerUSDCAmount)
+      borrowerUSDCAmount,
+      false)
     .accounts({
       subMarketOwner: programProviderPublicKey,
       tokenMint: usdcMint.publicKey,
@@ -1672,6 +1681,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(successorWalletKeypair.publicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, successorWalletKeypair.publicKey)
 
       const refreshingRemainingAccounts =
@@ -1730,6 +1740,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(successorWalletKeypair.publicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, successorWalletKeypair.publicKey)
 
       const refreshingRemainingAccounts =
@@ -1760,7 +1771,8 @@ describe("lending_protocol", () =>
       const borrowInstruction = await program.methods.borrowTokens(
         testSubMarketIndex,
         testUserAccountIndex,
-        borrowerUSDCAmount)
+        borrowerUSDCAmount,
+        false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
         tokenMint: usdcMint.publicKey,
@@ -1870,6 +1882,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(programProviderPublicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, programProviderPublicKey)
 
       const refreshingRemainingAccounts =
@@ -1953,6 +1966,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(programProviderPublicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, programProviderPublicKey)
 
       const refreshingRemainingAccounts =
@@ -2036,6 +2050,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(programProviderPublicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, programProviderPublicKey)
 
       const repayTokenInstruction = await program.methods.repayTokens(
@@ -2069,6 +2084,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(borrowerWalletKeypair.publicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, borrowerWalletKeypair.publicKey)
 
       const refreshingRemainingAccounts =
@@ -2127,6 +2143,7 @@ describe("lending_protocol", () =>
 
     try
     {
+      await closeUserPreviousTempOraclePriceDataAccount(programProviderPublicKey)
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, programProviderPublicKey)
 
       const refreshingRemainingAccounts =
@@ -2252,6 +2269,7 @@ describe("lending_protocol", () =>
     console.log("Liquidati Deposited Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.depositedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL")
     console.log("Liquidati Liquidated Amount Before Liquidation", Number(liquidatiLiquidationLendingUserTabAccount.liquidatedAmount) / Math.pow(10, liquidationTokenReserve.tokenDecimalAmount), "SOL", "\n")
 
+    await closeUserPreviousTempOraclePriceDataAccount(programProviderPublicKey)
     const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, programProviderPublicKey)
     
     const refreshingRemainingAccounts =
@@ -2443,7 +2461,7 @@ describe("lending_protocol", () =>
  
   it("Refreshes Token Reserves and Supplier's/Borrower's Health Status", async () => 
   {
-    try{
+    await closeUserPreviousTempOraclePriceDataAccount(successorWalletKeypair.publicKey)
     const [supplierUpdatePricesTransaction, supplierPriceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, successorWalletKeypair.publicKey)
     
     //Refresh Supplier
@@ -2478,6 +2496,7 @@ describe("lending_protocol", () =>
     .rpc()
 
     //Refresh Borrower
+    await closeUserPreviousTempOraclePriceDataAccount(borrowerWalletKeypair.publicKey)
     const [borrowerUpdatePricesTransaction, borrowerPriceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, borrowerWalletKeypair.publicKey)
 
     const refreshingBorrowerRemainingAccounts =
@@ -2549,11 +2568,6 @@ describe("lending_protocol", () =>
     console.log("Borrower Interest Accrued: ", Number(borrowerLendingUserTabAccount.interestAccruedAmount))
     console.log("Borrower SubMarket Fees Generated: ", Number(borrowerLendingUserTabAccount.subMarketFeesGeneratedAmount))
     console.log("Borrower Solvency Insurance Generated: ", Number(borrowerLendingUserTabAccount.solvencyInsuranceFeesGeneratedAmount), "\n")
-  }
-  catch(error)
-  {
-    console.log(error)
-  }
   })
 
   it("Verifies you can't Over Repay.", async () => 
@@ -2629,6 +2643,7 @@ describe("lending_protocol", () =>
     else
       throw new Error("tokenReserveUSDCATABalance.value.uiAmount undefined")
 
+    await closeUserPreviousTempOraclePriceDataAccount(borrowerWalletKeypair.publicKey)
     const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, borrowerWalletKeypair.publicKey)
 
     const refreshingRemainingAccounts =
@@ -2759,6 +2774,7 @@ describe("lending_protocol", () =>
 
   it("Withdraws USDC From the Token Reserve", async () => 
   {
+    await closeUserPreviousTempOraclePriceDataAccount(successorWalletKeypair.publicKey)
     const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solLiquidatePriceWithUSDCDataPayload, successorWalletKeypair.publicKey)
 
     const refreshingRemainingAccounts =
@@ -3647,5 +3663,14 @@ describe("lending_protocol", () =>
     console.log(`Transaction Size: ${size} bytes`)
 
     await programProvider.sendAndConfirm(transaction, signerKeypair)
+  }
+
+  async function closeUserPreviousTempOraclePriceDataAccount(userPublicKey: PublicKey)
+  {
+    //Close user previous temp oracle price data account
+    await program.methods.closeTempOraclePriceData()
+      .accounts({ lendingUserAddress: userPublicKey })
+      .remainingAccounts([oracleAddressRemainingAccount])
+      .rpc()
   }
 })

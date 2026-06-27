@@ -453,7 +453,7 @@ fn check_token_price_staleness(price_data_clock_slot: u64, current_clock_slot: u
 
     #[cfg(feature = "dev")]
     //Allow a max age of 0 slots (approx 0 seconds)
-    if current_clock_slot.saturating_sub(price_data_clock_slot) > 0
+    if current_clock_slot.saturating_sub(price_data_clock_slot) > 3
     {
         msg!("Current Slot: {}", current_clock_slot);
         msg!("Data Slot: {}", price_data_clock_slot);
@@ -465,7 +465,6 @@ fn check_token_price_staleness(price_data_clock_slot: u64, current_clock_slot: u
 
 fn refund_oracle_temp_account_fees(temp_price_account_info: &AccountInfo, oracle_account_info: &AccountInfo)
 {
-
     //Refund price fee Lamports (Rent) back to the oracle
     let dest_starting_lamports = oracle_account_info.lamports();
     **oracle_account_info.lamports.borrow_mut() = dest_starting_lamports
@@ -823,6 +822,37 @@ pub mod lending_protocol
         temp_price_account.bump = ctx.bumps.temp_price_account;
         temp_price_account.data = payload.data;
         temp_price_account.slot = payload.slot;
+
+        Ok(())
+    }
+
+    pub fn close_temp_oracle_price_data(ctx: Context<CloseTempOraclePriceData>) -> Result<()> 
+    {
+        let ceo = &ctx.accounts.ceo;
+        //Only the CEO can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
+
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+        let price_validator = &ctx.accounts.price_validator;
+        let temp_price_account_info = ctx.accounts.temp_price_account.to_account_info();
+
+        //Refund Oracle price account fees back to Oracle
+        let oracle_account_info = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        require_keys_eq!(oracle_account_info.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+        
+        //1. Snapshot the balance
+        let rent_lamports = temp_price_account_info.lamports();
+
+        //2. Perform the safe math balance transfer
+        **oracle_account_info.lamports.borrow_mut() = oracle_account_info.lamports()
+            .checked_add(rent_lamports)
+            .unwrap();
+            
+        **temp_price_account_info.lamports.borrow_mut() = 0;
+
+        //3. Clear out the anchor discriminator layout so the account can't be reused within the same slot block
+        let mut data = temp_price_account_info.try_borrow_mut_data()?;
+        data.fill(0);
 
         Ok(())
     }
@@ -1226,7 +1256,7 @@ pub mod lending_protocol
         }
 
         //After updating interest earned and accrued, set withdraw amount
-        let withdraw_amount;
+        let mut withdraw_amount;
 
         if withdraw_max
         {
@@ -1236,13 +1266,6 @@ pub mod lending_protocol
         {
             withdraw_amount = amount
         }
-
-        //You can't withdraw more funds than you've deposited
-        require!(lending_user_tab_account.deposited_amount >= withdraw_amount, LendingError::InsufficientFunds);
-
-        //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
-        let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
-        require!(available_token_amount >= withdraw_amount as u128, LendingError::InsufficientLiquidity);
 
         if lending_user_account.total_borrowed_usd_value > 0
         {
@@ -1258,20 +1281,54 @@ pub mod lending_protocol
             
             let normalized_price_18_decimals = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
             let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-            let new_user_deposited_usd_value = lending_user_account.total_deposited_usd_value - ((withdraw_amount as u128 * normalized_price_18_decimals) / token_conversion_number);
 
-            //Multiply before dividing to help keep precision
-            let user_deposited_usd_value_x_70 = new_user_deposited_usd_value * 70;
-            let seventy_percent_of_new_deposited_usd_value = user_deposited_usd_value_x_70 / 100;
+            if !withdraw_max
+            {
+                let new_user_deposited_usd_value = lending_user_account.total_deposited_usd_value - ((withdraw_amount as u128 * normalized_price_18_decimals) / token_conversion_number);
+                
+                //Multiply before dividing to help keep precision
+                let seventy_percent_of_new_deposited_usd_value = (new_user_deposited_usd_value * 70) / 100;
 
+                //You can't withdraw an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
+                require!(seventy_percent_of_new_deposited_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
+            }
+            else
+            {
+                //1. Calculate the exact floor amount of USD collateral that MUST remain behind to maintain a 70% LTV
+                let min_required_deposited_usd_value = (lending_user_account.total_borrowed_usd_value * 100) / 70;
+
+                if lending_user_account.total_deposited_usd_value > min_required_deposited_usd_value 
+                {
+                    //2. Find out how much total USD value the user can safely strip out
+                    let max_withdraw_usd_value = lending_user_account.total_deposited_usd_value - min_required_deposited_usd_value;
+
+                    //3. Convert that safe USD allowance back into native token units using the oracle price
+                    let max_allowed_token_withdraw = (max_withdraw_usd_value * token_conversion_number) / normalized_price_18_decimals;
+
+                    //4. Cap it by the user's absolute token balance in this specific tab account
+                    let safe_max_tokens = std::cmp::min(max_allowed_token_withdraw as u64, lending_user_tab_account.deposited_amount);
+                    
+                    withdraw_amount = safe_max_tokens;
+                } 
+                else 
+                {
+                    //User is already at or exceeding 70% LTV, they cannot withdraw anything safely.
+                    return Err(LendingError::LiquidationExposure.into());
+                }
+            }
+            
             //Refund Oracle price account fees back to Oracle
             let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
             require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
             refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
-
-            //You can't withdraw an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
-            require!(seventy_percent_of_new_deposited_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
         }
+
+        //You can't withdraw more funds than you've deposited
+        require!(lending_user_tab_account.deposited_amount >= withdraw_amount, LendingError::InsufficientFunds);
+
+        //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
+        let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
+        require!(available_token_amount >= withdraw_amount as u128, LendingError::InsufficientLiquidity);
 
         let user_token_data = TokenAccount::try_deserialize(&mut &ctx.accounts.user_ata.to_account_info().data.borrow()[..])?;
         let balance_after_withdrawal = user_token_data.amount.saturating_sub(withdraw_amount);
@@ -1327,7 +1384,8 @@ pub mod lending_protocol
     pub fn borrow_tokens(ctx: Context<BorrowTokens>,
         sub_market_index: u16,
         user_account_index: u8,
-        amount: u64
+        amount: u64,
+        borrow_max: bool
     ) -> Result<()> 
     {
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -1397,20 +1455,47 @@ pub mod lending_protocol
         check_token_price_staleness(temp_price_account.slot, clock_slot)?;
 
         let normalized_price_18_decimals = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
-        
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
-        lending_user_account.total_borrowed_usd_value += (amount as u128 * normalized_price_18_decimals) / token_conversion_number;
 
         //Multiply before dividing to help keep precision
-        let user_deposited_usd_value_x_70 = lending_user_account.total_deposited_usd_value * 70;
-        let seventy_percent_of_deposited_usd_value = user_deposited_usd_value_x_70 / 100;
+        let max_total_allowed_debt_usd_value = (lending_user_account.total_deposited_usd_value * 70) / 100;
+        let mut borrow_amount = amount;
 
-        //You can't borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
-        require!(seventy_percent_of_deposited_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
+        if !borrow_max 
+        {
+            //You can't borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral.
+            lending_user_account.total_borrowed_usd_value += (borrow_amount as u128 * normalized_price_18_decimals) / token_conversion_number;
+            require!(max_total_allowed_debt_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
+        }
+        else
+        {
+            if max_total_allowed_debt_usd_value > lending_user_account.total_borrowed_usd_value 
+            {
+                //1. Determine available headroom remaining in USD
+                let remaining_usd_borrow_headroom = max_total_allowed_debt_usd_value - lending_user_account.total_borrowed_usd_value;
+
+                //2. Convert USD target capacity into native token fractions using the oracle price
+                let max_tokens_allowed = (remaining_usd_borrow_headroom * token_conversion_number) / normalized_price_18_decimals;
+
+                //3. Bound the requested amount by pool balance liquidity constraints
+                let pool_liquidity_limit = token_reserve.deposited_amount.saturating_sub(token_reserve.borrowed_amount);
+                
+                borrow_amount = std::cmp::min(max_tokens_allowed as u64, pool_liquidity_limit as u64);
+                
+                //4. Update global account trackers with finalized calculations
+                lending_user_account.total_borrowed_usd_value += (borrow_amount as u128 * normalized_price_18_decimals) / token_conversion_number;
+                require!(max_total_allowed_debt_usd_value >= lending_user_account.total_borrowed_usd_value, LendingError::LiquidationExposure);
+            }
+            else
+            {
+                //User is already at or exceeding 70% LTV, they cannot borrow anything safely.
+                return Err(LendingError::LiquidationExposure.into());
+            }
+        }
 
         //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
         let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
-        require!(available_token_amount >= amount as u128, LendingError::InsufficientLiquidity);
+        require!(available_token_amount >= borrow_amount as u128, LendingError::InsufficientLiquidity);
 
         //Refund Oracle price account fees back to Oracle
         let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
@@ -1418,7 +1503,7 @@ pub mod lending_protocol
         refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
 
         let user_token_data = TokenAccount::try_deserialize(&mut &ctx.accounts.user_ata.to_account_info().data.borrow()[..])?;
-        let balance_after_withdrawal = user_token_data.amount.saturating_sub(amount);
+        let balance_after_withdrawal = user_token_data.amount.saturating_sub(borrow_amount);
         let should_close = balance_after_withdrawal == 0;
         withdraw_tokens_from_token_reserve_to_user(
             ctx.accounts.token_mint.key(),
@@ -1429,16 +1514,16 @@ pub mod lending_protocol
             &ctx.accounts.token_program,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
-            amount,
+            borrow_amount,
             should_close
         )?;
 
         //Update Values and Stat Listener
         lending_stats.borrows += 1;
-        sub_market.borrowed_amount += amount as u128;
-        token_reserve.borrowed_amount += amount as u128;
-        lending_user_tab_account.borrowed_amount += amount;
-        lending_user_monthly_statement_account.monthly_borrowed_amount += amount;
+        sub_market.borrowed_amount += borrow_amount as u128;
+        token_reserve.borrowed_amount += borrow_amount as u128;
+        lending_user_tab_account.borrowed_amount += borrow_amount;
+        lending_user_monthly_statement_account.monthly_borrowed_amount += borrow_amount;
         lending_user_monthly_statement_account.snap_shot_debt_amount = lending_user_tab_account.borrowed_amount;
 
         //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY, and the SubMarket/User time stamp based interest indexes
@@ -1449,12 +1534,12 @@ pub mod lending_protocol
         lending_user_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
 
         //Update last activity on accounts
-        token_reserve.last_lending_activity_amount = amount;
+        token_reserve.last_lending_activity_amount = borrow_amount;
         token_reserve.last_lending_activity_type = Activity::Borrow as u8;
-        sub_market.last_lending_activity_amount = amount;
+        sub_market.last_lending_activity_amount = borrow_amount;
         sub_market.last_lending_activity_type = Activity::Borrow as u8;
         sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp; 
-        lending_user_monthly_statement_account.last_lending_activity_amount = amount;
+        lending_user_monthly_statement_account.last_lending_activity_amount = borrow_amount;
         lending_user_monthly_statement_account.last_lending_activity_type = Activity::Borrow as u8;
         lending_user_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
         
@@ -1501,15 +1586,13 @@ pub mod lending_protocol
         }
 
         //Multiply before dividing to help keep precision
-        let user_deposited_usd_value_x_80 = lending_user_account.total_deposited_usd_value * 80;
-        let eighty_percent_of_deposited_usd_value = user_deposited_usd_value_x_80 / 100;
+        let eighty_percent_of_deposited_usd_value = (lending_user_account.total_deposited_usd_value * 80) / 100;
         
         //Check if lending user account is in a liquidatable state
         if lending_user_account.total_borrowed_usd_value >= eighty_percent_of_deposited_usd_value
         {
             //Multiply before dividing to help keep precision
-            let borrowed_amount_x_10 = lending_user_tab_account.borrowed_amount * 10;
-            let ten_percent_of_borrowed_amount = borrowed_amount_x_10 / 100;
+            let ten_percent_of_borrowed_amount = (lending_user_tab_account.borrowed_amount * 10) / 100;
 
             //You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents "griefing".
             //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running the liquidator so their transaction fails and holding the protocol's solvency hostage!
@@ -1635,7 +1718,6 @@ pub mod lending_protocol
         let lending_protocol = &ctx.accounts.lending_protocol;
         let repayment_token_reserve = &mut ctx.accounts.repayment_token_reserve;
         let liquidation_token_reserve = &mut ctx.accounts.liquidation_token_reserve;
-        //let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
         let liquidator_lending_account = &mut ctx.accounts.liquidator_lending_account;
         let liquidator_repayment_tab_account = &mut ctx.accounts.liquidator_repayment_tab_account;
         let liquidator_liquidation_tab_account = &mut ctx.accounts.liquidator_liquidation_tab_account;
@@ -1660,12 +1742,12 @@ pub mod lending_protocol
             liquidation_token_reserve.key()
         )?;
 
-        ///////////////
+        ////////////////////////
         //Oracle Price Validator
         let price_validator_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let price_validator = validate_and_return_price_validator_account(*ctx.program_id, price_validator_serialized)?;
 
-        ////////////////////////////
+        ///////////////////
         //Oracle Price Data
         let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
         let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
@@ -1785,15 +1867,13 @@ pub mod lending_protocol
         else
         {
             //Multiply before dividing to help keep precision
-            let liquidati_deposited_usd_value_x_80 = liquidati_lending_account.total_deposited_usd_value * 80;
-            let eighty_percent_of_liquidati_deposited_usd_value = liquidati_deposited_usd_value_x_80 / 100;
+            let eighty_percent_of_liquidati_deposited_usd_value = (liquidati_lending_account.total_deposited_usd_value * 80) / 100;
 
             //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
             require!(liquidati_lending_account.total_borrowed_usd_value >= eighty_percent_of_liquidati_deposited_usd_value, LendingError::NotLiquidatable);
 
             //Multiply before dividing to help keep precision
-            let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
-            let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
+            let fifty_percent_of_liquidati_borrowed_amount = (liquidati_repayment_tab_account.borrowed_amount * 50) / 100;
 
             if repay_max
             {
@@ -1814,8 +1894,7 @@ pub mod lending_protocol
         }
 
         //Multiply before dividing to help keep precision
-        let borrowed_amount_x_10 = liquidati_repayment_tab_account.borrowed_amount * 10;
-        let ten_percent_of_borrowed_amount = borrowed_amount_x_10 / 100;
+        let ten_percent_of_borrowed_amount = (liquidati_repayment_tab_account.borrowed_amount * 10) / 100;
 
         //You must repay atleast 10% of the borrow position when the account is in an unhealthy state. This prevents "griefing".
         //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running other liquidators so their transaction fails and holding the protocol's solvency hostage!
@@ -1952,8 +2031,7 @@ pub mod lending_protocol
 
         //Liquidate part of the Liquidati's Collateral and Transfer it plus a 7% bonus to the Liquidator
         //Multiply before dividing to help keep precision
-        let amount_to_be_liquidated_x_107 = amount_to_be_liquidated * 107;
-        let mut liquidation_amount_with_7_percent_bonus = amount_to_be_liquidated_x_107 / 100;
+        let mut liquidation_amount_with_7_percent_bonus = (amount_to_be_liquidated * 107) / 100;
 
         //Take a 1% liquidation fee
         let mut liquidation_fee_amount = amount_to_be_liquidated / 100;
@@ -2053,23 +2131,24 @@ pub mod lending_protocol
         liquidator_liquidation_tab_account.borrow_interest_change_index = liquidation_token_reserve.borrow_interest_change_index;
 
         //Update last activity on accounts
+        let liquidation_amount = liquidation_amount_with_7_percent_bonus + liquidation_fee_amount;
         repayment_token_reserve.last_lending_activity_amount = repayment_amount;
         repayment_token_reserve.last_lending_activity_type = Activity::Repay as u8;
-        liquidation_token_reserve.last_lending_activity_amount = repayment_amount;
+        liquidation_token_reserve.last_lending_activity_amount = liquidation_amount;
         liquidation_token_reserve.last_lending_activity_type = Activity::Liquidate as u8;
         repayment_sub_market.last_lending_activity_amount = repayment_amount;
         repayment_sub_market.last_lending_activity_type = Activity::Repay as u8;
         repayment_sub_market.last_lending_activity_time_stamp = repayment_token_reserve.last_lending_activity_time_stamp;
-        liquidation_sub_market.last_lending_activity_amount = repayment_amount;
+        liquidation_sub_market.last_lending_activity_amount = liquidation_amount;
         liquidation_sub_market.last_lending_activity_type = Activity::Liquidate as u8;
         liquidation_sub_market.last_lending_activity_time_stamp = liquidation_token_reserve.last_lending_activity_time_stamp;
         liquidati_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
         liquidati_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         liquidati_repayment_monthly_statement_account.last_lending_activity_time_stamp = repayment_token_reserve.last_lending_activity_time_stamp;
-        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = liquidation_token_reserve.last_lending_activity_time_stamp;
-        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = liquidation_token_reserve.last_lending_activity_time_stamp;
         
@@ -2253,15 +2332,13 @@ pub mod lending_protocol
         else
         {
             //Multiply before dividing to help keep precision
-            let liquidati_deposited_usd_value_x_80 = liquidati_lending_account.total_deposited_usd_value * 80;
-            let eighty_percent_of_liquidati_deposited_usd_value = liquidati_deposited_usd_value_x_80 / 100;
+            let eighty_percent_of_liquidati_deposited_usd_value = (liquidati_lending_account.total_deposited_usd_value * 80) / 100;
 
             //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
             require!(liquidati_lending_account.total_borrowed_usd_value >= eighty_percent_of_liquidati_deposited_usd_value, LendingError::NotLiquidatable);
 
             //Multiply before dividing to help keep precision
-            let liquidati_borrowed_amount_x_50 = liquidati_repayment_tab_account.borrowed_amount * 50;
-            let fifty_percent_of_liquidati_borrowed_amount = liquidati_borrowed_amount_x_50 / 100;
+            let fifty_percent_of_liquidati_borrowed_amount = (liquidati_repayment_tab_account.borrowed_amount * 50) / 100;
 
             if repay_max
             {
@@ -2282,8 +2359,7 @@ pub mod lending_protocol
         }
 
         //Multiply before dividing to help keep precision
-        let borrowed_amount_x_10 = liquidati_repayment_tab_account.borrowed_amount * 10;
-        let ten_percent_of_borrowed_amount = borrowed_amount_x_10 / 100;
+        let ten_percent_of_borrowed_amount = (liquidati_repayment_tab_account.borrowed_amount * 10) / 100;
 
         //You must repay atleast 10% of the borrow position when the account is in an unhealthy state. This prevents "griefing".
         //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running other liquidators so their transaction fails and holding the protocol's solvency hostage!
@@ -2417,8 +2493,7 @@ pub mod lending_protocol
 
         //Liquidate part of the Liquidati's Collateral and Transfer it plus a 7% bonus to the Liquidator
         //Multiply before dividing to help keep precision
-        let amount_to_be_liquidated_x_107 = amount_to_be_liquidated * 107;
-        let mut liquidation_amount_with_7_percent_bonus = amount_to_be_liquidated_x_107 / 100;
+        let mut liquidation_amount_with_7_percent_bonus = (amount_to_be_liquidated * 107) / 100;
 
         //Take a 1% liquidation fee
         let mut liquidation_fee_amount = amount_to_be_liquidated / 100;
@@ -2519,23 +2594,24 @@ pub mod lending_protocol
         liquidator_liquidation_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
 
         //Update last activity on accounts
+        let liquidation_amount = liquidation_amount_with_7_percent_bonus + liquidation_fee_amount;
         //token_reserve.last_lending_activity_amount = repayment_amount;
-        //token_reserve.last_lending_activity_type = Activity::Repay as u8;
-        token_reserve.last_lending_activity_amount = repayment_amount;
+        //token_reserve.last_lending_activity_type = Activity::Repay as u8; //Since the token is the same, make Liquidate the last activity on the token reserve
+        token_reserve.last_lending_activity_amount = liquidation_amount;
         token_reserve.last_lending_activity_type = Activity::Liquidate as u8; //We'll let the Liquidate activity be the last activity since the repayment and liquidation token reserves are the same in this case
         repayment_sub_market.last_lending_activity_amount = repayment_amount;
         repayment_sub_market.last_lending_activity_type = Activity::Repay as u8;
         repayment_sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
-        liquidation_sub_market.last_lending_activity_amount = repayment_amount;
+        liquidation_sub_market.last_lending_activity_amount = liquidation_amount;
         liquidation_sub_market.last_lending_activity_type = Activity::Liquidate as u8;
         liquidation_sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
         liquidati_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
         liquidati_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
         liquidati_repayment_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
-        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
-        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
         
@@ -2559,6 +2635,380 @@ pub mod lending_protocol
         token_reserve.token_id,
         liquidation_sub_market_owner_address.key(),
         liquidation_sub_market_index);
+
+        Ok(())
+    }
+
+    
+    //This liquidation is for when the repayment and liquidation Sub Markets are the same. If the Sub Markets are the same, the tokens are also the same
+    //The only cases not covered is liquidating yourself. You can "liquidate yourself" still, but you have to do it with a 2nd account from the same wallet
+    pub fn liquidate_account_same_sub_market(ctx: Context<LiquidateAccountSameSubMarket>,
+        sub_market_index: u16,
+        liquidati_account_index: u8,
+        liquidator_account_index: u8,
+        amount_to_repay: u64,
+        repay_max: bool,
+        paying_off_insolvent_account: bool,
+        send_reward_to_wallet: bool,
+        account_name: Option<String>, //Optional variable. Use null on front end when not needed
+        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
+    ) -> Result<()>
+    {
+        let lending_protocol = &ctx.accounts.lending_protocol;
+        let price_validator = &ctx.accounts.price_validator;
+        let token_reserve = &mut ctx.accounts.token_reserve;
+        let liquidati_lending_account = &mut ctx.accounts.liquidati_lending_account;
+        let liquidator_lending_account = &mut ctx.accounts.liquidator_lending_account;
+        let liquidator_tab_account = &mut ctx.accounts.liquidator_tab_account;
+        let liquidator_monthly_statement_account = &mut ctx.accounts.liquidator_monthly_statement_account;
+
+        let clock_slot = Clock::get()?.slot;
+
+        //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
+        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+
+        let sub_market_owner_address = ctx.accounts.sub_market_owner.key();
+        let liquidati_account_owner_address = ctx.accounts.liquidati_account_owner.key();
+
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+
+        //Validate Accounts
+
+        ////////////////////////////
+        //Oracle Price Data
+        let temp_price_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let temp_price_account = validate_and_return_temp_price_account(*ctx.program_id,
+            temp_price_account_serialized,
+            ctx.accounts.signer.key())?;
+
+        ///////////////
+        //Lending Stats
+        let lending_stats_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let mut lending_stats = validate_and_return_lending_stats_account(*ctx.program_id, lending_stats_serialized)?;
+
+        /////////////////////////////
+        //SubMarket Account
+        let sub_market_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let mut sub_market = validate_and_return_sub_market_account(*ctx.program_id,
+            sub_market_account_serialized,
+            token_reserve.token_id,
+            sub_market_owner_address,
+            sub_market_index)?;
+
+        /////////////////////////////////
+        //Liquidati Tab Account
+        let liquidati_tab_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let mut liquidati_tab_account = validate_and_return_lending_user_tab_account(*ctx.program_id,
+            liquidati_tab_account_serialized,
+            token_reserve.token_id,
+            sub_market_owner_address,
+            sub_market_index,
+            liquidati_account_owner_address,
+            liquidati_account_index)?;
+
+        ///////////////////////////////////////////////
+        //Liquidati Monthly Statement Account
+        let liquidati_monthly_statement_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        let mut liquidati_monthly_statement_account = validate_and_return_lending_user_monthly_state_account(*ctx.program_id,
+            liquidati_monthly_statement_account_serialized,
+            lending_protocol.current_statement_month,
+            lending_protocol.current_statement_year,
+            token_reserve.token_id,
+            sub_market_owner_address,
+            sub_market_index,
+            liquidati_account_owner_address,
+            liquidati_account_index)?;
+
+        let repayment_amount;
+        check_token_price_staleness(temp_price_account.slot, clock_slot)?;
+
+        //Get USD value of Repayment Amount
+        let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
+        let token_usd_value = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
+        let mut repayment_amount_usd_value = 0;
+
+        //Check if Account is liquidatable and set repayment_amount
+        if paying_off_insolvent_account
+        {
+            //You can't zero out an account whose borrow liabilities aren't 100% or more of their deposited collateral
+            require!(liquidati_lending_account.total_borrowed_usd_value >= liquidati_lending_account.total_deposited_usd_value, LendingError::NotInsolvent);
+
+            if repay_max
+            {
+                repayment_amount = liquidati_tab_account.borrowed_amount;
+                repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
+                
+                //Since all of this borrowed amount is being repaid, check if liquidati's total borrowed value would go to zero for cheaper withdrawals for them
+                //Use saturating_sub to safely deduct the value
+                //If lending_user_account.total_borrowed_usd_value falls to zero here, it just allows the user to withdraw without having to check their user health before hand. Otherwise this would get set to zero when calling withdraw again when the borrowed amounts are zero just incase this check fails.
+                liquidati_lending_account.total_borrowed_usd_value = liquidati_lending_account
+                    .total_borrowed_usd_value
+                    .saturating_sub(repayment_amount_usd_value);
+            }
+            else
+            {
+                if amount_to_repay > liquidati_tab_account.borrowed_amount
+                {
+                    //Can't pay more debt than the user has accumulated
+                    repayment_amount = liquidati_tab_account.borrowed_amount;
+                }
+                else
+                {
+                    repayment_amount = amount_to_repay;
+                }  
+            }
+        }
+        else
+        {
+            //Multiply before dividing to help keep precision
+            let eighty_percent_of_liquidati_deposited_usd_value = (liquidati_lending_account.total_deposited_usd_value * 80) / 100;
+
+            //You can't liquidate an account whose borrow liabilities aren't 80% or more of their deposited collateral
+            require!(liquidati_lending_account.total_borrowed_usd_value >= eighty_percent_of_liquidati_deposited_usd_value, LendingError::NotLiquidatable);
+
+            //Multiply before dividing to help keep precision
+            let fifty_percent_of_liquidati_borrowed_amount = (liquidati_tab_account.borrowed_amount * 50) / 100;
+
+            if repay_max
+            {
+                repayment_amount = fifty_percent_of_liquidati_borrowed_amount;
+            }
+            else
+            {
+                repayment_amount = amount_to_repay;
+            }
+
+            //You can't repay more than 50% of a liquidati's debt position
+            require!(repayment_amount <= fifty_percent_of_liquidati_borrowed_amount, LendingError::OverLiquidation);
+        }
+
+        if repayment_amount_usd_value == 0
+        {
+            repayment_amount_usd_value = (repayment_amount as u128 * token_usd_value) / token_conversion_number;
+        }
+
+        //Multiply before dividing to help keep precision
+        let ten_percent_of_borrowed_amount = (liquidati_tab_account.borrowed_amount * 10) / 100;
+
+        //You must repay atleast 10% of the borrow position when the account is in an unhealthy state. This prevents "griefing".
+        //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running other liquidators so their transaction fails and holding the protocol's solvency hostage!
+        require!(repayment_amount >= ten_percent_of_borrowed_amount, LendingError::GriefingRepayment);
+
+        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
+        if liquidator_lending_account.lending_user_account_added == false
+        {
+            let mut new_account_name_to_use: String = String::from("Generic Liquidator");
+            if let Some(new_account_name) = account_name
+            {
+                if !new_account_name.is_empty()
+                {
+                    new_account_name_to_use = new_account_name;
+                }
+            }
+
+            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
+
+            initialize_lending_user_account(
+                liquidator_lending_account,
+                ctx.bumps.liquidator_lending_account,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+                new_account_name_to_use,
+                lut_address
+            )?;
+        }
+
+        //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
+        if liquidator_tab_account.user_tab_account_added == false
+        {
+            initialize_lending_user_tab_account(
+                liquidator_lending_account,
+                liquidator_tab_account,
+                ctx.bumps.liquidator_tab_account,
+                token_reserve.token_id,
+                sub_market_owner_address.key(),
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index
+            )?;
+        }
+
+        //Initialize monthly statement account if the statement month/year has changed or brand new sub user account.
+        if liquidator_monthly_statement_account.monthly_statement_account_added == false
+        {
+            initialize_lending_user_monthly_statement_account(
+                liquidator_monthly_statement_account,
+                liquidator_tab_account,
+                lending_protocol,
+                ctx.bumps.liquidator_monthly_statement_account,
+                token_reserve.token_id,
+                sub_market_owner_address,
+                sub_market_index,
+                ctx.accounts.signer.key(),
+                liquidator_account_index,
+            )?;
+        }
+
+        //Update interest earned and accrued for the liquidator
+        update_user_previous_interest_earned(
+            token_reserve,
+            &mut sub_market,
+            liquidator_tab_account,
+            liquidator_monthly_statement_account
+        )?;
+        update_user_previous_interest_accrued(
+            token_reserve,
+            &mut sub_market,
+            liquidator_tab_account,
+            liquidator_monthly_statement_account
+        )?;
+
+        //Repay Liquidati's Debt
+        let user_ata_data = TokenAccount::try_deserialize(&mut &ctx.accounts.liquidator_ata.to_account_info().data.borrow()[..])?;
+        let should_close = user_ata_data.amount == 0;
+        deposit_tokens_into_token_reserve_from_user(
+            ctx.accounts.token_mint.key(),
+            &ctx.accounts.token_reserve_ata.to_account_info(),
+            &ctx.accounts.liquidator_ata.to_account_info(),
+            &ctx.accounts.token_mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.signer,
+            &ctx.accounts.system_program,
+            repayment_amount,
+            should_close
+        )?;
+
+        //Get Amount to be Liquidated
+        let amount_to_be_liquidated = ((repayment_amount_usd_value * token_conversion_number) / token_usd_value) as u64;
+
+        //Liquidate part of the Liquidati's Collateral and Transfer it plus a 7% bonus to the Liquidator
+        //Multiply before dividing to help keep precision
+        let mut liquidation_amount_with_7_percent_bonus = (amount_to_be_liquidated * 107) / 100;
+
+        //Take a 1% liquidation fee
+        let mut liquidation_fee_amount = amount_to_be_liquidated / 100;
+
+        //Check for underflow if liquidation isn't profitable
+        if liquidati_tab_account.deposited_amount < liquidation_amount_with_7_percent_bonus + liquidation_fee_amount
+        {
+            //Take a 1% liquidation fee
+            liquidation_fee_amount = liquidati_tab_account.deposited_amount / 100;
+            //Give remainder to liquidator
+            liquidation_amount_with_7_percent_bonus = liquidati_tab_account.deposited_amount - liquidation_fee_amount;
+        }
+
+        //Update Repayment Values
+        token_reserve.borrowed_amount -= repayment_amount as u128;
+        token_reserve.repaid_debt_amount += repayment_amount as u128;
+        sub_market.borrowed_amount -= repayment_amount as u128;
+        sub_market.repaid_debt_amount += repayment_amount as u128;
+        liquidati_tab_account.borrowed_amount -= repayment_amount;
+        liquidator_tab_account.repaid_debt_amount += repayment_amount;
+        liquidator_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
+        liquidati_monthly_statement_account.snap_shot_debt_amount = liquidati_tab_account.borrowed_amount;
+
+        //Update Liquidation and Fee Values
+        token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
+        token_reserve.liquidated_amount += liquidation_fee_amount as u128;
+        token_reserve.deposited_amount -= liquidation_fee_amount as u128;
+        token_reserve.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
+        token_reserve.uncollected_liquidation_fees_amount += liquidation_fee_amount as u128;
+        sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
+        sub_market.liquidated_amount += liquidation_fee_amount as u128;
+        sub_market.deposited_amount -= liquidation_fee_amount as u128;
+        sub_market.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
+        liquidati_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus;
+        liquidati_tab_account.deposited_amount -= liquidation_fee_amount;
+        liquidati_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_tab_account.liquidated_amount += liquidation_fee_amount;
+        liquidator_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidati_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
+        liquidati_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
+        liquidati_monthly_statement_account.snap_shot_balance_amount = liquidati_tab_account.deposited_amount;
+        liquidator_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
+        liquidator_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
+
+        if send_reward_to_wallet
+        {
+            let user_token_data = TokenAccount::try_deserialize(&mut &ctx.accounts.liquidator_ata.to_account_info().data.borrow()[..])?;
+            let balance_after_withdrawal = user_token_data.amount.saturating_sub(liquidation_amount_with_7_percent_bonus);
+            let should_close = balance_after_withdrawal == 0;
+            withdraw_tokens_from_token_reserve_to_user(
+                ctx.accounts.token_mint.key(),
+                token_reserve,
+                &ctx.accounts.token_reserve_ata.to_account_info(),
+                &ctx.accounts.liquidator_ata.to_account_info(),
+                &ctx.accounts.token_mint,
+                &ctx.accounts.token_program,
+                &ctx.accounts.signer,
+                &ctx.accounts.system_program,
+                liquidation_amount_with_7_percent_bonus,
+                should_close
+            )?;
+
+            token_reserve.deposited_amount -= liquidation_amount_with_7_percent_bonus as u128;
+            sub_market.deposited_amount -= liquidation_amount_with_7_percent_bonus as u128; 
+        }
+        else
+        {
+            liquidator_tab_account.deposited_amount += liquidation_amount_with_7_percent_bonus;
+            liquidator_monthly_statement_account.snap_shot_balance_amount = liquidator_tab_account.deposited_amount;
+        }
+
+        //Refund Oracle price account fees back to Oracle
+        let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
+        require_keys_eq!(oracle_account_serialized.key(), price_validator.address, LendingError::PriceOracleKeyMisMatched);
+        refund_oracle_temp_account_fees(temp_price_account_serialized, oracle_account_serialized);
+        
+        //Update Stat Listener
+        lending_stats.liquidations += 1;
+        
+        //Update Token Reserve Global Utilization Rate, Borrow APY, Supply APY
+        update_token_reserve_rates(token_reserve)?;
+
+        //Update Repayment SubMarket/User time stamp based interest indexes
+        sub_market.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        sub_market.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        liquidati_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        liquidati_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+        liquidator_tab_account.supply_interest_change_index = token_reserve.supply_interest_change_index;
+        liquidator_tab_account.borrow_interest_change_index = token_reserve.borrow_interest_change_index;
+
+        //Update last activity on accounts
+        let liquidation_amount = liquidation_amount_with_7_percent_bonus + liquidation_fee_amount;
+        //token_reserve.last_lending_activity_amount = repayment_amount;
+        //token_reserve.last_lending_activity_type = Activity::Repay as u8; //Since the token is the same, make Liquidate the last activity on the Token Reserve
+        token_reserve.last_lending_activity_amount = liquidation_amount;
+        token_reserve.last_lending_activity_type = Activity::Liquidate as u8; //We'll let the Liquidate activity be the last activity since the repayment and liquidation token reserves are the same in this case
+        //sub_market.last_lending_activity_amount = repayment_amount;
+        //sub_market.last_lending_activity_type = Activity::Repay as u8;
+        //sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp; //Since the token is the same, make Liquidate the last activity on the Sub Market
+        sub_market.last_lending_activity_amount = liquidation_amount;
+        sub_market.last_lending_activity_type = Activity::Liquidate as u8;
+        sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        //liquidati_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        //liquidati_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
+        //liquidati_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;  //Since the token is the same, make Liquidate the last activity on the Monthly Statement
+        liquidati_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
+        liquidati_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidati_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        liquidator_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
+        liquidator_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
+        liquidator_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        
+        //Save changes to passed in remaining accounts
+        lending_stats.serialize(&mut &mut lending_stats_serialized.data.borrow_mut()[8..])?;
+        sub_market.serialize(&mut &mut sub_market_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_tab_account.serialize(&mut &mut liquidati_tab_account_serialized.data.borrow_mut()[8..])?;
+        liquidati_monthly_statement_account.serialize(&mut &mut liquidati_monthly_statement_account_serialized.data.borrow_mut()[8..])?;
+        
+        msg!("{} liquidated {}", ctx.accounts.signer.key(), liquidati_account_owner_address.key());
+
+        msg!("Repaid debt and liquidated collateral at Token ID: {}, SubMarketOwner: {}, SubMarketIndex: {}",
+        token_reserve.token_id,
+        sub_market_owner_address.key(),
+        sub_market_index);
 
         Ok(())
     }
@@ -3509,12 +3959,40 @@ pub struct CreateTempOraclePriceData<'info>
     pub price_validator: Account<'info, OraclePriceValidator>,
 
     #[account(
-        init_if_needed, 
+        init, 
         payer = signer,
         seeds = [b"oraclePriceData".as_ref(), lending_user_address.key().as_ref()], 
         bump,
-        space = (5 * 17) + 1 + 4 + 8 + 8)]//5 Possible Tokens * (token_id(1byte) + normalized_price_18_decimals(16bytes) = 17bytes)
+        space = (payload.data.len() * 17) + 1 + 4 + 8 + 8)]//Token Prices Count * (token_id(1byte) + normalized_price_18_decimals(16bytes) = 17bytes)
         //1(Bump) + 4(Borsh Vector Prefix) + 8(slot) + 8(Anchor Discriminator)
+    pub temp_price_account: Account<'info, TempOraclePriceAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
+
+//This would normally be closed by the refresh_user_health_chunk_and_token_reserves (with close set to true), withdraw, borrow, repay, or a liquidation instruction, this is just in case 
+#[derive(Accounts)]
+pub struct CloseTempOraclePriceData<'info> 
+{
+    ///CHECK: This is the address of the lending user that requested the price data that needs to be closed
+    pub lending_user_address: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [b"lendingProtocolCEO".as_ref()],
+        bump)]
+    pub ceo: Account<'info, LendingProtocolCEO>,
+
+    #[account(
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
+
+    #[account(
+        mut,
+        seeds = [b"oraclePriceData".as_ref(), lending_user_address.key().as_ref()], 
+        bump)]
     pub temp_price_account: Account<'info, TempOraclePriceAccount>,
 
     #[account(mut)]
@@ -4197,22 +4675,6 @@ pub struct LiquidateAccount<'info>
     )]
     pub liquidator_liquidation_ata: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    /*#[account(
-        mut,
-        associated_token::mint = repayment_mint,
-        associated_token::authority = repayment_token_reserve,
-        associated_token::token_program = repayment_token_program
-    )]
-    pub repayment_token_reserve_ata: Box<InterfaceAccount<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        associated_token::mint = liquidation_mint,
-        associated_token::authority = liquidation_token_reserve,
-        associated_token::token_program = liquidation_token_program
-    )]
-    pub liquidation_token_reserve_ata: Box<InterfaceAccount<'info, TokenAccount>>,*/
-
     pub repayment_mint: Box<InterfaceAccount<'info, Mint>>,
     pub liquidation_mint: Box<InterfaceAccount<'info, Mint>>,
     pub repayment_token_program: Interface<'info, TokenInterface>,
@@ -4323,6 +4785,101 @@ pub struct LiquidateAccountSameToken<'info>
         bump, 
         space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
     pub liquidator_liquidation_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
+
+    #[account(
+        init_if_needed, //SOL has to be repaid as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.
+        payer = signer,
+        associated_token::mint = token_mint,
+        associated_token::authority = signer,
+        associated_token::token_program = token_program
+    )]
+    pub liquidator_ata: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = token_mint,
+        associated_token::authority = token_reserve,
+        associated_token::token_program = token_program
+    )]
+    pub token_reserve_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    pub token_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(sub_market_index: u16,
+    liquidati_account_index: u8,
+    liquidator_account_index: u8)]
+pub struct LiquidateAccountSameSubMarket<'info>
+{
+    ///CHECK: This is the wallet address of the liquidati (borrower) being liquidated
+    pub liquidati_account_owner: UncheckedAccount<'info>,
+    ///CHECK: This is the wallet address of the user who owns the Sub Market
+    pub sub_market_owner: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [b"lendingProtocol".as_ref()],
+        bump)]
+    pub lending_protocol: Account<'info, LendingProtocol>,
+
+    #[account(
+        seeds = [b"oraclePriceValidator".as_ref()],
+        bump)]
+    pub price_validator: Account<'info, OraclePriceValidator>,
+
+    #[account(
+        mut,
+        seeds = [b"tokenReserve".as_ref(), token_mint.key().as_ref()], 
+        bump)]
+    pub token_reserve: Box<Account<'info, TokenReserve>>,
+
+    #[account(
+        mut,
+        seeds = [b"lendingUserAccount".as_ref(), liquidati_account_owner.key().as_ref(), liquidati_account_index.to_le_bytes().as_ref()], 
+        bump)]
+    pub liquidati_lending_account: Box<Account<'info, LendingUserAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), liquidator_account_index.to_le_bytes().as_ref()],
+        bump, 
+        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+    pub liquidator_lending_account: Box<Account<'info, LendingUserAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"lendingUserTabAccount".as_ref(),
+        token_reserve.token_id.to_le_bytes().as_ref(),
+        sub_market_owner.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        liquidati_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserTabAccount>() + 8)]
+    pub liquidator_tab_account: Box<Account<'info, LendingUserTabAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
+        lending_protocol.current_statement_month.to_le_bytes().as_ref(),
+        lending_protocol.current_statement_year.to_le_bytes().as_ref(),
+        token_reserve.token_id.to_le_bytes().as_ref(),
+        sub_market_owner.key().as_ref(),
+        sub_market_index.to_le_bytes().as_ref(),
+        signer.key().as_ref(),
+        liquidator_account_index.to_le_bytes().as_ref()], 
+        bump, 
+        space = size_of::<LendingUserMonthlyStatementAccount>() + 8)]
+    pub liquidator_monthly_statement_account: Box<Account<'info, LendingUserMonthlyStatementAccount>>,
 
     #[account(
         init_if_needed, //SOL has to be repaid as wSOL then converted to SOL for User. This function also closes user wSOL ata if it is empty.

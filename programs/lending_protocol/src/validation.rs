@@ -40,14 +40,14 @@ pub fn validate_and_return_temp_price_account<'info>(
         signer_address.as_ref(),
         &[temp_oracle_price_account.bump]
     ];
-    msg!("here1");
+
     //Verify Oracle Price Account PDA is a valid PDA
     let expected_pda = Pubkey::create_program_address(seeds, &program_id)
     .map_err(|_| LendingError::UnexpectedOraclePriceDataAccount)?;
-    msg!("here2");
+
     //Verify Oracle Price Account Address is the expected PDA
     require_keys_eq!(expected_pda.key(), temp_price_account_serialized.key(), LendingError::UnexpectedOraclePriceDataAccount);
-    msg!("here3");
+
     Ok(temp_oracle_price_account)
 }
 
