@@ -5,13 +5,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-lending_protocol = "2RYYqg5qpA5NWCn7gb9iobaDr6zmhn2XdLtTXdBGr4qh"
+lending_protocol = "3znBMZEVoRv2pjByoinxVjnuPduCvgvmkupuSRyA1fo9"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "Testnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

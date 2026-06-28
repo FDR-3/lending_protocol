@@ -11,7 +11,7 @@ pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
 
-declare_id!("2RYYqg5qpA5NWCn7gb9iobaDr6zmhn2XdLtTXdBGr4qh");
+declare_id!("3znBMZEVoRv2pjByoinxVjnuPduCvgvmkupuSRyA1fo9");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -34,11 +34,11 @@ const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("9BRgCdmwyP5wGVTvK
 const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
 
 #[cfg(feature = "local")] 
-const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc1G1ML9dQ5UvyfDhkVbVFvDcn");
 #[cfg(feature = "local")] 
-const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc1G1ML9dQ5UvyfDhkVbVFvDcn");
 #[cfg(feature = "local")] 
-const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("DSLn1ofuSWLbakQWhPUenSBHegwkBBTUwx8ZY4Wfoxm");
+const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc1G1ML9dQ5UvyfDhkVbVFvDcn");
 #[cfg(feature = "local")] 
 const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
 
