@@ -31,7 +31,7 @@ const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("2TnxW9qAgPjHmHUXde6z
 #[cfg(feature = "dev")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("9BRgCdmwyP5wGVTvKAUDjSwucpqGncurVa35DjaWqSsC");//Also the HodlTreasury
 #[cfg(feature = "dev")] 
-const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
+const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("6zpT3Fr3Hw95L23AVgx2D1wFkig8kESXB62dGZHxW2tS");
 
 #[cfg(feature = "local")] 
 const INITIAL_CEO_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc1G1ML9dQ5UvyfDhkVbVFvDcn");
@@ -40,7 +40,7 @@ const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc
 #[cfg(feature = "local")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc1G1ML9dQ5UvyfDhkVbVFvDcn");
 #[cfg(feature = "local")] 
-const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
+const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("6zpT3Fr3Hw95L23AVgx2D1wFkig8kESXB62dGZHxW2tS");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
