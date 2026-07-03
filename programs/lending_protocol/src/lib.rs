@@ -11,7 +11,7 @@ pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
 
-declare_id!("3znBMZEVoRv2pjByoinxVjnuPduCvgvmkupuSRyA1fo9");
+declare_id!("2RYYqg5qpA5NWCn7gb9iobaDr6zmhn2XdLtTXdBGr4qh");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -40,7 +40,7 @@ const INITIAL_SOLVENCY_TREASURER_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc
 #[cfg(feature = "local")] 
 const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQFhc1G1ML9dQ5UvyfDhkVbVFvDcn");
 #[cfg(feature = "local")] 
-const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("6zpT3Fr3Hw95L23AVgx2D1wFkig8kESXB62dGZHxW2tS");
+const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
 
 const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
