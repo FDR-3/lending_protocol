@@ -11,7 +11,7 @@ pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
 
-declare_id!("2RYYqg5qpA5NWCn7gb9iobaDr6zmhn2XdLtTXdBGr4qh");
+declare_id!("3znBMZEVoRv2pjByoinxVjnuPduCvgvmkupuSRyA1fo9");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
