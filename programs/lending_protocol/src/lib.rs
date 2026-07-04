@@ -46,7 +46,7 @@ const SOL_TOKEN_MINT_ADDRESS: Pubkey = pubkey!("So111111111111111111111111111111
 
 //Lending User Account need atleast 4 extra bytes of space to pass with full load(Longest name possible)
 const LENDING_USER_ACCOUNT_EXTRA_SIZE: usize = 4;
-const MAX_TABS_PER_LENDING_ACCOUNT: u8 = 5;
+const INITIAL_MAX_TABS_PER_LENDING_ACCOUNT: u8 = 5;
 const MAX_ACCOUNT_NAME_LENGTH: usize = 25;
 const BASE_10_INT :u128 = 10;
 
@@ -380,8 +380,6 @@ fn update_user_previous_interest_earned<'info>(
     
     token_reserve.deposited_amount += new_user_interest_earned_amount_after_fees;
     token_reserve.interest_earned_amount += new_user_interest_earned_amount_after_fees;
-    token_reserve.sub_market_fees_generated_amount += new_sub_market_fees_generated_amount;
-    token_reserve.solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount;
     token_reserve.uncollected_solvency_insurance_fees_amount += new_solvency_insurance_fees_generated_amount;
     sub_market.deposited_amount += new_user_interest_earned_amount_after_fees;
     sub_market.interest_earned_amount += new_user_interest_earned_amount_after_fees;
@@ -390,12 +388,12 @@ fn update_user_previous_interest_earned<'info>(
     sub_market.solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount;
     lending_user_tab_account.deposited_amount += new_user_interest_earned_amount_after_fees as u64;
     lending_user_tab_account.interest_earned_amount += new_user_interest_earned_amount_after_fees as u64;
-    lending_user_tab_account.sub_market_fees_generated_amount += new_sub_market_fees_generated_amount as u64;
-    lending_user_tab_account.solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
+    lending_user_tab_account.fees_generated_amount += new_sub_market_fees_generated_amount as u64;
+    lending_user_tab_account.fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
     lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
     lending_user_monthly_statement_account.monthly_interest_earned_amount += new_user_interest_earned_amount_after_fees as u64;
-    lending_user_monthly_statement_account.monthly_sub_market_fees_generated_amount += new_sub_market_fees_generated_amount as u64;
-    lending_user_monthly_statement_account.monthly_solvency_insurance_fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
+    lending_user_monthly_statement_account.fees_generated_amount += new_sub_market_fees_generated_amount as u64;
+    lending_user_monthly_statement_account.fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
 
     Ok(())
 }
@@ -525,6 +523,7 @@ fn initialize_lending_user_account<'info>(lending_user_account: &mut LendingUser
 //Helper function to initialize Lending User Tab Account
 fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut LendingUserAccount,
     lending_user_tab_account: &mut LendingUserTabAccount,
+    lending_protocol: &LendingProtocol,
     bump: u8,
     token_id: u8,
     sub_market_owner_address: Pubkey,
@@ -548,7 +547,9 @@ fn initialize_lending_user_tab_account<'info>(lending_user_account: &mut Lending
     //Unable to withdraw, borrow, repay, or be liquidated because too many transactions would be required to land in the same slot.
     //Jito bundles only allow for up to 5 transacations.
     //A user can create a new account if there are other submarkets they want to interact with
-    require!(lending_user_account.tab_account_count <= MAX_TABS_PER_LENDING_ACCOUNT, LendingError::TooManyTabAccounts);
+    //I've tested things out with 5 tokens and will increase as I eventually try to add more tokens to try and let the user keep all the tokens in the same account. (assuming they aren't joining a bunch of different submarkets and trying to break things, lol.
+    //That's why ideally the max amount is equal the number of different tokens, but doesn't have to be)
+    require!(lending_user_account.tab_account_count <= lending_protocol.max_tabs_per_lending_account, LendingError::TooManyTabAccounts);
 
     msg!("Created Lending User Tab Account Indexed At: {}", lending_user_tab_account.user_tab_account_index);
 
@@ -740,6 +741,7 @@ pub mod lending_protocol
         let lending_protocol = &mut ctx.accounts.lending_protocol;
         lending_protocol.current_statement_month = statement_month;
         lending_protocol.current_statement_year = statement_year;
+        lending_protocol.max_tabs_per_lending_account = INITIAL_MAX_TABS_PER_LENDING_ACCOUNT;
         lending_protocol.look_up_table_address = ctx.accounts.look_up_table_address.key();
 
         let lending_stats = &mut ctx.accounts.lending_stats;
@@ -853,7 +855,7 @@ pub mod lending_protocol
         Ok(())
     }
 
-    pub fn update_current_statement_month_and_year(ctx: Context<UpdateCurrentStatementMonthAndYear>, statement_month: u8, statement_year: u16) -> Result<()> 
+    pub fn update_current_statement_month_and_year(ctx: Context<UpdateLendingProtocol>, statement_month: u8, statement_year: u16) -> Result<()> 
     {
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
@@ -864,6 +866,20 @@ pub mod lending_protocol
         lending_protocol.current_statement_year = statement_year;
 
         msg!("Updated Lending Protocol To Statement Month: {}, Year: {}", lending_protocol.current_statement_month, lending_protocol.current_statement_year);
+
+        Ok(())
+    }
+
+    pub fn update_max_tab_amount(ctx: Context<UpdateLendingProtocol>, new_max_tab_amount: u8) -> Result<()> 
+    {
+        let ceo = &mut ctx.accounts.ceo;
+        //Only the CEO can call this function
+        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
+
+        let lending_protocol = &mut ctx.accounts.lending_protocol;
+        lending_protocol.max_tabs_per_lending_account = new_max_tab_amount;
+
+        msg!("Updated Lending Protocol Max Tabs To: {}", new_max_tab_amount);
 
         Ok(())
     }
@@ -1042,7 +1058,7 @@ pub mod lending_protocol
         let lending_user_account = &mut ctx.accounts.lending_user_account;
         let look_up_table_address = ctx.accounts.look_up_table_address.key();
 
-        let mut new_account_name_to_use: String = String::from("Generic Depositer");
+        let mut new_account_name_to_use: String = String::from("Generic Liquidator");
         if !account_name.is_empty()//Check for empty string ""
         {
             new_account_name_to_use = account_name;
@@ -1116,9 +1132,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                lending_protocol,
                 ctx.bumps.lending_user_tab_account,
                 token_reserve.token_id,
                 sub_market_owner_address.key(),
@@ -1445,9 +1463,11 @@ pub mod lending_protocol
         //This is for when a user is borrowing a token they have never interacted with before
         if lending_user_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                lending_protocol,
                 ctx.bumps.lending_user_tab_account,
                 token_reserve.token_id,
                 sub_market_owner_address.key(),
@@ -1935,9 +1955,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if liquidator_repayment_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 liquidator_lending_account,
                 liquidator_repayment_tab_account,
+                lending_protocol,
                 ctx.bumps.liquidator_repayment_tab_account,
                 repayment_token_reserve.token_id,
                 repayment_sub_market_owner_address.key(),
@@ -1948,9 +1970,11 @@ pub mod lending_protocol
         }
         if liquidator_liquidation_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 liquidator_lending_account,
                 liquidator_liquidation_tab_account,
+                lending_protocol,
                 ctx.bumps.liquidator_liquidation_tab_account,
                 liquidation_token_reserve.token_id,
                 liquidation_sub_market_owner_address.key(),
@@ -2071,19 +2095,18 @@ pub mod lending_protocol
         liquidation_token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
         liquidation_token_reserve.liquidated_amount += liquidation_fee_amount as u128;
         liquidation_token_reserve.deposited_amount -= liquidation_fee_amount as u128;
-        liquidation_token_reserve.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
         liquidation_token_reserve.uncollected_liquidation_fees_amount += liquidation_fee_amount as u128;
         liquidati_liquidation_tab_account.deposited_amount -= liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_tab_account.deposited_amount -= liquidation_fee_amount;
         liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_tab_account.liquidated_amount += liquidation_fee_amount;
         liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidator_liquidation_tab_account.fees_generated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
         liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidator_liquidation_monthly_statement_account.fees_generated_amount += liquidation_fee_amount;
 
         if send_reward_to_wallet
         {
@@ -2374,9 +2397,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if liquidator_repayment_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 liquidator_lending_account,
                 liquidator_repayment_tab_account,
+                lending_protocol,
                 ctx.bumps.liquidator_repayment_tab_account,
                 token_reserve.token_id,
                 repayment_sub_market_owner_address.key(),
@@ -2387,9 +2412,11 @@ pub mod lending_protocol
         }
         if liquidator_liquidation_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 liquidator_lending_account,
                 liquidator_liquidation_tab_account,
+                lending_protocol,
                 ctx.bumps.liquidator_liquidation_tab_account,
                 token_reserve.token_id,
                 liquidation_sub_market_owner_address.key(),
@@ -2503,7 +2530,6 @@ pub mod lending_protocol
         token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
         token_reserve.liquidated_amount += liquidation_fee_amount as u128;
         token_reserve.deposited_amount -= liquidation_fee_amount as u128;
-        token_reserve.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
         token_reserve.uncollected_liquidation_fees_amount += liquidation_fee_amount as u128;
         liquidation_sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
         liquidation_sub_market.liquidated_amount += liquidation_fee_amount as u128;
@@ -2514,12 +2540,12 @@ pub mod lending_protocol
         liquidati_liquidation_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_tab_account.liquidated_amount += liquidation_fee_amount;
         liquidator_liquidation_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidator_liquidation_tab_account.fees_generated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
         liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidator_liquidation_monthly_statement_account.fees_generated_amount += liquidation_fee_amount;
 
         if send_reward_to_wallet
         {
@@ -2777,9 +2803,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if liquidator_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 liquidator_lending_account,
                 liquidator_tab_account,
+                lending_protocol,
                 ctx.bumps.liquidator_tab_account,
                 token_reserve.token_id,
                 sub_market_owner_address.key(),
@@ -2867,7 +2895,6 @@ pub mod lending_protocol
         token_reserve.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
         token_reserve.liquidated_amount += liquidation_fee_amount as u128;
         token_reserve.deposited_amount -= liquidation_fee_amount as u128;
-        token_reserve.liquidation_fees_generated_amount += liquidation_fee_amount as u128;
         token_reserve.uncollected_liquidation_fees_amount += liquidation_fee_amount as u128;
         sub_market.liquidated_amount += liquidation_amount_with_7_percent_bonus as u128;
         sub_market.liquidated_amount += liquidation_fee_amount as u128;
@@ -2878,12 +2905,12 @@ pub mod lending_protocol
         liquidati_tab_account.liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_tab_account.liquidated_amount += liquidation_fee_amount;
         liquidator_tab_account.liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_tab_account.liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidator_tab_account.fees_generated_amount += liquidation_fee_amount;
         liquidati_monthly_statement_account.monthly_liquidated_amount += liquidation_amount_with_7_percent_bonus;
         liquidati_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
         liquidati_monthly_statement_account.snap_shot_balance_amount = liquidati_tab_account.deposited_amount;
         liquidator_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_monthly_statement_account.monthly_liquidation_fees_generated_amount += liquidation_fee_amount;
+        liquidator_monthly_statement_account.fees_generated_amount += liquidation_fee_amount;
 
         if send_reward_to_wallet
         {
@@ -3224,9 +3251,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                lending_protocol,
                 ctx.bumps.lending_user_tab_account,
                 token_reserve.token_id, 
                 sub_market_owner_address.key(),
@@ -3274,7 +3303,6 @@ pub mod lending_protocol
         token_reserve.deposited_amount += sub_market.uncollected_sub_market_fees_amount;
         sub_market.deposited_amount += sub_market.uncollected_sub_market_fees_amount;
         lending_user_tab_account.deposited_amount += sub_market.uncollected_sub_market_fees_amount as u64;
-        lending_user_tab_account.sub_market_fees_collected_amount += sub_market.uncollected_sub_market_fees_amount as u64;
         lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += sub_market.uncollected_sub_market_fees_amount as u64;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
 
@@ -3369,9 +3397,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if initial_lending_user_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 lending_user_account,
                 initial_lending_user_tab_account,
+                lending_protocol,
                 ctx.bumps.initial_lending_user_tab_account,
                 token_reserve.token_id,
                 initial_sub_market_owner_address,
@@ -3382,9 +3412,11 @@ pub mod lending_protocol
         }
         if destination_lending_user_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 lending_user_account,
                 destination_lending_user_tab_account,
+                lending_protocol,
                 ctx.bumps.destination_lending_user_tab_account,
                 token_reserve.token_id,
                 destination_sub_market_owner_address,
@@ -3447,7 +3479,6 @@ pub mod lending_protocol
         token_reserve.deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount;
         destination_sub_market.deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount;
         destination_lending_user_tab_account.deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
-        initial_lending_user_tab_account.sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
         initial_lending_user_monthly_statement_account.monthly_sub_market_fees_collected_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64;
         initial_lending_user_monthly_statement_account.monthly_withdrawal_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a withdrawal from initial submarket. The fee collection and withdrawal cancel each other out, so no need to update snap shot balance for initial submarket.
         destination_lending_user_monthly_statement_account.monthly_deposited_amount += initial_sub_market.uncollected_sub_market_fees_amount as u64; //Treating this as a deposit into destination submarket.
@@ -3542,9 +3573,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                lending_protocol,
                 ctx.bumps.lending_user_tab_account,
                 token_reserve.token_id,
                 sub_market_owner_address.key(),
@@ -3589,7 +3622,6 @@ pub mod lending_protocol
         )?;
 
         //Record Solvency Insurance Fee Collection
-        lending_user_tab_account.solvency_insurance_fees_collected_amount += amount;
         lending_user_monthly_statement_account.monthly_solvency_insurance_fees_collected_amount += amount;
 
         //Update last activity on accounts
@@ -3665,9 +3697,11 @@ pub mod lending_protocol
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if lending_user_tab_account.user_tab_account_added == false
         {
+            let lending_protocol = &ctx.accounts.lending_protocol;
             initialize_lending_user_tab_account(
                 lending_user_account,
                 lending_user_tab_account,
+                lending_protocol,
                 ctx.bumps.lending_user_tab_account,
                 token_reserve.token_id, 
                 sub_market_owner_address.key(),
@@ -3715,7 +3749,6 @@ pub mod lending_protocol
         token_reserve.deposited_amount += token_reserve.uncollected_liquidation_fees_amount;
         sub_market.deposited_amount += token_reserve.uncollected_liquidation_fees_amount;
         lending_user_tab_account.deposited_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
-        lending_user_tab_account.liquidation_fees_collected_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
         lending_user_monthly_statement_account.monthly_liquidation_fees_collected_amount += token_reserve.uncollected_liquidation_fees_amount as u64;
         lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
 
@@ -3957,7 +3990,7 @@ pub struct CloseTempOraclePriceData<'info>
 }
 
 #[derive(Accounts)]
-pub struct UpdateCurrentStatementMonthAndYear<'info> 
+pub struct UpdateLendingProtocol<'info> 
 {
     #[account(
         mut,
@@ -5365,6 +5398,7 @@ pub struct LendingProtocol
 {
     pub current_statement_month: u8,
     pub current_statement_year: u16,
+    pub max_tabs_per_lending_account: u8,
     pub look_up_table_address: Pubkey
 }
 
@@ -5419,11 +5453,8 @@ pub struct TokenReserve
     pub borrow_interest_change_index: u128, //Starts at 1 (in fixed point notation) and increases as Borrow User interest is accrued for Supply Users so that it can be proportionally distributed to Borrow Users
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
-    pub sub_market_fees_generated_amount: u128,
     pub solvency_insurance_fee_rate: u16,
-    pub solvency_insurance_fees_generated_amount: u128,
     pub uncollected_solvency_insurance_fees_amount: u128,
-    pub liquidation_fees_generated_amount: u128,
     pub uncollected_liquidation_fees_amount: u128,
     pub borrowed_amount: u128,
     pub interest_accrued_amount: u128,
@@ -5449,8 +5480,8 @@ pub struct SubMarket
     pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated. This is only used in the frontend for calculating the 7 day projection rate
     pub deposited_amount: u128,
     pub interest_earned_amount: u128,
-    pub sub_market_fees_generated_amount: u128,
-    pub uncollected_sub_market_fees_amount: u128,
+    pub sub_market_fees_generated_amount: u128, //These generated fees aren't combined into one so other developers that want to use their own submarket and keep track of it separately
+    pub uncollected_sub_market_fees_amount: u128,  
     pub solvency_insurance_fees_generated_amount: u128,
     pub liquidation_fees_generated_amount: u128,
     pub borrowed_amount: u128,
@@ -5504,12 +5535,7 @@ pub struct LendingUserTabAccount
     pub borrow_interest_change_index: u128, //This index is set to match the token reserve index after previously accured interest is updated
     pub deposited_amount: u64,
     pub interest_earned_amount: u64,
-    pub sub_market_fees_generated_amount: u64,
-    pub sub_market_fees_collected_amount: u64,
-    pub solvency_insurance_fees_generated_amount: u64,
-    pub solvency_insurance_fees_collected_amount: u64,
-    pub liquidation_fees_generated_amount: u64,
-    pub liquidation_fees_collected_amount: u64,
+    pub fees_generated_amount: u64,
     pub borrowed_amount: u64,
     pub interest_accrued_amount: u64,
     pub repaid_debt_amount: u64,
@@ -5534,11 +5560,9 @@ pub struct LendingUserMonthlyStatementAccount
     pub snap_shot_debt_amount: u64,
     pub monthly_deposited_amount: u64,//The monthly properties give the specific value changes for that specific month
     pub monthly_interest_earned_amount: u64,
-    pub monthly_sub_market_fees_generated_amount: u64,
+    pub fees_generated_amount: u64,
     pub monthly_sub_market_fees_collected_amount: u64,
-    pub monthly_solvency_insurance_fees_generated_amount: u64,
     pub monthly_solvency_insurance_fees_collected_amount: u64,
-    pub monthly_liquidation_fees_generated_amount: u64,
     pub monthly_liquidation_fees_collected_amount: u64,
     pub monthly_withdrawal_amount: u64,
     pub monthly_borrowed_amount: u64,
