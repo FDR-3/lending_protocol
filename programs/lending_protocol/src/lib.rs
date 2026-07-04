@@ -828,10 +828,6 @@ pub mod lending_protocol
 
     pub fn close_temp_oracle_price_data(ctx: Context<CloseTempOraclePriceData>) -> Result<()> 
     {
-        let ceo = &ctx.accounts.ceo;
-        //Only the CEO can call this function
-        require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
-
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
         let price_validator = &ctx.accounts.price_validator;
         let temp_price_account_info = ctx.accounts.temp_price_account.to_account_info();
@@ -1036,6 +1032,39 @@ pub mod lending_protocol
         Ok(())
     }*/
 
+    //This is necessary for liquidation as there is no init if needed for the 
+    pub fn create_lending_account(ctx: Context<CreateLendingAccount>,
+        user_account_index: u8,
+        account_name: String
+    ) -> Result<()> 
+    {
+        let lending_stats = &mut ctx.accounts.lending_stats;
+        let lending_user_account = &mut ctx.accounts.lending_user_account;
+        let look_up_table_address = ctx.accounts.look_up_table_address.key();
+
+        let mut new_account_name_to_use: String = String::from("Generic Depositer");
+        if !account_name.is_empty()//Check for empty string ""
+        {
+            new_account_name_to_use = account_name;
+        }
+
+        initialize_lending_user_account(
+            lending_user_account,
+            ctx.bumps.lending_user_account,
+            ctx.accounts.signer.key(),
+            user_account_index,
+            new_account_name_to_use.clone(),
+            look_up_table_address
+        )?;
+
+        //Update Values and Stat Listener
+        lending_stats.user_accounts += 1;
+
+        msg!("New Lending User: {}", new_account_name_to_use);
+
+        Ok(())
+    }
+
     pub fn deposit_tokens(ctx: Context<DepositTokens>,
         sub_market_index: u16,
         user_account_index: u8,
@@ -1080,6 +1109,8 @@ pub mod lending_protocol
                 new_account_name_to_use,
                 lut_address
             )?;
+
+            lending_stats.user_accounts += 1;
         }
         
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
@@ -1690,9 +1721,7 @@ pub mod lending_protocol
         amount_to_repay: u64,
         repay_max: bool,
         paying_off_insolvent_account: bool,
-        send_reward_to_wallet: bool,
-        account_name: Option<String>, //Optional variable. Use null on front end when not needed
-        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
+        send_reward_to_wallet: bool
     ) -> Result<()>
     {
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
@@ -1709,11 +1738,14 @@ pub mod lending_protocol
             liquidati_account_owner_address,
             liquidati_account_index)?;
 
+        msg!("clock_slot: {}", clock_slot);
+        msg!("liquidati_lending_account.last_health_update_clock_slot: {}", liquidati_lending_account.last_health_update_clock_slot);
+        msg!("slot diff: {}", clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot));
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
         #[cfg(feature = "local")] 
         require!(clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot) <= 1, LendingError::StaleTokenReserveOrLendingUser);
-        #[cfg(feature = "dev")] 
-        require!(clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot) == 0, LendingError::StaleTokenReserveOrLendingUser);
+        #[cfg(feature = "dev")]//I will set this back to 0 once deploys are working normal on solana and I'm able to use the Jito bundles on Test net
+        require!(clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot) <= 1000, LendingError::StaleTokenReserveOrLendingUser);
 
         let lending_protocol = &ctx.accounts.lending_protocol;
         let repayment_token_reserve = &mut ctx.accounts.repayment_token_reserve;
@@ -1899,30 +1931,6 @@ pub mod lending_protocol
         //You must repay atleast 10% of the borrow position when the account is in an unhealthy state. This prevents "griefing".
         //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running other liquidators so their transaction fails and holding the protocol's solvency hostage!
         require!(repayment_amount >= ten_percent_of_borrowed_amount, LendingError::GriefingRepayment);
-
-        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
-        if liquidator_lending_account.lending_user_account_added == false
-        {
-            let mut new_account_name_to_use: String = String::from("Generic Liquidator");
-            if let Some(new_account_name) = account_name
-            {
-                if !new_account_name.is_empty()
-                {
-                    new_account_name_to_use = new_account_name;
-                }
-            }
-
-            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
-
-            initialize_lending_user_account(
-                liquidator_lending_account,
-                ctx.bumps.liquidator_lending_account,
-                ctx.accounts.signer.key(),
-                liquidator_account_index,
-                new_account_name_to_use,
-                lut_address
-            )?;
-        }
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if liquidator_repayment_tab_account.user_tab_account_added == false
@@ -2185,9 +2193,7 @@ pub mod lending_protocol
         amount_to_repay: u64,
         repay_max: bool,
         paying_off_insolvent_account: bool,
-        send_reward_to_wallet: bool,
-        account_name: Option<String>, //Optional variable. Use null on front end when not needed
-        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
+        send_reward_to_wallet: bool
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
@@ -2364,30 +2370,6 @@ pub mod lending_protocol
         //You must repay atleast 10% of the borrow position when the account is in an unhealthy state. This prevents "griefing".
         //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running other liquidators so their transaction fails and holding the protocol's solvency hostage!
         require!(repayment_amount >= ten_percent_of_borrowed_amount, LendingError::GriefingRepayment);
-
-        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
-        if liquidator_lending_account.lending_user_account_added == false
-        {
-            let mut new_account_name_to_use: String = String::from("Generic Liquidator");
-            if let Some(new_account_name) = account_name
-            {
-                if !new_account_name.is_empty()
-                {
-                    new_account_name_to_use = new_account_name;
-                }
-            }
-
-            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
-
-            initialize_lending_user_account(
-                liquidator_lending_account,
-                ctx.bumps.liquidator_lending_account,
-                ctx.accounts.signer.key(),
-                liquidator_account_index,
-                new_account_name_to_use,
-                lut_address
-            )?;
-        }
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if liquidator_repayment_tab_account.user_tab_account_added == false
@@ -2649,9 +2631,7 @@ pub mod lending_protocol
         amount_to_repay: u64,
         repay_max: bool,
         paying_off_insolvent_account: bool,
-        send_reward_to_wallet: bool,
-        account_name: Option<String>, //Optional variable. Use null on front end when not needed
-        look_up_table_address: Option<Pubkey> //Needed when a user initializes their Lending User Account
+        send_reward_to_wallet: bool
     ) -> Result<()>
     {
         let lending_protocol = &ctx.accounts.lending_protocol;
@@ -2793,30 +2773,6 @@ pub mod lending_protocol
         //You must repay atleast 10% of the borrow position when the account is in an unhealthy state. This prevents "griefing".
         //IE: Only repaying $1 (or just the smallest enough amount to be in a healthy state), front running other liquidators so their transaction fails and holding the protocol's solvency hostage!
         require!(repayment_amount >= ten_percent_of_borrowed_amount, LendingError::GriefingRepayment);
-
-        //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
-        if liquidator_lending_account.lending_user_account_added == false
-        {
-            let mut new_account_name_to_use: String = String::from("Generic Liquidator");
-            if let Some(new_account_name) = account_name
-            {
-                if !new_account_name.is_empty()
-                {
-                    new_account_name_to_use = new_account_name;
-                }
-            }
-
-            let lut_address = look_up_table_address.ok_or(LendingError::MissingLendingUserLookUpTable)?;
-
-            initialize_lending_user_account(
-                liquidator_lending_account,
-                ctx.bumps.liquidator_lending_account,
-                ctx.accounts.signer.key(),
-                liquidator_account_index,
-                new_account_name_to_use,
-                lut_address
-            )?;
-        }
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
         if liquidator_tab_account.user_tab_account_added == false
@@ -3072,7 +3028,7 @@ pub mod lending_protocol
         for _i in 0..set_count.into()
         {
             //Validate Remaining Accounts
-            
+
             /////////////
             //Tab Account
             let tab_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
@@ -3261,6 +3217,8 @@ pub mod lending_protocol
                 new_account_name_to_use,
                 lut_address
             )?;
+
+            lending_stats.user_accounts += 1;
         }
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
@@ -3404,6 +3362,8 @@ pub mod lending_protocol
                 new_account_name_to_use,
                 lut_address
             )?;
+
+            lending_stats.user_accounts += 1;
         }
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
@@ -3575,6 +3535,8 @@ pub mod lending_protocol
                 new_account_name_to_use,
                 lut_address
             )?;
+
+            lending_stats.user_accounts += 1;
         }
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
@@ -3696,6 +3658,8 @@ pub mod lending_protocol
                 new_account_name_to_use,
                 lut_address
             )?;
+
+            lending_stats.user_accounts += 1;
         }
 
         //Populate tab account if being newly initialized. Every token the lending user interacts with has its own tab account tied to that sub user and their account index.
@@ -3976,14 +3940,6 @@ pub struct CreateTempOraclePriceData<'info>
 #[derive(Accounts)]
 pub struct CloseTempOraclePriceData<'info> 
 {
-    ///CHECK: This is the address of the lending user that requested the price data that needs to be closed
-    pub lending_user_address: UncheckedAccount<'info>,
-
-    #[account(
-        seeds = [b"lendingProtocolCEO".as_ref()],
-        bump)]
-    pub ceo: Account<'info, LendingProtocolCEO>,
-
     #[account(
         seeds = [b"oraclePriceValidator".as_ref()],
         bump)]
@@ -3991,7 +3947,7 @@ pub struct CloseTempOraclePriceData<'info>
 
     #[account(
         mut,
-        seeds = [b"oraclePriceData".as_ref(), lending_user_address.key().as_ref()], 
+        seeds = [b"oraclePriceData".as_ref(), signer.key().as_ref()], 
         bump)]
     pub temp_price_account: Account<'info, TempOraclePriceAccount>,
 
@@ -4168,6 +4124,32 @@ pub struct UpdateLendingUserLookUpTableAddress<'info>
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>
 }*/
+
+#[derive(Accounts)]
+#[instruction(user_account_index: u8)]
+pub struct CreateLendingAccount<'info> 
+{
+    ///CHECK: This is the new look up table address of the user
+    pub look_up_table_address: UncheckedAccount<'info>,
+    
+    #[account(
+        mut, 
+        seeds = [b"lendingStats".as_ref()],
+        bump)]
+    pub lending_stats: Box<Account<'info, LendingStats>>,
+
+    #[account(
+        init,
+        payer = signer,
+        seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), user_account_index.to_le_bytes().as_ref()],
+        bump, 
+        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+    pub lending_user_account: Account<'info, LendingUserAccount>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>
+}
 
 #[derive(Accounts)]
 #[instruction(sub_market_index: u16, user_account_index: u8)]
@@ -4594,11 +4576,9 @@ pub struct LiquidateAccount<'info>
     pub liquidation_token_reserve: Box<Account<'info, TokenReserve>>,
 
     #[account(
-        init_if_needed,
-        payer = signer,
+        mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), liquidator_account_index.to_le_bytes().as_ref()],
-        bump, 
-        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+        bump)]
     pub liquidator_lending_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
@@ -4723,11 +4703,9 @@ pub struct LiquidateAccountSameToken<'info>
     pub liquidati_lending_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
-        init_if_needed,
-        payer = signer,
+        mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), liquidator_account_index.to_le_bytes().as_ref()],
-        bump, 
-        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+        bump)]
     pub liquidator_lending_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
@@ -4846,11 +4824,9 @@ pub struct LiquidateAccountSameSubMarket<'info>
     pub liquidati_lending_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
-        init_if_needed,
-        payer = signer,
+        mut,
         seeds = [b"lendingUserAccount".as_ref(), signer.key().as_ref(), liquidator_account_index.to_le_bytes().as_ref()],
-        bump, 
-        space = size_of::<LendingUserAccount>() + LENDING_USER_ACCOUNT_EXTRA_SIZE + 8)]
+        bump)]
     pub liquidator_lending_account: Box<Account<'info, LendingUserAccount>>,
 
     #[account(
@@ -5343,7 +5319,7 @@ pub struct PriceDataPayload
     pub slot: u64
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct VerifiedPriceData
 {
     pub token_id: u8,
@@ -5410,6 +5386,7 @@ pub struct SubMarketStats //Moved these lending protocol variables here to help 
 pub struct LendingStats
 {
     pub bump: u8,
+    pub user_accounts: u64,
     pub deposits: u128,
     pub withdrawals: u128,
     pub borrows: u128,
