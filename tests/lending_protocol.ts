@@ -1799,12 +1799,6 @@ describe("lending_protocol", () =>
 
     try
     {
-      liquidatorLookUpTableAddress = await initLookUpTable()
-
-      await program.methods.createLendingAccount(testUserAccountIndex, "Generic Liquidator")
-        .accounts({ lookUpTableAddress: liquidatorLookUpTableAddress })
-        .rpc()
-
       const [updatePricesTransaction, priceRemainingAccount] = await generateOracleTransactionAndRemainingPriceAccount(solAndUSDCTestPriceDataPayload, programProviderPublicKey)
 
       const refreshingRemainingAccounts =
@@ -1856,7 +1850,9 @@ describe("lending_protocol", () =>
         halfBorrowerUSDCAmount,
         true,
         false,
-        false)
+        false,
+        null,
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -1938,7 +1934,9 @@ describe("lending_protocol", () =>
         borrowerUSDCAmount,
         false,
         true,
-        false)
+        false,
+        null,
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -2020,7 +2018,9 @@ describe("lending_protocol", () =>
         borrowerUSDCAmount,
         false,
         false,
-        false)
+        false,
+        null,
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -2195,7 +2195,9 @@ describe("lending_protocol", () =>
         lessThan10PercentOfBorrowedAmount,
         false,
         false,
-        false)
+        false,
+        null,
+        null)
       .accounts({
         liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
         repaymentSubMarketOwner: programProviderPublicKey,
@@ -2310,6 +2312,7 @@ describe("lending_protocol", () =>
       oracleAddressRemainingAccount
     ]
 
+    liquidatorLookUpTableAddress = await initLookUpTable()
     const liquidateInstruction = await program.methods.liquidateAccount(
       testSubMarketIndex,
       testSubMarketIndex,
@@ -2318,15 +2321,17 @@ describe("lending_protocol", () =>
       halfBorrowerUSDCAmount,
       true,
       runInsolventTest,
-      false)
+      false,
+      null,
+      liquidatorLookUpTableAddress)
     .accounts({
-        liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
-        repaymentSubMarketOwner: programProviderPublicKey,
-        liquidationSubMarketOwner: programProviderPublicKey,
-        repaymentMint: usdcMint.publicKey,
-        liquidationMint: solTokenMintAddress,
-        repaymentTokenProgram: TOKEN_2022_PROGRAM_ID,
-        liquidationTokenProgram: TOKEN_PROGRAM_ID })
+      liquidatiAccountOwner: borrowerWalletKeypair.publicKey,
+      repaymentSubMarketOwner: programProviderPublicKey,
+      liquidationSubMarketOwner: programProviderPublicKey,
+      repaymentMint: usdcMint.publicKey,
+      liquidationMint: solTokenMintAddress,
+      repaymentTokenProgram: TOKEN_2022_PROGRAM_ID,
+      liquidationTokenProgram: TOKEN_PROGRAM_ID })
     .remainingAccounts(liquidationRemainingAccounts)
     .instruction()
 
