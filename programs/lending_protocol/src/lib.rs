@@ -11,7 +11,7 @@ pub mod errors;
 use crate::validation::*;
 use crate::errors::LendingError;
 
-declare_id!("3znBMZEVoRv2pjByoinxVjnuPduCvgvmkupuSRyA1fo9");
+declare_id!("HPSRDRBK5tr9o4gcFzsEZaNLutMqf4SLRdj1BBri3KWa");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
@@ -1270,17 +1270,20 @@ pub mod lending_protocol
         }
 
         //After updating interest earned and accrued, set withdraw amount
+        let token_reserve_ata_data = TokenAccount::try_deserialize(&mut &ctx.accounts.token_reserve_ata.to_account_info().data.borrow()[..])?;
+        let token_reserve_available_amount = token_reserve_ata_data.amount;
         let mut withdraw_amount;
 
         if withdraw_max
         {
-            withdraw_amount = lending_user_tab_account.deposited_amount;
+            withdraw_amount = std::cmp::min(token_reserve_available_amount, lending_user_tab_account.deposited_amount);
         }
         else
         {
             withdraw_amount = amount
         }
 
+        //Skip if user has no debt
         if lending_user_account.total_borrowed_usd_value > 0
         {
             ////////////////////////////
@@ -1319,10 +1322,9 @@ pub mod lending_protocol
                     //3. Convert that safe USD allowance back into native token units using the oracle price
                     let max_allowed_token_withdraw = (max_withdraw_usd_value * token_conversion_number) / normalized_price_18_decimals;
 
-                    //4. Cap it by the user's absolute token balance in this specific tab account
-                    let safe_max_tokens = std::cmp::min(max_allowed_token_withdraw as u64, lending_user_tab_account.deposited_amount);
-                    
-                    withdraw_amount = safe_max_tokens;
+                    //4. Cap it by the user's absolute token balance in this tab and token reserve liquidity amount
+                    let safe_max_tokens = std::cmp::min(max_allowed_token_withdraw, lending_user_tab_account.deposited_amount as u128) as u64;
+                    withdraw_amount = std::cmp::min(safe_max_tokens, token_reserve_available_amount);
                 } 
                 else 
                 {
@@ -1341,8 +1343,7 @@ pub mod lending_protocol
         require!(lending_user_tab_account.deposited_amount >= withdraw_amount, LendingError::InsufficientFunds);
 
         //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
-        let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
-        require!(available_token_amount >= withdraw_amount as u128, LendingError::InsufficientLiquidity);
+        require!(token_reserve_available_amount >= withdraw_amount, LendingError::InsufficientLiquidity);
 
         let user_token_data = TokenAccount::try_deserialize(&mut &ctx.accounts.user_ata.to_account_info().data.borrow()[..])?;
         let balance_after_withdrawal = user_token_data.amount.saturating_sub(withdraw_amount);
@@ -1473,7 +1474,9 @@ pub mod lending_protocol
         let normalized_price_18_decimals = get_verified_token_price(&temp_price_account.data, token_reserve.token_id)?;
         let token_conversion_number = BASE_10_INT.pow(token_reserve.token_decimal_amount as u32); 
 
-        //Multiply before dividing to help keep precision
+        //Determine Borrow Amount
+        let token_reserve_ata_data = TokenAccount::try_deserialize(&mut &ctx.accounts.token_reserve_ata.to_account_info().data.borrow()[..])?;
+        let token_reserve_available_amount = token_reserve_ata_data.amount;
         let max_total_allowed_debt_usd_value = (lending_user_account.total_deposited_usd_value * 70) / 100;
         let mut borrow_amount = amount;
 
@@ -1493,10 +1496,8 @@ pub mod lending_protocol
                 //2. Convert USD target capacity into native token fractions using the oracle price
                 let max_tokens_allowed = (remaining_usd_borrow_headroom * token_conversion_number) / normalized_price_18_decimals;
 
-                //3. Bound the requested amount by pool balance liquidity constraints
-                let pool_liquidity_limit = token_reserve.deposited_amount.saturating_sub(token_reserve.borrowed_amount);
-                
-                borrow_amount = std::cmp::min(max_tokens_allowed as u64, pool_liquidity_limit as u64);
+                //3. Cap it by the user's max allowed amount and token reserve liquidity amount
+                borrow_amount = std::cmp::min(max_tokens_allowed, token_reserve_available_amount as u128) as u64;
                 
                 //4. Update global account trackers with finalized calculations
                 lending_user_account.total_borrowed_usd_value += (borrow_amount as u128 * normalized_price_18_decimals) / token_conversion_number;
@@ -1510,8 +1511,7 @@ pub mod lending_protocol
         }
 
         //You can't withdraw or borrow more funds than are currently available in the Token Reserve. This can happen if there is too much borrowing going on.
-        let available_token_amount = token_reserve.deposited_amount - token_reserve.borrowed_amount;
-        require!(available_token_amount >= borrow_amount as u128, LendingError::InsufficientLiquidity);
+        require!(token_reserve_available_amount >= borrow_amount, LendingError::InsufficientLiquidity);
 
         //Refund Oracle price account fees back to Oracle
         let oracle_account_serialized = remaining_accounts_iter.next().ok_or(LendingError::MissingRemainingAccount)?;
