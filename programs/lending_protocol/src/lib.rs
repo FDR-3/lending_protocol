@@ -442,7 +442,7 @@ fn check_token_price_staleness(price_data_clock_slot: u64, current_clock_slot: u
 {
     #[cfg(feature = "local")] 
     //Allow a max age of 40 slots (approx 16 seconds) 1 slot is about 400ms
-    if current_clock_slot.saturating_sub(price_data_clock_slot) > 7//40
+    if current_clock_slot.saturating_sub(price_data_clock_slot) > 0//7//40
     {
         msg!("Current Slot: {}", current_clock_slot);
         msg!("Data Slot: {}", price_data_clock_slot);
@@ -451,10 +451,10 @@ fn check_token_price_staleness(price_data_clock_slot: u64, current_clock_slot: u
 
     #[cfg(feature = "dev")]
     //Allow a max age of 0 slots (approx 0 seconds)
-    if current_clock_slot.saturating_sub(price_data_clock_slot) > 3
-    {
-        msg!("Current Slot: {}", current_clock_slot);
-        msg!("Data Slot: {}", price_data_clock_slot);
+    if current_clock_slot.saturating_sub(price_data_clock_slot) > 7 //The price data clock slot is set by the m4a api right before it sends off the bundles. There can be a slight delay by the time the bundle executes everything in the same slot, so it's not the slot that the api wrote.
+    {                                                               //But the price can only come from the api and it will always fire off immediately if input is correct. This is more of a safety check, incase like the api price server got stuck and was holding on to an old price for some reason.
+        msg!("Current Slot: {}", current_clock_slot);               //StaleTokenReserveOrLendingUser error checks will ensure the necessary transactions atleast execute in the same slot. 7 slots, 400ms per slot, about 2.8 seconds
+        msg!("Data Slot: {}", price_data_clock_slot);               //Think of this as the amount of time the Jito Bundle has to find a slot to execute on
         return Err(error!(LendingError::OracleDataStale));
     }
 
@@ -515,7 +515,7 @@ fn initialize_lending_user_account<'info>(lending_user_account: &mut LendingUser
     lending_user_account.lending_user_account_added = true;
 
     msg!("Created Lending User Account Named: {}", account_name);
-    msg!("Updated Lending User Look Up Table Address: {}", lending_user_account.look_up_table_address);
+    msg!("Set Lending User Look Up Table Address: {}", lending_user_account.look_up_table_address);
 
     Ok(())
 }
@@ -1725,15 +1725,12 @@ pub mod lending_protocol
             liquidati_account_owner_address,
             liquidati_account_index)?;
 
-        msg!("clock_slot: {}", clock_slot);
-        msg!("liquidati_lending_account.last_health_update_clock_slot: {}", liquidati_lending_account.last_health_update_clock_slot);
-        msg!("slot diff: {}", clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot));
         //This function instruction must be called in the same transaction after the refresh_user_health_chunk function instruction(s)
         #[cfg(feature = "local")] 
         require!(clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot) <= 1, LendingError::StaleTokenReserveOrLendingUser);
-        #[cfg(feature = "dev")]//I will set this back to 0 once deploys are working normal on solana and I'm able to use the Jito bundles on Test net
-        require!(clock_slot.saturating_sub(liquidati_lending_account.last_health_update_clock_slot) <= 1000, LendingError::StaleTokenReserveOrLendingUser);
-
+        #[cfg(feature = "dev")]
+        require!(liquidati_lending_account.last_health_update_clock_slot == clock_slot, LendingError::StaleTokenReserveOrLendingUser);
+        
         let lending_protocol = &ctx.accounts.lending_protocol;
         let repayment_token_reserve = &mut ctx.accounts.repayment_token_reserve;
         let liquidation_token_reserve = &mut ctx.accounts.liquidation_token_reserve;

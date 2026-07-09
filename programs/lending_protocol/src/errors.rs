@@ -60,8 +60,6 @@ pub enum LendingError
     TooManyFunds,
     #[msg("The token reserve or lending user health data was stale")]
     StaleTokenReserveOrLendingUser,
-    #[msg("The price data was stale or the feed id was incorrect")]
-    StalePriceDataOrWrongFeedID,
     #[msg("You must repay atleast 10% of the borrow position if the account is in an unhealthy state. This prevents 'griefing'")]
     GriefingRepayment,
     #[msg("You can't withdraw or borrow an amount that would cause your borrow liabilities to exceed 70% of deposited collateral")]
