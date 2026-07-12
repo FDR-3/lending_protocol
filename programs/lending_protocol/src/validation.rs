@@ -1,12 +1,16 @@
 use anchor_lang::prelude::*;
-use crate::*;
+use anchor_spl::token_interface::{TokenAccount};
 use crate::errors::LendingError;
+use crate::structs as Structs;
 
-pub fn validate_and_return_price_validator_account<'info>(program_id: Pubkey, price_validator_serialized: &AccountInfo<'info>) -> Result<OraclePriceValidator>
+
+pub fn validate_and_return_price_validator_account<'info>(
+    program_id: Pubkey,
+    price_validator_serialized: &AccountInfo<'info>) -> Result<Structs::OraclePriceValidator>
 {
     let mut data_slice: &[u8] = &price_validator_serialized.data.borrow();
 
-    let price_validator = OraclePriceValidator::try_deserialize(&mut data_slice)?;
+    let price_validator = Structs::OraclePriceValidator::try_deserialize(&mut data_slice)?;
 
     let bump = [price_validator.bump];
     let seeds = &
@@ -28,11 +32,11 @@ pub fn validate_and_return_price_validator_account<'info>(program_id: Pubkey, pr
 pub fn validate_and_return_temp_price_account<'info>(
     program_id: Pubkey,
     temp_price_account_serialized: &AccountInfo<'info>,
-    signer_address: Pubkey) -> Result<TempOraclePriceAccount>
+    signer_address: Pubkey) -> Result<Structs::TempOraclePriceAccount>
 {
     let mut data_slice: &[u8] = &temp_price_account_serialized.data.borrow();
 
-    let temp_oracle_price_account = TempOraclePriceAccount::try_deserialize(&mut data_slice)?;
+    let temp_oracle_price_account = Structs::TempOraclePriceAccount::try_deserialize(&mut data_slice)?;
 
     let seeds = &
     [
@@ -51,11 +55,11 @@ pub fn validate_and_return_temp_price_account<'info>(
     Ok(temp_oracle_price_account)
 }
 
-pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lending_stats_serialized: &AccountInfo<'info>) -> Result<LendingStats>
+pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lending_stats_serialized: &AccountInfo<'info>) -> Result<Structs::LendingStats>
 {
     let mut data_slice: &[u8] = &lending_stats_serialized.data.borrow();
 
-    let lending_stats = LendingStats::try_deserialize(&mut data_slice)?;
+    let lending_stats = Structs::LendingStats::try_deserialize(&mut data_slice)?;
 
     let bump = [lending_stats.bump];
     let seeds = &
@@ -76,11 +80,11 @@ pub fn validate_and_return_lending_stats_account<'info>(program_id: Pubkey, lend
 
 pub fn validate_and_return_token_reserve_account<'info>(
     program_id: Pubkey,
-    token_reserve_account_serialized: &AccountInfo<'info>) -> Result<TokenReserve>
+    token_reserve_account_serialized: &AccountInfo<'info>) -> Result<Structs::TokenReserve>
 {
     let mut data_slice: &[u8] = &token_reserve_account_serialized.data.borrow();
 
-    let token_reserve = TokenReserve::try_deserialize(&mut data_slice)?;
+    let token_reserve = Structs::TokenReserve::try_deserialize(&mut data_slice)?;
 
     let seeds = &
     [
@@ -122,12 +126,12 @@ pub fn validate_and_return_sub_market_account<'info>(
     sub_market_account_serialized: &AccountInfo<'info>,
     token_id: u8,
     sub_market_owner_address: Pubkey,
-    sub_market_index: u16) -> Result<SubMarket>
+    sub_market_index: u16) -> Result<Structs::SubMarket>
 {
     let mut data_slice: &[u8] = &sub_market_account_serialized.data.borrow();
 
     let token_id_to_le_bytes = token_id.to_le_bytes();
-    let sub_market = SubMarket::try_deserialize(&mut data_slice)?;
+    let sub_market = Structs::SubMarket::try_deserialize(&mut data_slice)?;
     let sub_market_index_to_le_bytes = sub_market_index.to_le_bytes();
 
     let seeds = &
@@ -153,11 +157,11 @@ pub fn validate_and_return_lending_user_account<'info>(
     program_id: Pubkey,
     lending_user_account_serialized: &AccountInfo<'info>,
     user_account_owner_address: Pubkey,
-    user_account_index: u8) -> Result<LendingUserAccount>
+    user_account_index: u8) -> Result<Structs::LendingUserAccount>
 {
     let mut data_slice: &[u8] = &lending_user_account_serialized.data.borrow();
 
-    let lending_user_account = LendingUserAccount::try_deserialize(&mut data_slice)?;
+    let lending_user_account = Structs::LendingUserAccount::try_deserialize(&mut data_slice)?;
 
     let user_account_index_to_le_bytes = user_account_index.to_le_bytes();
 
@@ -186,11 +190,11 @@ pub fn validate_and_return_lending_user_tab_account<'info>(
     sub_market_owner_address: Pubkey,
     sub_market_index: u16,
     user_account_owner_address: Pubkey,
-    user_account_index: u8) -> Result<LendingUserTabAccount>
+    user_account_index: u8) -> Result<Structs::LendingUserTabAccount>
 {
     let mut data_slice: &[u8] = &tab_account_serialized.data.borrow();
 
-    let lending_user_tab_account = LendingUserTabAccount::try_deserialize(&mut data_slice)?;
+    let lending_user_tab_account = Structs::LendingUserTabAccount::try_deserialize(&mut data_slice)?;
 
     let token_id_to_le_bytes = token_id.to_le_bytes();
     let user_account_index_to_le_bytes = user_account_index.to_le_bytes();
@@ -225,11 +229,11 @@ pub fn validate_and_return_lending_user_monthly_state_account<'info>(
     sub_market_owner_address: Pubkey,
     sub_market_index: u16,
     user_account_owner_address: Pubkey,
-    user_account_index: u8) -> Result<LendingUserMonthlyStatementAccount>
+    user_account_index: u8) -> Result<Structs::LendingUserMonthlyStatementAccount>
 {
     let mut data_slice: &[u8] = &monthly_statement_account_serialized.data.borrow();
 
-    let monthly_statement_account = LendingUserMonthlyStatementAccount::try_deserialize(&mut data_slice)?;
+    let monthly_statement_account = Structs::LendingUserMonthlyStatementAccount::try_deserialize(&mut data_slice)?;
 
     let current_statement_month_to_le_bytes = current_statement_month.to_le_bytes();
     let current_statement_year_to_le_bytes = current_statement_year.to_le_bytes();

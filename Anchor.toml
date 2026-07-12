@@ -11,7 +11,7 @@ lending_protocol = "AymeZTGqtjkaHVhDCpdfby1G9YkTn8EMPSQMRdGVjJSA"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Testnet"
+cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
