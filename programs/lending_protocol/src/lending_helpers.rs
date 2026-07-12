@@ -386,17 +386,7 @@ pub fn update_user_previous_interest_accrued<'info>(
 
 pub fn check_token_price_staleness(price_data_clock_slot: u64, current_clock_slot: u64) -> Result<()>
 {
-    #[cfg(feature = "local")] 
-    //Allow a max age of 40 slots (approx 16 seconds) 1 slot is about 400ms
-    if current_clock_slot.saturating_sub(price_data_clock_slot) > 0//7//40
-    {
-        msg!("Current Slot: {}", current_clock_slot);
-        msg!("Data Slot: {}", price_data_clock_slot);
-        return Err(error!(LendingError::OracleDataStale));
-    }
-
-    #[cfg(feature = "dev")]
-    //Allow a max age of 0 slots (approx 0 seconds)
+    //Allow a max age of 75 slots (approx 30 seconds)
     if current_clock_slot.saturating_sub(price_data_clock_slot) > 75 //The price data clock slot is set by the m4a api right before it sends off the bundles. There can be a slight delay by the time the bundle executes everything in the same slot, so it's not the slot that the api wrote.
     {                                                                //But the price can only come from the api and it will always fire off immediately if input is correct. This is more of a safety check, incase like the api price server got stuck and was holding on to an old price for some reason.
         msg!("Current Slot: {}", current_clock_slot);                //StaleTokenReserveOrLendingUser error checks will ensure the necessary transactions atleast execute in the same slot. 75 slots, 400ms per slot, about 30 seconds
