@@ -472,6 +472,7 @@ pub struct DepositTokens<'info>
 }
 
 //The Lending User Account gets created with a deposit and you can edit the account name on it afterwards
+//It can also be creating while liquidating or collecting fees
 #[derive(Accounts)]
 #[instruction(user_account_index: u8)]
 pub struct EditLendingUserAccountName<'info> 
@@ -628,7 +629,7 @@ pub struct BorrowTokens<'info>
     pub lending_user_account: Box<Account<'info, Structs::LendingUserAccount>>,
 
     #[account(
-        init_if_needed,
+        init_if_needed, //User may be borrowing from a token reserve they have never interacted with before
         payer = signer,
         seeds = [b"lendingUserTabAccount".as_ref(),
         token_reserve.token_id.to_le_bytes().as_ref(),
@@ -641,7 +642,7 @@ pub struct BorrowTokens<'info>
     pub lending_user_tab_account: Box<Account<'info, Structs::LendingUserTabAccount>>,
 
     #[account(
-        init_if_needed,
+        init_if_needed, //User may be borrowing from a token reserve they have never interacted with before
         payer = signer,
         seeds = [b"userMonthlyStatementAccount".as_ref(),//lendingUserMonthlyStatementAccount was too long, can only be 32 characters, lol
         lending_protocol.current_statement_month.to_le_bytes().as_ref(),

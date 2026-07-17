@@ -215,8 +215,9 @@ pub fn update_token_reserve_rates<'info>(token_reserve: &mut Structs::TokenReser
                 let u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 = u_rate_minus_optimal_u_rate * borrow_apy_slope2;
                 let new_high_rate_base = u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 / one_hundred_percent_minus_optimal_u_rate;
 
-                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate.
-                token_reserve.borrow_apy = (ten_percent + new_high_rate_base) as u16;
+                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate. (Assuming the Token Reserve fixed borrow apy x2 is smaller than 10%)
+                let base_apy = std::cmp::max(ten_percent, token_reserve.fixed_borrow_apy * 2);
+                token_reserve.borrow_apy = base_apy + new_high_rate_base as u16;
             }
         }
 

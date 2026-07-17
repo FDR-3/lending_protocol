@@ -23,7 +23,7 @@ pub enum InvalidInputError
 {
     #[msg("The Sub Market fee on interest earned rate can't be greater than 100%")]
     InvalidSubMarketFeeRate,
-    #[msg("The solvency insurance fee on interest earned rate can't be greater than 100%")]
+    #[msg("The solvency insurance fee on interest earned rate can't be greater than 4%")]
     InvalidSolvencyInsuranceFeeRate,
     #[msg("You must provide all of the sub user's tab accounts")]
     IncorrectNumberOfTabAccounts,
@@ -100,7 +100,7 @@ pub enum LendingError
     MissingSubMarketLookUpTable,
     #[msg("The Sub Market fee on interest earned rate can't be greater than 100%")]
     InvalidSubMarketFeeRate,
-    #[msg("The solvency insurance fee on interest earned rate can't be greater than 100%")]
+    #[msg("The solvency insurance fee on interest earned rate can't be greater than 4%")]
     InvalidSolvencyInsuranceFeeRate,
     #[msg("You must include a Look Up Table Address when a user initializes their Lending User Account")]
     MissingLendingUserLookUpTable,

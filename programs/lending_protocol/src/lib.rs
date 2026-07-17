@@ -48,7 +48,7 @@ const INITIAL_LIQUIDATION_TREASURER_ADDRESS: Pubkey = pubkey!("4FVD4AkuAKCUozYpQ
 #[cfg(feature = "local")] 
 const INITIAL_PRICE_ORACLE_VALIDATOR_ADDRESS: Pubkey = pubkey!("3jYmEG7Y8fU2696Gqukt95TSNzpkgkYHQsJpypdGW3WE");
 
-const INITIAL_MAX_TABS_PER_LENDING_ACCOUNT: u8 = 5;
+const INITIAL_MAX_TABS_PER_LENDING_ACCOUNT: u8 = 10;
 const BASE_10_INT :u128 = 10;
 
 enum Activity
@@ -243,8 +243,8 @@ pub mod lending_protocol
         //Only the CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
-        //Solvency Insurance Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(solvency_insurance_fee_rate <= 10_000, LendingError::InvalidSolvencyInsuranceFeeRate);
+        //Solvency Insurance Fee on interest earned rate can't be greater than 4%, 0.04 in decimal form, 400 in fixed point notation
+        require!(solvency_insurance_fee_rate <= 400, LendingError::InvalidSolvencyInsuranceFeeRate);
 
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -282,8 +282,8 @@ pub mod lending_protocol
         //Only the CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
-        //Solvency Insurance Fee on interest earned rate can't be greater than 100%, 1 in decimal form, 10,000 in fixed point notation
-        require!(solvency_insurance_fee_rate <= 10_000, LendingError::InvalidSolvencyInsuranceFeeRate);
+        //Solvency Insurance Fee on interest earned rate can't be greater than 4%, 0.04 in decimal form, 400 in fixed point notation
+        require!(solvency_insurance_fee_rate <= 400, LendingError::InvalidSolvencyInsuranceFeeRate);
 
         let token_reserve_stats = &mut ctx.accounts.token_reserve_stats;
         let token_reserve = &mut ctx.accounts.token_reserve;
@@ -2385,9 +2385,8 @@ pub mod lending_protocol
     }
 
     //You have to call this instruction for all user tab accounts before calling the withdraw, borrow, or liquidate functions in the same transaction.
-    //It's recommended to call this refresh function on up to 5 tab sets only at a time.
     //Feed in all of the Token Reserves remaining accounts as the same order as the token_reserve_mint_addresses input, then
-    //Repeating sets of these remaining accounts in this order (Up to 5 tab account sets at once, use another instruction for more): LendingUserTabAccount, Submarket, LendingUserMonthlyStatementAccount
+    //Repeating sets of these remaining accounts in this order (Successfully tested with 10 tab account sets at once): LendingUserTabAccount, Submarket, LendingUserMonthlyStatementAccount
     pub fn refresh_user_health_chunk_and_token_reserves(ctx: Context<RefreshUserHealthChunkAndTokenReserves>,
         user_account_index: u8,
         refresh_token_reserve_count: u8, //The number of token reserves being refreshed may not be the number of unverified_price_data, ie when borrowing from a token reserve the user has never interacted with before
@@ -2931,7 +2930,7 @@ pub mod lending_protocol
         //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
         if lending_user_account.lending_user_account_added == false
         {
-            let mut new_account_name_to_use: String = String::from("Generic Ins Fee Claimer");
+            let mut new_account_name_to_use: String = String::from("Solvency Treasury");
             if let Some(new_account_name) = account_name
             {
                 if !new_account_name.is_empty()
@@ -3053,7 +3052,7 @@ pub mod lending_protocol
         //Populate lending user account if being newly initialized. A user can have multiple accounts based on their account index. 
         if lending_user_account.lending_user_account_added == false
         {
-            let mut new_account_name_to_use: String = String::from("Generic Liq Fee Claimer");
+            let mut new_account_name_to_use: String = String::from("HODL Treasury");
             if let Some(new_account_name) = account_name
             {
                 if !new_account_name.is_empty()
