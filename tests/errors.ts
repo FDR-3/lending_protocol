@@ -4,7 +4,7 @@ export const errors =
   notSolvencyTreasurerErrorMsg: "Only the Solvency Treasurer can call this function",
   notLiquidationTreasurerErrorMsg: "Only the Liquidation Treasurer can call this function",
   notPriceOracle: "Only the Price Oracle can call this function",
-  solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg: "The solvency insurance fee on interest earned rate can't be greater than 100%",
+  solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg: "The solvency insurance fee on interest earned rate can't be greater than 4%",
   outOfRangeError: "ERR_OUT_OF_RANGE",
   subMarketFeeOnInterestEarnedRateTooHighErrorMsg: "The Sub Market fee on interest earned rate can't be greater than 100%",
   subMarketOwnerLookUpTableMissingErrorMsg: "You must include a Look Up Table Address when a user creates their first Sub Market",
