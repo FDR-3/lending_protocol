@@ -17,7 +17,7 @@ use crate::structs as Structs;
 use crate::validation::*;
 use crate::shared_constants::MAX_ACCOUNT_NAME_LENGTH;
 
-declare_id!("LendhZxPC1nipFNU6XDTuCjMDCQ2dcY3xMuUJWDLJJN");
+declare_id!("Lend8368HT4WVDgN4amVo5EDdhWqgt9sZ7TJBMFufyn");
 
 #[cfg(not(feature = "no-entrypoint"))] //Ensure it's not included when compiled as a library
 security_txt!
