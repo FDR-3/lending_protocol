@@ -162,7 +162,7 @@ pub fn update_token_reserve_rates<'info>(token_reserve: &mut Structs::TokenReser
     {
         token_reserve.utilization_rate = 0;
         token_reserve.supply_apy = 0; //There can be no supply apy if no one is borrowing
-        token_reserve.borrow_apy = token_reserve.fixed_borrow_apy;
+        token_reserve.borrow_apy = token_reserve.base_borrow_apy;
     }
     else
     {
@@ -177,7 +177,7 @@ pub fn update_token_reserve_rates<'info>(token_reserve: &mut Structs::TokenReser
         //Set Borrow APY
         if token_reserve.use_fixed_borrow_apy
         {
-            token_reserve.borrow_apy = token_reserve.fixed_borrow_apy;
+            token_reserve.borrow_apy = token_reserve.base_borrow_apy;
         }
         else
         {
@@ -188,19 +188,18 @@ pub fn update_token_reserve_rates<'info>(token_reserve: &mut Structs::TokenReser
             //Setting Borrow APY Base to Borrow APY Slope1 in this case
             if utilization_rate < optimal_utilization_rate
             {
-                //Max Borrow Rate = token_reserve.fixed_borrow_apy + token_reserve.fixed_borrow_apy @Less Than 70% Utilization Rate
-                let borrow_apy_slope1 = token_reserve.fixed_borrow_apy as u128;
+                //Max Borrow Rate = token_reserve.base_borrow_apy + token_reserve.base_borrow_apy @Less Than 70% Utilization Rate
+                let borrow_apy_slope1 = token_reserve.base_borrow_apy as u128;
                 //Multiply before dividing to help keep precision
                 let u_rate_times_borrow_apy_slope1 = utilization_rate * borrow_apy_slope1;
                 let u_rate_times_borrow_apy_slope1_divide_optimal_u_rate = u_rate_times_borrow_apy_slope1 / optimal_utilization_rate;
 
-                //Max Borrow Rate = token_reserve.fixed_borrow_apy + token_reserve.fixed_borrow_apy @Less Than 70% Utilization Rate
+                //Max Borrow Rate = token_reserve.base_borrow_apy + token_reserve.base_borrow_apy @Less Than 70% Utilization Rate
                 token_reserve.borrow_apy = (borrow_apy_slope1 + u_rate_times_borrow_apy_slope1_divide_optimal_u_rate) as u16;
             }
             else
             {
-                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate. I think having a rate more than 44% would appear too pay day loany...just seems like a bad look lol.
-                let ten_percent = 1_000; //1,000 = 10.00%
+                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate. Max base borrow apy is 5%. I think having a rate more than 44% would appear too pay day loany...just seems like a bad look lol.
                 let borrow_apy_slope2 = 3_400; //3,400 = 34.00%
 
                 /*
@@ -215,9 +214,8 @@ pub fn update_token_reserve_rates<'info>(token_reserve: &mut Structs::TokenReser
                 let u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 = u_rate_minus_optimal_u_rate * borrow_apy_slope2;
                 let new_high_rate_base = u_rate_minus_optimal_u_rate_times_borrow_apy_slope2 / one_hundred_percent_minus_optimal_u_rate;
 
-                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate. (Assuming the Token Reserve fixed borrow apy x2 is smaller than 10%)
-                let base_apy = std::cmp::max(ten_percent, token_reserve.fixed_borrow_apy * 2);
-                token_reserve.borrow_apy = base_apy + new_high_rate_base as u16;
+                //Max Borrow Rate = 10% + 34% = 44% @100% Utilization Rate. Max base borrow apy is 5%.
+                token_reserve.borrow_apy = (token_reserve.base_borrow_apy * 2) + new_high_rate_base as u16;
             }
         }
 

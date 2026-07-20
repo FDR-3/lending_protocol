@@ -4,6 +4,7 @@ export const errors =
   notSolvencyTreasurerErrorMsg: "Only the Solvency Treasurer can call this function",
   notLiquidationTreasurerErrorMsg: "Only the Liquidation Treasurer can call this function",
   notPriceOracle: "Only the Price Oracle can call this function",
+  baseBorrowAPYTooHighErrorMsg: "The base borrow apy can't be greater than 5%",
   solvencyInsuranceFeeOnInterestEarnedRateTooHighErrorMsg: "The solvency insurance fee on interest earned rate can't be greater than 4%",
   outOfRangeError: "ERR_OUT_OF_RANGE",
   subMarketFeeOnInterestEarnedRateTooHighErrorMsg: "The Sub Market fee on interest earned rate can't be greater than 100%",

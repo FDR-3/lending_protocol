@@ -234,7 +234,7 @@ pub mod lending_protocol
 
     pub fn add_token_reserve(ctx: Context<AddTokenReserve>,
         token_decimal_amount: u8,
-        fixed_borrow_apy: u16,
+        base_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
         global_limit: u128,
         solvency_insurance_fee_rate: u16) -> Result<()> 
@@ -242,6 +242,9 @@ pub mod lending_protocol
         let ceo = &mut ctx.accounts.ceo;
         //Only the CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
+
+        //Base Borrow APY can't be greater than 5%, 0.05 in decimal form, 500 in fixed point notation
+        require!(base_borrow_apy <= 500, LendingError::InvalidBaseBorrowAPY);
 
         //Solvency Insurance Fee on interest earned rate can't be greater than 4%, 0.04 in decimal form, 400 in fixed point notation
         require!(solvency_insurance_fee_rate <= 400, LendingError::InvalidSolvencyInsuranceFeeRate);
@@ -251,8 +254,8 @@ pub mod lending_protocol
         token_reserve.bump = ctx.bumps.token_reserve;
         token_reserve.token_mint_address = ctx.accounts.token_mint.key();
         token_reserve.token_decimal_amount = token_decimal_amount;
-        token_reserve.borrow_apy = fixed_borrow_apy;
-        token_reserve.fixed_borrow_apy = fixed_borrow_apy;
+        token_reserve.borrow_apy = base_borrow_apy;
+        token_reserve.base_borrow_apy = base_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
         token_reserve.solvency_insurance_fee_rate = solvency_insurance_fee_rate;
@@ -265,7 +268,7 @@ pub mod lending_protocol
         msg!("Added Token Reserve #{}", token_reserve_stats.token_reserve_count);
         msg!("Token Mint Address: {}", ctx.accounts.token_mint.key());
         msg!("Token Decimal Amount: {}", token_decimal_amount);
-        msg!("Fixed Borrow APY: {}", fixed_borrow_apy);
+        msg!("Base Borrow APY: {}", base_borrow_apy);
         msg!("Use fixed Borrow APY: {}", use_fixed_borrow_apy);
         msg!("Global Limit: {}", global_limit);
             
@@ -273,7 +276,7 @@ pub mod lending_protocol
     }
 
     pub fn update_token_reserve(ctx: Context<UpdateTokenReserve>,
-        fixed_borrow_apy: u16,
+        base_borrow_apy: u16,
         use_fixed_borrow_apy: bool,
         global_limit: u128,
         solvency_insurance_fee_rate: u16) -> Result<()> 
@@ -282,6 +285,9 @@ pub mod lending_protocol
         //Only the CEO can call this function
         require_keys_eq!(ctx.accounts.signer.key(), ceo.address.key(), LendingError::NotCEO);
 
+        //Base Borrow APY can't be greater than 5%, 0.05 in decimal form, 500 in fixed point notation
+        require!(base_borrow_apy <= 500, LendingError::InvalidBaseBorrowAPY);
+
         //Solvency Insurance Fee on interest earned rate can't be greater than 4%, 0.04 in decimal form, 400 in fixed point notation
         require!(solvency_insurance_fee_rate <= 400, LendingError::InvalidSolvencyInsuranceFeeRate);
 
@@ -289,7 +295,7 @@ pub mod lending_protocol
         let token_reserve = &mut ctx.accounts.token_reserve;
 
         //If the value of the Token Reserve Borrow APY will change, calculate previous interest changes before updating it
-        if token_reserve.fixed_borrow_apy != fixed_borrow_apy || token_reserve.use_fixed_borrow_apy != use_fixed_borrow_apy
+        if token_reserve.base_borrow_apy != base_borrow_apy || token_reserve.use_fixed_borrow_apy != use_fixed_borrow_apy
         {
             let time_stamp = Clock::get()?.unix_timestamp as u64;
 
@@ -297,7 +303,7 @@ pub mod lending_protocol
             update_token_reserve_supply_and_borrow_interest_change_index(token_reserve, time_stamp, None)?;
         }
 
-        token_reserve.fixed_borrow_apy = fixed_borrow_apy;
+        token_reserve.base_borrow_apy = base_borrow_apy;
         token_reserve.use_fixed_borrow_apy = use_fixed_borrow_apy;
         token_reserve.global_limit = global_limit;
         token_reserve.solvency_insurance_fee_rate = solvency_insurance_fee_rate;
@@ -308,7 +314,7 @@ pub mod lending_protocol
 
         msg!("Token Reserve Updated");
         msg!("Token ID: {}", token_reserve.token_id);
-        msg!("New Fixed Borrow APY: {}", fixed_borrow_apy);
+        msg!("New Base Borrow APY: {}", base_borrow_apy);
         msg!("New Global Limit: {}",  global_limit);
             
         Ok(())
@@ -920,7 +926,8 @@ pub mod lending_protocol
         sub_market_index: u16,
         _user_account_index: u8,
         amount: u64,
-        pay_off_loan: bool
+        pay_off_loan: bool,
+        pay_10_percent: bool
     ) -> Result<()> 
     {
         let price_validator = &ctx.accounts.price_validator;
@@ -943,6 +950,10 @@ pub mod lending_protocol
         if pay_off_loan
         {
             repayment_amount = lending_user_tab_account.borrowed_amount;
+        }
+        else if pay_10_percent
+        {
+            repayment_amount = (lending_user_tab_account.borrowed_amount * 10) / 100;
         }
         else
         {

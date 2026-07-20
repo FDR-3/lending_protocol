@@ -100,6 +100,8 @@ pub enum LendingError
     MissingSubMarketLookUpTable,
     #[msg("The Sub Market fee on interest earned rate can't be greater than 100%")]
     InvalidSubMarketFeeRate,
+    #[msg("The base borrow apy can't be greater than 5%")]
+    InvalidBaseBorrowAPY,
     #[msg("The solvency insurance fee on interest earned rate can't be greater than 4%")]
     InvalidSolvencyInsuranceFeeRate,
     #[msg("You must include a Look Up Table Address when a user initializes their Lending User Account")]

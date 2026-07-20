@@ -26,7 +26,7 @@ import { getLendingProtocolPDA,
   getlendingUserMonthlyStatementAccountPDA } from "./get_pdas"
 import { Token, ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token"
 import { errors } from "./errors"
-import { borrowWaitTimeInSeconds, useUSDCFixedBorrowAPY, fixedBorrowAPY, runInsolventTest } from "./test_settings"
+import { borrowWaitTimeInSeconds, useUSDCFixedBorrowAPY, baseBorrowAPY, runInsolventTest } from "./test_settings"
 import type { PriceDataPayload } from "./types"
 import { solTestPriceDataPayload,
   solAndUSDCTestPriceDataPayload,
@@ -133,12 +133,14 @@ describe("lending_protocol", () =>
   var supplierWBtcMonthlyStatementRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
   var borrowerWBtcMonthlyStatementRemainingAccount: { pubkey: anchor.web3.PublicKey; isSigner: boolean; isWritable: boolean }
 
-  const borrowAPY7Percent = 700 //7.00%
+  const borrowAPY4Percent = 400 //4.00%
   const globalLimitLow = new anchor.BN(1)
   const globalLimit1 = new anchor.BN(10_000_000_000)
   const globalLimit2 = new anchor.BN(20_000_000_000)
 
-  const solvencyInsuranceFeeRateAbove100Percent = 10001 //100.01%
+  const baseBorrowAPYAbove5Percent = 501 //5.01%
+  const baseBorrowAPYBelove0Percent = -1 //-0.01%
+  const solvencyInsuranceFeeRateAbove4Percent = 401 //4.01%
   const solvencyInsuranceFeeRateBelove0Percent = -1 //-0.01%
   const solvencyInsuranceFeeRate4Percent = 400 //4.00%
   const solvencyInsuranceFeeRate1Percent = 100 //1.00%
@@ -491,7 +493,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimit1, solvencyInsuranceFeeRate4Percent)
+      await program.methods.addTokenReserve(solTokenDecimalAmount, baseBorrowAPY, true, globalLimit1, solvencyInsuranceFeeRate4Percent)
       .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -504,13 +506,49 @@ describe("lending_protocol", () =>
     assert(errorMessage == errors.notCEOErrorMsg)
   })
 
-  it("Verifies That a Token Reserve Can't be Created With a Solvency Insurance Fee on Interest Rate Higher than 100%", async () => 
+  it("Verifies That a Token Reserve Can't be Created With a Base Borrow APY Higher than 5%", async () => 
+  {
+    var errorMessage = ""
+ 
+    try
+    {
+      await program.methods.addTokenReserve(solTokenDecimalAmount, baseBorrowAPYAbove5Percent, true, globalLimitLow, solvencyInsuranceFeeRate4Percent)
+      .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
+      .rpc()
+    }
+    catch(error: any)
+    {
+      errorMessage = error.error.errorMessage
+    }
+
+    assert(errorMessage == errors.baseBorrowAPYTooHighErrorMsg)
+  })
+
+  it("Verifies That a Token Reserve Can't be Created With a Base Borrow APY Below 0%", async () => 
   {
     var errorMessage = ""
 
     try
     {
-      await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRateAbove100Percent)
+      await program.methods.addTokenReserve(solTokenDecimalAmount, baseBorrowAPYBelove0Percent, true, globalLimitLow, solvencyInsuranceFeeRate4Percent)
+      .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
+      .rpc()
+    }
+    catch(error: any)
+    {
+      errorMessage = error.code
+    }
+
+    assert(errorMessage == errors.outOfRangeError)
+  })
+
+  it("Verifies That a Token Reserve Can't be Created With a Solvency Insurance Fee on Interest Rate Higher than 4%", async () => 
+  {
+    var errorMessage = ""
+
+    try
+    {
+      await program.methods.addTokenReserve(solTokenDecimalAmount, baseBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRateAbove4Percent)
       .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
       .rpc()
     }
@@ -528,7 +566,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRateBelove0Percent)
+      await program.methods.addTokenReserve(solTokenDecimalAmount, baseBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRateBelove0Percent)
       .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
       .rpc()
     }
@@ -542,7 +580,7 @@ describe("lending_protocol", () =>
   
   it("Adds a wSOL Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(solTokenDecimalAmount, fixedBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRate4Percent)
+    await program.methods.addTokenReserve(solTokenDecimalAmount, baseBorrowAPY, true, globalLimitLow, solvencyInsuranceFeeRate4Percent)
     .accounts({ tokenMint: solTokenMintAddress, tokenProgram: TOKEN_PROGRAM_ID })
     .rpc()
     
@@ -551,7 +589,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == solTokenMintAddress.toBase58())
     assert(tokenReserve.tokenDecimalAmount == solTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(tokenReserve.borrowApy == fixedBorrowAPY)
+    assert(tokenReserve.borrowApy == baseBorrowAPY)
     assert(tokenReserve.globalLimit.eq(globalLimitLow))
     assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate4Percent)
 
@@ -728,7 +766,7 @@ describe("lending_protocol", () =>
 
     try
     {
-      await program.methods.updateTokenReserve(borrowAPY7Percent, true, globalLimit1, solvencyInsuranceFeeRate4Percent)
+      await program.methods.updateTokenReserve(borrowAPY4Percent, true, globalLimit1, solvencyInsuranceFeeRate4Percent)
       .accounts({ tokenMintAddress: solTokenMintAddress, signer: successorWalletKeypair.publicKey })
       .signers([successorWalletKeypair])
       .rpc()
@@ -743,12 +781,12 @@ describe("lending_protocol", () =>
 
   it("Updates Token Reserve Borrow APY, Global Limit, and Solvency Insurance Rate", async () => 
   {
-    await program.methods.updateTokenReserve(borrowAPY7Percent, true, globalLimit2, solvencyInsuranceFeeRate1Percent)
+    await program.methods.updateTokenReserve(borrowAPY4Percent, true, globalLimit2, solvencyInsuranceFeeRate1Percent)
     .accounts({ tokenMintAddress: solTokenMintAddress })
     .rpc()
 
     const tokenReserve = await program.account.tokenReserve.fetch(getTokenReservePDA(solTokenMintAddress))
-    assert(tokenReserve.borrowApy == borrowAPY7Percent)
+    assert(tokenReserve.borrowApy == borrowAPY4Percent)
     assert(tokenReserve.globalLimit.eq(globalLimit2))
     assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate1Percent)
   })
@@ -992,7 +1030,7 @@ describe("lending_protocol", () =>
   
   it("Adds a USDC Token Reserve", async () => 
   {
-    await program.methods.addTokenReserve(usdcTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
+    await program.methods.addTokenReserve(usdcTokenDecimalAmount, baseBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
     .accounts({ tokenMint: usdcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
     
@@ -1001,7 +1039,7 @@ describe("lending_protocol", () =>
     assert(tokenReserve.tokenMintAddress.toBase58() == usdcMint.publicKey.toBase58())
     assert(tokenReserve.tokenDecimalAmount == usdcTokenDecimalAmount)
     assert(tokenReserve.depositedAmount.eq(bnZero))
-    assert(tokenReserve.borrowApy == fixedBorrowAPY)
+    assert(tokenReserve.borrowApy == baseBorrowAPY)
     assert(tokenReserve.globalLimit.eq(globalLimit1))
     assert(tokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate4Percent)
 
@@ -2057,6 +2095,7 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       lessThan10PercentOfBorrowedAmount,
+      false,
       false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
@@ -2116,6 +2155,7 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       lessThan10PercentOfBorrowedAmount,
+      false,
       false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
@@ -2610,6 +2650,7 @@ describe("lending_protocol", () =>
       testSubMarketIndex,
       testUserAccountIndex,
       overBorrowUSDCAmount,
+      false,
       false)
       .accounts({
         subMarketOwner: programProviderPublicKey,
@@ -2674,12 +2715,13 @@ describe("lending_protocol", () =>
     .signers([borrowerWalletKeypair])
     .remainingAccounts(refreshingRemainingAccounts)
     .instruction()
-    
+
     const repayTokenInstruction = await program.methods.repayTokens(
     testSubMarketIndex,
     testUserAccountIndex,
-    borrowerUSDCAmount,
-    true)
+    lessThan10PercentOfBorrowedAmount,
+    true,
+    false)
     .accounts({
       subMarketOwner: programProviderPublicKey,
       tokenMint: usdcMint.publicKey,
@@ -3054,15 +3096,15 @@ describe("lending_protocol", () =>
 
   it("Adds a DAI, WEth, and WBtc Token Reserves", async () => 
   {
-    await program.methods.addTokenReserve(daiTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
+    await program.methods.addTokenReserve(daiTokenDecimalAmount, baseBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
     .accounts({ tokenMint: daiMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
 
-    await program.methods.addTokenReserve(wethTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
+    await program.methods.addTokenReserve(wethTokenDecimalAmount, baseBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
     .accounts({ tokenMint: wethMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
 
-    await program.methods.addTokenReserve(wbtcTokenDecimalAmount, fixedBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
+    await program.methods.addTokenReserve(wbtcTokenDecimalAmount, baseBorrowAPY, useUSDCFixedBorrowAPY, globalLimit1, solvencyInsuranceFeeRate4Percent)
     .accounts({ tokenMint: wbtcMint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })
     .rpc()
 
@@ -3071,7 +3113,7 @@ describe("lending_protocol", () =>
     assert(daiTokenReserve.tokenMintAddress.toBase58() == daiMint.publicKey.toBase58())
     assert(daiTokenReserve.tokenDecimalAmount == daiTokenDecimalAmount)
     assert(daiTokenReserve.depositedAmount.eq(bnZero))
-    assert(daiTokenReserve.borrowApy == fixedBorrowAPY)
+    assert(daiTokenReserve.borrowApy == baseBorrowAPY)
     assert(daiTokenReserve.globalLimit.eq(globalLimit1))
     assert(daiTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate4Percent)
 
@@ -3080,7 +3122,7 @@ describe("lending_protocol", () =>
     assert(wethTokenReserve.tokenMintAddress.toBase58() == wethMint.publicKey.toBase58())
     assert(wethTokenReserve.tokenDecimalAmount == wethTokenDecimalAmount)
     assert(wethTokenReserve.depositedAmount.eq(bnZero))
-    assert(wethTokenReserve.borrowApy == fixedBorrowAPY)
+    assert(wethTokenReserve.borrowApy == baseBorrowAPY)
     assert(wethTokenReserve.globalLimit.eq(globalLimit1))
     assert(wethTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate4Percent)
 
@@ -3089,7 +3131,7 @@ describe("lending_protocol", () =>
     assert(wbtcTokenReserve.tokenMintAddress.toBase58() == wbtcMint.publicKey.toBase58())
     assert(wbtcTokenReserve.tokenDecimalAmount == wbtcTokenDecimalAmount)
     assert(wbtcTokenReserve.depositedAmount.eq(bnZero))
-    assert(wbtcTokenReserve.borrowApy == fixedBorrowAPY)
+    assert(wbtcTokenReserve.borrowApy == baseBorrowAPY)
     assert(wbtcTokenReserve.globalLimit.eq(globalLimit1))
     assert(wbtcTokenReserve.solvencyInsuranceFeeRate == solvencyInsuranceFeeRate4Percent)
 

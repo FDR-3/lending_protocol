@@ -100,7 +100,7 @@ pub struct TokenReserve
     pub token_decimal_amount: u8,
     pub supply_apy: u16,
     pub borrow_apy: u16,
-    pub fixed_borrow_apy: u16,
+    pub base_borrow_apy: u16,
     pub use_fixed_borrow_apy: bool,
     pub utilization_rate: u16,
     pub global_limit: u128,
