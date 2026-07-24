@@ -336,8 +336,8 @@ pub fn update_user_previous_interest_earned<'info>(
     lending_user_tab_account.fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
     lending_user_monthly_statement_account.snap_shot_balance_amount = lending_user_tab_account.deposited_amount;
     lending_user_monthly_statement_account.monthly_interest_earned_amount += new_user_interest_earned_amount_after_fees as u64;
-    lending_user_monthly_statement_account.fees_generated_amount += new_sub_market_fees_generated_amount as u64;
-    lending_user_monthly_statement_account.fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
+    lending_user_monthly_statement_account.monthly_fees_generated_amount += new_sub_market_fees_generated_amount as u64;
+    lending_user_monthly_statement_account.monthly_fees_generated_amount += new_solvency_insurance_fees_generated_amount as u64;
 
     Ok(())
 }

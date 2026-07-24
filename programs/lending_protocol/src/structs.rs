@@ -215,7 +215,7 @@ pub struct LendingUserMonthlyStatementAccount
     pub snap_shot_debt_amount: u64,
     pub monthly_deposited_amount: u64,//The monthly properties give the specific value changes for that specific month
     pub monthly_interest_earned_amount: u64,
-    pub fees_generated_amount: u64,
+    pub monthly_fees_generated_amount: u64,
     pub monthly_sub_market_fees_collected_amount: u64,
     pub monthly_solvency_insurance_fees_collected_amount: u64,
     pub monthly_liquidation_fees_collected_amount: u64,

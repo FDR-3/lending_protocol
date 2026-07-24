@@ -1431,6 +1431,7 @@ pub mod lending_protocol
         repayment_token_reserve.repaid_debt_amount += repayment_amount as u128;
         liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
         liquidator_repayment_tab_account.repaid_debt_amount += repayment_amount;
+        liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount; //Update liquidati monthly statement repayment amount, but not the tab. The tab is for the leader board and the liquidati shouldn't get credit for repayment in this case, but updating the monthly statement atleast for visibility to the liquidati.
         liquidator_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
 
@@ -1453,7 +1454,7 @@ pub mod lending_protocol
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
         liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_monthly_statement_account.fees_generated_amount += liquidation_fee_amount;
+        liquidator_liquidation_monthly_statement_account.monthly_fees_generated_amount += liquidation_fee_amount;
 
         if send_reward_to_wallet
         {
@@ -1526,6 +1527,9 @@ pub mod lending_protocol
         liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = liquidation_token_reserve.last_lending_activity_time_stamp;
+        liquidator_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidator_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
+        liquidator_repayment_monthly_statement_account.last_lending_activity_time_stamp = repayment_token_reserve.last_lending_activity_time_stamp;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = liquidation_token_reserve.last_lending_activity_time_stamp;
@@ -1896,6 +1900,7 @@ pub mod lending_protocol
         repayment_sub_market.repaid_debt_amount += repayment_amount as u128;
         liquidati_repayment_tab_account.borrowed_amount -= repayment_amount;
         liquidator_repayment_tab_account.repaid_debt_amount += repayment_amount;
+        liquidati_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount; //Update liquidati monthly statement repayment amount, but not the tab. The tab is for the leader board and the liquidati shouldn't get credit for repayment in this case, but updating the monthly statement atleast for visibility to the liquidati.
         liquidator_repayment_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         liquidati_repayment_monthly_statement_account.snap_shot_debt_amount = liquidati_repayment_tab_account.borrowed_amount;
 
@@ -1918,7 +1923,7 @@ pub mod lending_protocol
         liquidati_liquidation_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
         liquidati_liquidation_monthly_statement_account.snap_shot_balance_amount = liquidati_liquidation_tab_account.deposited_amount;
         liquidator_liquidation_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_liquidation_monthly_statement_account.fees_generated_amount += liquidation_fee_amount;
+        liquidator_liquidation_monthly_statement_account.monthly_fees_generated_amount += liquidation_fee_amount;
 
         if send_reward_to_wallet
         {
@@ -1992,6 +1997,9 @@ pub mod lending_protocol
         liquidati_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidati_liquidation_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        liquidator_repayment_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        liquidator_repayment_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
+        liquidator_repayment_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidator_liquidation_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
@@ -2287,6 +2295,7 @@ pub mod lending_protocol
         sub_market.repaid_debt_amount += repayment_amount as u128;
         liquidati_tab_account.borrowed_amount -= repayment_amount;
         liquidator_tab_account.repaid_debt_amount += repayment_amount;
+        liquidati_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount; //Update liquidati monthly statement repayment amount, but not the tab. The tab is for the leader board and the liquidati shouldn't get credit for repayment in this case, but updating the monthly statement atleast for visibility to the liquidati.
         liquidator_monthly_statement_account.monthly_repaid_debt_amount += repayment_amount;
         liquidati_monthly_statement_account.snap_shot_debt_amount = liquidati_tab_account.borrowed_amount;
 
@@ -2309,7 +2318,7 @@ pub mod lending_protocol
         liquidati_monthly_statement_account.monthly_liquidated_amount += liquidation_fee_amount;
         liquidati_monthly_statement_account.snap_shot_balance_amount = liquidati_tab_account.deposited_amount;
         liquidator_monthly_statement_account.monthly_liquidator_amount += liquidation_amount_with_7_percent_bonus;
-        liquidator_monthly_statement_account.fees_generated_amount += liquidation_fee_amount;
+        liquidator_monthly_statement_account.monthly_fees_generated_amount += liquidation_fee_amount;
 
         if send_reward_to_wallet
         {
@@ -2371,10 +2380,13 @@ pub mod lending_protocol
         sub_market.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
         //liquidati_monthly_statement_account.last_lending_activity_amount = repayment_amount;
         //liquidati_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
-        //liquidati_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;  //Since the token is the same, make Liquidate the last activity on the Monthly Statement
+        //liquidati_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp; //Since the token is the same, make Liquidate the last activity on the Monthly Statement
         liquidati_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidati_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidati_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
+        //liquidator_monthly_statement_account.last_lending_activity_amount = repayment_amount;
+        //liquidator_monthly_statement_account.last_lending_activity_type = Activity::Repay as u8;
+        //liquidator_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp; //Since the token is the same, make Liquidate the last activity on the Monthly Statement
         liquidator_monthly_statement_account.last_lending_activity_amount = liquidation_amount;
         liquidator_monthly_statement_account.last_lending_activity_type = Activity::Liquidate as u8;
         liquidator_monthly_statement_account.last_lending_activity_time_stamp = token_reserve.last_lending_activity_time_stamp;
